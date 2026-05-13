@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f2f3f8;
+  color: #1f2937;
+  font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Arial, sans-serif;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+.form-label::before {
+  content: "*";
+  color: #d93025;
+  margin-right: 4px;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #d7c7ef;
+  border-radius: 999px;
+}
