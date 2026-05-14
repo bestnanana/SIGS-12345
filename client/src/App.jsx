@@ -10,11 +10,20 @@ import TicketDetailPage from "./pages/TicketDetailPage";
 import TicketFormPage from "./pages/TicketFormPage";
 import TypicalIssuesPage from "./pages/TypicalIssuesPage";
 
+function readSavedUser() {
+  const saved = localStorage.getItem("user");
+  if (!saved || saved === "undefined" || saved === "null") return null;
+  try {
+    return JSON.parse(saved);
+  } catch (error) {
+    localStorage.removeItem("user");
+    localStorage.removeItem("token");
+    return null;
+  }
+}
+
 function App() {
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem("user");
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [user, setUser] = useState(readSavedUser);
   const [loading, setLoading] = useState(Boolean(localStorage.getItem("token")));
   const location = useLocation();
 

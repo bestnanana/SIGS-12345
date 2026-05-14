@@ -4,6 +4,15 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        ai: {
+          primary: "#6C4CF1",
+          bg: "#FAFAFC",
+          card: "#FFFFFF",
+          border: "#ECECF2",
+          title: "#111111",
+          body: "#666666",
+          muted: "#8A8A93"
+        },
         tsinghua: {
           50: "#f7f3ff",
           100: "#efe5ff",

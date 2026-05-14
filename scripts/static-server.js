@@ -6,6 +6,7 @@ const root = path.resolve(__dirname, "..");
 const candidates = [path.join(root, "client", "dist"), path.join(root, "dist")];
 const dist = candidates.find((dir) => fs.existsSync(path.join(dir, "index.html")));
 const port = Number(process.env.WEB_PORT || 5173);
+const apiTarget = new URL(process.env.API_TARGET || "http://localhost:3001");
 
 if (!dist) {
   console.error("Cannot find built frontend. Run `npm.cmd run build` first.");
@@ -25,6 +26,28 @@ const types = {
 };
 
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith("/api/") || req.url.startsWith("/uploads/")) {
+    const proxyReq = http.request(
+      {
+        hostname: apiTarget.hostname,
+        port: apiTarget.port || 80,
+        path: req.url,
+        method: req.method,
+        headers: req.headers
+      },
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+        proxyRes.pipe(res);
+      }
+    );
+    proxyReq.on("error", () => {
+      res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ message: "API 服务未连接，请确认后端 3001 已启动" }));
+    });
+    req.pipe(proxyReq);
+    return;
+  }
+
   const urlPath = decodeURIComponent(new URL(req.url, `http://localhost:${port}`).pathname);
   const requested = path.normalize(urlPath).replace(/^([/\\])+/, "");
   const fullPath = path.join(dist, requested || "index.html");

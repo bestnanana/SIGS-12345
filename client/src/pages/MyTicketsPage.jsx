@@ -28,18 +28,18 @@ export default function MyTicketsPage() {
   }, []);
 
   return (
-    <div className="rounded-md bg-white shadow-soft ring-1 ring-slate-200">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4">
+    <div className="app-card overflow-hidden p-0">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-ai-border px-6 py-5">
         <div>
-          <div className="text-lg font-semibold text-slate-900">我的事项</div>
-          <div className="mt-1 text-sm text-slate-500">查看本人提交事项的办理进度与回复结果。</div>
+          <div className="text-2xl font-semibold tracking-tight text-ai-title">我的事项</div>
+          <div className="mt-2 text-sm text-ai-body">查看本人提交事项的办理进度与回复结果。</div>
         </div>
         <div className="flex gap-2">
-          <button onClick={load} className="flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm hover:bg-slate-50">
+          <button onClick={load} className="ghost-button">
             <RefreshCw size={16} />
             刷新
           </button>
-          <Link to="/new" className="flex h-10 items-center gap-2 rounded-md bg-tsinghua-700 px-4 text-sm font-medium text-white hover:bg-tsinghua-800">
+          <Link to="/new" className="primary-button">
             <FilePlus2 size={16} />
             提出意见
           </Link>
@@ -47,8 +47,8 @@ export default function MyTicketsPage() {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="bg-slate-50 text-slate-600">
+        <table className="soft-table w-full min-w-[760px]">
+          <thead>
             <tr>
               <th className="px-6 py-3 font-medium">事项编号</th>
               <th className="px-6 py-3 font-medium">标题</th>
@@ -69,21 +69,21 @@ export default function MyTicketsPage() {
                 const status = statusMap[ticket.status] || statusMap.pending;
                 return (
                   <tr key={ticket.id} className="hover:bg-tsinghua-50/50">
-                    <td className="px-6 py-4 font-medium text-tsinghua-800">#{String(ticket.id).padStart(6, "0")}</td>
-                    <td className="max-w-md px-6 py-4">
-                      <div className="truncate font-medium text-slate-900">{ticket.title}</div>
-                      <div className="mt-1 text-xs text-slate-500">
+                    <td className="font-semibold text-ai-primary">#{String(ticket.id).padStart(6, "0")}</td>
+                    <td className="max-w-md">
+                      <div className="truncate font-semibold text-ai-title">{ticket.title}</div>
+                      <div className="mt-1 text-xs text-ai-muted">
                         {ticket.field} · 部门：{ticket.department || "未指定"} · 当前承办：{ticket.current_department || "党政办"}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-slate-600">{formatTime(ticket.created_at)}</td>
-                    <td className="px-6 py-4">
+                    <td>{formatTime(ticket.created_at)}</td>
+                    <td>
                       <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ring-1 ${status.className}`}>
                         {status.label}
                       </span>
                     </td>
-                    <td className="px-6 py-4">
-                      <Link to={`/tickets/${ticket.id}`} className="inline-flex items-center gap-1 text-tsinghua-700 hover:text-tsinghua-900">
+                    <td>
+                      <Link to={`/tickets/${ticket.id}`} className="inline-flex items-center gap-1 font-medium text-ai-primary hover:brightness-110">
                         <Eye size={16} />
                         查看详情
                       </Link>

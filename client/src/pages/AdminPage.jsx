@@ -117,21 +117,21 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
-      <section className="rounded-md bg-white shadow-soft ring-1 ring-slate-200">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+    <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
+      <section className="app-card overflow-hidden p-0">
+        <div className="flex items-center justify-between border-b border-ai-border px-6 py-5">
           <div>
-            <div className="text-lg font-semibold text-slate-900">后台管理</div>
-            <div className="mt-1 text-sm text-slate-500">
+            <div className="text-2xl font-semibold tracking-tight text-ai-title">后台工作台</div>
+            <div className="mt-2 text-sm text-ai-body">
               {user?.department ? `${user.department}事项队列` : "查看事项并办理回复"}
             </div>
           </div>
-          <button onClick={loadTickets} className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-300 hover:bg-slate-50" title="刷新">
+          <button onClick={loadTickets} className="flex h-11 w-11 items-center justify-center rounded-2xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg" title="刷新">
             <RefreshCw size={16} />
           </button>
         </div>
 
-        <div className="max-h-[calc(100vh-12rem)] overflow-y-auto p-3 scrollbar-thin">
+        <div className="max-h-[calc(100vh-12rem)] overflow-y-auto p-4 scrollbar-thin">
           {loading ? (
             <div className="p-8 text-center text-sm text-slate-500">加载中...</div>
           ) : error ? (
@@ -139,27 +139,27 @@ export default function AdminPage() {
           ) : tickets.length === 0 ? (
             <div className="p-8 text-center text-sm text-slate-500">暂无待办事项</div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {tickets.map((ticket) => {
                 const status = statusMap[ticket.status] || statusMap.pending;
                 return (
                   <button
                     key={ticket.id}
                     onClick={() => chooseTicket(ticket)}
-                    className={`w-full rounded-md border p-4 text-left transition ${
-                      selectedId === ticket.id ? "border-tsinghua-400 bg-tsinghua-50" : "border-slate-200 bg-white hover:border-tsinghua-200"
+                    className={`w-full rounded-[20px] border p-4 text-left transition duration-200 ease-out hover:-translate-y-0.5 ${
+                      selectedId === ticket.id ? "border-ai-primary/30 bg-ai-primary/10 shadow-sm" : "border-ai-border bg-white hover:bg-ai-bg"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="truncate font-medium text-slate-900">{ticket.title}</div>
-                        <div className="mt-1 text-xs text-slate-500">
+                        <div className="truncate font-semibold text-ai-title">{ticket.title}</div>
+                        <div className="mt-1 text-xs text-ai-muted">
                           #{String(ticket.id).padStart(6, "0")} · 提交人：{ticket.submitter_name}
                         </div>
                       </div>
                       <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${status.className}`}>{status.label}</span>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-ai-body">
                       <span>{ticket.field}</span>
                       <span>申请部门：{ticket.department || "未指定"}</span>
                       <span>当前：{ticket.current_department || "党政办"}</span>
@@ -173,16 +173,16 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="min-w-0 rounded-md bg-white shadow-soft ring-1 ring-slate-200">
+      <section className="app-card min-w-0 overflow-hidden p-0">
         {!selected ? (
-          <div className="p-12 text-center text-slate-500">请选择事项</div>
+          <div className="p-12 text-center text-ai-body">请选择事项</div>
         ) : (
           <>
-            <div className="border-b border-slate-200 px-6 py-4">
+            <div className="mesh-hero border-b border-ai-border px-8 py-6">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-lg font-semibold text-slate-900">{selected.title}</div>
-                  <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-500">
+                  <div className="text-[32px] font-semibold tracking-tight text-ai-title">{selected.title}</div>
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ai-body">
                     <span>提交人：{selected.submitter_name}</span>
                     <span>联系方式：{selected.submitter_phone || "不显示"}</span>
                     <span>申请部门：{selected.department || "未指定"}</span>
@@ -192,14 +192,14 @@ export default function AdminPage() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => togglePublish(selected)}
-                    className={`flex h-9 items-center gap-2 rounded-md px-3 text-sm ring-1 ${
+                    className={`flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold ring-1 transition duration-200 ${
                       selected.is_published ? "bg-teal-50 text-teal-700 ring-teal-200" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
                     }`}
                   >
                     <Megaphone size={16} />
                     {selected.is_published ? "取消发布" : "发布典型问题"}
                   </button>
-                  <Link to={`/tickets/${selected.id}`} className="flex h-9 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm hover:bg-slate-50">
+                  <Link to={`/tickets/${selected.id}`} className="ghost-button h-11">
                     <Eye size={16} />
                     详情页
                   </Link>
@@ -207,51 +207,51 @@ export default function AdminPage() {
               </div>
             </div>
 
-            <div className="grid gap-5 p-6 lg:grid-cols-[1fr_360px]">
-              <div className="space-y-5">
+            <div className="grid gap-6 p-6 lg:grid-cols-[1fr_360px]">
+              <div className="space-y-6">
                 <section>
-                  <h3 className="mb-3 font-semibold text-slate-900">事项内容</h3>
-                  <div className="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
+                  <h3 className="mb-3 font-semibold text-ai-title">事项内容</h3>
+                  <div className="whitespace-pre-wrap rounded-[20px] border border-ai-border bg-ai-bg p-5 text-sm leading-7 text-ai-body">
                     {selected.content}
                   </div>
                 </section>
 
-                <section className="rounded-md border border-teal-200 bg-teal-50 p-4">
-                  <div className="mb-3 flex items-center gap-2 font-semibold text-teal-900">
+                <section className="rounded-[20px] border border-ai-primary/10 bg-ai-primary/5 p-5">
+                  <div className="mb-3 flex items-center gap-2 font-semibold text-ai-title">
                     <Bot size={18} />
-                    Minimax 智能建议
+                    AI 智能摘要
                   </div>
-                  <div className="text-sm leading-7 text-teal-900">
+                  <div className="text-sm leading-7 text-ai-body">
                     <div>智能分类：{selected.ai_category || selected.field}</div>
                     <div className="mt-2">回复建议：{selected.ai_suggestion || "暂无建议"}</div>
                   </div>
                 </section>
 
                 <section>
-                  <h3 className="mb-3 font-semibold text-slate-900">转办记录</h3>
+                  <h3 className="mb-3 font-semibold text-ai-title">转办记录</h3>
                   <div className="space-y-3">
                     {Array.isArray(detail?.transfers) && detail.transfers.length ? (
                       detail.transfers.map((item) => (
-                        <div key={item.id} className="rounded-md border border-slate-200 bg-white p-4 text-sm">
+                        <div key={item.id} className="rounded-2xl border border-ai-border bg-white p-4 text-sm">
                           <div className="flex flex-wrap justify-between gap-3">
-                            <span className="font-medium text-slate-900">{item.from_department} 转办至 {item.to_department}</span>
-                            <span className="text-slate-500">{formatTime(item.created_at)}</span>
+                            <span className="font-medium text-ai-title">{item.from_department} 转办至 {item.to_department}</span>
+                            <span className="text-ai-muted">{formatTime(item.created_at)}</span>
                           </div>
                           {item.note ? <div className="mt-2 text-slate-600">说明：{item.note}</div> : null}
                         </div>
                       ))
                     ) : (
-                      <div className="rounded-md bg-slate-50 p-4 text-sm text-slate-500">暂无转办记录</div>
+                      <div className="rounded-2xl bg-ai-bg p-4 text-sm text-ai-body">暂无转办记录</div>
                     )}
                   </div>
                 </section>
 
                 <section>
-                  <h3 className="mb-3 font-semibold text-slate-900">历史回复</h3>
+                  <h3 className="mb-3 font-semibold text-ai-title">历史回复</h3>
                   <div className="space-y-3">
                     {Array.isArray(detail?.replies) && detail.replies.length ? (
                       detail.replies.map((item) => (
-                        <div key={item.id} className="rounded-md border border-slate-200 p-4">
+                        <div key={item.id} className="rounded-2xl border border-ai-border p-4">
                           <div className="mb-2 flex justify-between gap-3 text-sm">
                             <span className="font-medium">{item.department}</span>
                             <span className="text-slate-500">{formatTime(item.created_at)}</span>
@@ -267,15 +267,15 @@ export default function AdminPage() {
               </div>
 
               <aside className="space-y-5">
-                <section className="rounded-md border border-slate-200 p-4">
-                  <h3 className="mb-3 font-semibold text-slate-900">状态更新</h3>
+                <section className="rounded-[20px] border border-ai-border p-5">
+                  <h3 className="mb-4 font-semibold text-ai-title">状态更新</h3>
                   <div className="grid grid-cols-2 gap-2">
                     {Object.entries(statusMap).map(([value, meta]) => (
                       <button
                         key={value}
                         onClick={() => changeStatus(selected.id, value)}
                         disabled={!canHandleSelected}
-                        className={`rounded-md px-3 py-2 text-sm ring-1 disabled:cursor-not-allowed disabled:opacity-60 ${selected.status === value ? meta.className : "bg-white text-slate-600 ring-slate-200 hover:bg-slate-50"}`}
+                        className={`rounded-xl px-3 py-2.5 text-sm ring-1 transition duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${selected.status === value ? meta.className : "bg-white text-ai-body ring-ai-border hover:bg-ai-bg"}`}
                       >
                         {meta.label}
                       </button>
@@ -283,17 +283,17 @@ export default function AdminPage() {
                   </div>
                 </section>
 
-                <form onSubmit={submitTransfer} className="rounded-md border border-amber-200 bg-amber-50 p-4">
-                  <h3 className="mb-4 flex items-center gap-2 font-semibold text-amber-900">
+                <form onSubmit={submitTransfer} className="rounded-[20px] border border-amber-100 bg-amber-50/70 p-5">
+                  <h3 className="mb-4 flex items-center gap-2 font-semibold text-ai-title">
                     <Forward size={17} />
                     转办事项
                   </h3>
                   <label className="mb-3 block">
-                    <span className="mb-1 block text-sm text-amber-900">指定部门</span>
+                    <span className="mb-1 block text-sm text-ai-body">指定部门</span>
                     <select
                       value={transfer.to_department}
                       onChange={(e) => setTransfer({ ...transfer, to_department: e.target.value })}
-                      className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 outline-none focus:border-tsinghua-600"
+                      className="soft-input w-full"
                     >
                       {departments.map((dept) => (
                         <option key={dept} value={dept}>{dept}</option>
@@ -301,22 +301,22 @@ export default function AdminPage() {
                     </select>
                   </label>
                   <label className="mb-4 block">
-                    <span className="mb-1 block text-sm text-amber-900">转办说明</span>
+                    <span className="mb-1 block text-sm text-ai-body">转办说明</span>
                     <textarea
                       value={transfer.note}
                       onChange={(e) => setTransfer({ ...transfer, note: e.target.value })}
-                      className="min-h-20 w-full rounded-md border border-amber-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-tsinghua-600"
+                      className="soft-textarea min-h-24 w-full"
                       placeholder="可填写转办原因或办理提示"
                     />
                   </label>
-                  <button disabled={!canReplySelected} className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-amber-600 font-medium text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60">
+                  <button disabled={!canReplySelected} className="primary-button w-full bg-amber-600 hover:brightness-105">
                     <Forward size={16} />
                     确认转办
                   </button>
                 </form>
 
-                <form onSubmit={submitReply} className={`rounded-md border p-4 ${canReplySelected ? "border-slate-200" : "border-slate-200 bg-slate-50"}`}>
-                  <h3 className="mb-4 font-semibold text-slate-900">回复事项</h3>
+                <form onSubmit={submitReply} className={`rounded-[20px] border p-5 ${canReplySelected ? "border-ai-border" : "border-ai-border bg-ai-bg"}`}>
+                  <h3 className="mb-4 font-semibold text-ai-title">回复事项</h3>
                   {!canHandleSelected ? (
                     <div className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
                       该事项当前承办部门为 {selected.current_department || "党政办"}，只能由该部门管理员回复处理。
@@ -328,30 +328,30 @@ export default function AdminPage() {
                     </div>
                   ) : null}
                   <label className="mb-3 block">
-                    <span className="mb-1 block text-sm text-slate-600">回复部门</span>
+                    <span className="mb-1 block text-sm text-ai-body">回复部门</span>
                     <input
                       value={user?.department || reply.department}
                       readOnly
-                      className="h-10 w-full rounded-md border border-slate-200 bg-slate-100 px-3 text-slate-600 outline-none"
+                      className="soft-input w-full"
                       required
                     />
                   </label>
                   <label className="mb-3 block">
-                    <span className="mb-1 block text-sm text-slate-600">回复内容</span>
+                    <span className="mb-1 block text-sm text-ai-body">回复内容</span>
                     <textarea
                       value={reply.content}
                       onChange={(e) => setReply({ ...reply, content: e.target.value })}
-                      className="min-h-36 w-full rounded-md border border-slate-300 px-3 py-2 text-sm leading-7 outline-none focus:border-tsinghua-600"
+                      className="soft-textarea min-h-36 w-full"
                       disabled={!canReplySelected}
                       required
                     />
                   </label>
                   <label className="mb-3 block">
-                    <span className="mb-1 block text-sm text-slate-600">回复后状态</span>
+                    <span className="mb-1 block text-sm text-ai-body">回复后状态</span>
                     <select
                       value={reply.status}
                       onChange={(e) => setReply({ ...reply, status: e.target.value })}
-                      className="h-10 w-full rounded-md border border-slate-300 px-3 outline-none focus:border-tsinghua-600"
+                      className="soft-input w-full"
                       disabled={!canReplySelected}
                     >
                       <option value="replied">已回复</option>
@@ -359,7 +359,7 @@ export default function AdminPage() {
                       <option value="processing">处理中</option>
                     </select>
                   </label>
-                  <label className={`mb-4 flex items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-600 ${canReplySelected ? "cursor-pointer hover:border-tsinghua-300" : "cursor-not-allowed opacity-60"}`}>
+                  <label className={`mb-4 flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-3 text-sm text-ai-body ${canReplySelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
                     <Paperclip size={16} />
                     <span className="truncate">{files.length ? `${files.length} 个附件已选择` : "上传官方附件"}</span>
                     <input
@@ -373,7 +373,7 @@ export default function AdminPage() {
                   </label>
                   <button
                     disabled={submitting || !canReplySelected}
-                    className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-tsinghua-700 font-medium text-white hover:bg-tsinghua-800 disabled:opacity-70"
+                    className="primary-button w-full"
                   >
                     <SendHorizontal size={16} />
                     {isCompleted ? "已完成" : submitting ? "提交中..." : "提交回复"}

@@ -1,117 +1,112 @@
-import React from "react";
-import { Bell, ClipboardList, FilePlus2, Home, Layers, ListChecks, LogOut, Megaphone, Search, ShieldCheck, UserRound } from "lucide-react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import React, { useState } from "react";
+import { Bell, Bot, ChevronDown, Search, UserRound } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
-const topMenus = ["用户首页", "服务列表", "我申请的", "我受理的", "SIGS接诉即办", "典型问题"];
+const navItems = [
+  { label: "提出意见", to: "/new" },
+  { label: "首页", to: "/" },
+  { label: "我的申请", to: "/tickets" },
+  { label: "典型问题", to: "/typical" }
+];
 
 function LogoMark() {
   return (
-    <div className="flex h-12 min-w-0 items-center rounded-md bg-white px-3 shadow-sm ring-1 ring-white/70">
+    <div className="flex min-w-0 items-center">
       <img
         src="/tsinghua-sigs-logo.png"
         alt="清华大学深圳国际研究生院"
-        className="h-9 w-full max-w-[230px] object-contain object-left"
+        className="h-10 w-[190px] shrink-0 object-contain object-left"
       />
+      <div className="mx-7 hidden h-12 w-px bg-ai-border md:block" />
+      <div className="hidden min-w-0 md:block">
+        <div className="truncate text-[20px] font-semibold leading-6 tracking-tight text-ai-title">SIGS投诉即办</div>
+        <div className="mt-1 truncate text-xs text-ai-muted">SIGS Prompt Complaint</div>
+      </div>
     </div>
-  );
-}
-
-function SidebarLink({ to, icon: Icon, children }) {
-  return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        [
-          "flex items-center gap-3 rounded-md px-4 py-3 text-sm font-medium transition",
-          isActive ? "bg-tsinghua-700 text-white shadow-soft" : "text-slate-700 hover:bg-tsinghua-50 hover:text-tsinghua-800"
-        ].join(" ")
-      }
-    >
-      <Icon size={18} />
-      {children}
-    </NavLink>
   );
 }
 
 export default function Layout({ children, user, onLogout }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const isAdmin = location.pathname.startsWith("/admin");
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const roleLabel = user.role === "admin" ? "管理员" : "用户";
+  const initial = (user.name || roleLabel || "用").trim().slice(0, 1).toUpperCase();
+
+  function isCurrent(item) {
+    if (item.to === "/") return location.pathname === "/";
+    if (item.label === "我的申请") return location.pathname === "/tickets";
+    return location.pathname.startsWith(item.to);
+  }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f7f5fb_0%,#eef0f6_42%,#f8fafc_100%)]">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-[linear-gradient(90deg,#3f1b70_0%,#55238c_45%,#0f6f72_100%)] text-white shadow-lg shadow-tsinghua-900/15">
-        <div className="flex h-20 items-center">
-          <button onClick={() => navigate("/")} className="flex h-full w-[min(420px,62vw)] items-center gap-4 bg-white/8 px-4 text-left backdrop-blur sm:px-6">
+    <div className="page-shell">
+      <header className="sticky top-0 z-20 h-[84px] border-b border-ai-border bg-white">
+        <div className="mx-auto flex h-full max-w-[1720px] items-center gap-6 px-6 lg:px-10">
+          <button onClick={() => navigate("/")} className="min-w-0 shrink-0 text-left">
             <LogoMark />
-            <div className="hidden min-w-0 xl:block">
-              <div className="truncate text-lg font-semibold leading-tight">SIGS接诉即办</div>
-              <div className="truncate text-xs text-tsinghua-100">SIGS Prompt Complaint</div>
-            </div>
           </button>
 
-          <nav className="hidden h-full flex-1 items-center px-2 md:flex">
-            {topMenus.map((item) => (
-              <button
-                key={item}
-                onClick={() => navigate(item === "SIGS接诉即办" ? "/" : item === "典型问题" ? "/typical" : "/tickets")}
-                className={`mx-1 h-10 rounded-md px-4 text-sm transition hover:bg-white/12 ${item === "SIGS接诉即办" ? "bg-white/18 font-semibold ring-1 ring-white/20" : ""}`}
+          <nav className="hidden flex-1 items-center justify-center gap-8 lg:flex">
+            {navItems.map((item) => (
+              <Link
+                key={`${item.label}-${item.to}`}
+                to={item.to}
+                className={[
+                  "relative flex h-[84px] items-center text-sm font-medium transition duration-200",
+                  isCurrent(item) ? "text-ai-primary" : "text-ai-body hover:text-ai-title"
+                ].join(" ")}
               >
-                {item}
-              </button>
+                {item.label}
+                {isCurrent(item) && <span className="motion-underline absolute bottom-0 left-1/2 h-1 w-9 -translate-x-1/2 rounded-t-full bg-ai-primary" />}
+              </Link>
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-4 px-5">
-            <button className="hidden h-9 w-9 items-center justify-center rounded-full hover:bg-white/10 sm:flex" title="检索">
-              <Search size={18} />
+          <div className="ml-auto flex shrink-0 items-center gap-5">
+            <button className="hidden text-ai-body transition duration-200 hover:text-ai-title sm:flex" title="搜索事项">
+              <Search size={20} strokeWidth={1.8} />
             </button>
-            <button className="hidden h-9 w-9 items-center justify-center rounded-full hover:bg-white/10 sm:flex" title="通知">
-              <Bell size={18} />
+            <button className="hidden text-ai-body transition duration-200 hover:text-ai-title sm:flex" title="通知">
+              <Bell size={20} strokeWidth={1.8} />
             </button>
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15">
-                <UserRound size={18} />
-              </div>
-              <div className="hidden text-sm sm:block">
-                <div>{user.name}</div>
-                <div className="text-xs text-tsinghua-100">{user.role === "admin" ? "管理员" : "用户"}</div>
-              </div>
+            <div className="relative">
+              <button
+                onClick={() => setUserMenuOpen((open) => !open)}
+                className="flex items-center gap-3 text-left"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-ai-primary text-sm font-semibold text-white shadow-sm">
+                  {initial || <UserRound size={18} />}
+                </div>
+                <div className="hidden leading-tight sm:block">
+                  <div className="text-sm font-semibold text-ai-title">{user.name}</div>
+                  <div className="mt-0.5 text-xs text-ai-body">{roleLabel}</div>
+                </div>
+                <ChevronDown size={16} className="hidden text-ai-body sm:block" />
+              </button>
+              {userMenuOpen && (
+                <div className="motion-popover absolute right-0 mt-3 w-32 rounded-xl border border-ai-border bg-white p-1 shadow-[0_12px_30px_rgba(17,17,17,0.08)]">
+                  <button
+                    onClick={onLogout}
+                    className="h-9 w-full rounded-lg px-3 text-left text-sm text-ai-body transition duration-200 hover:bg-[#F6F6FA] hover:text-ai-title"
+                  >
+                    退出登录
+                  </button>
+                </div>
+              )}
             </div>
-            <button onClick={onLogout} className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-white/10" title="退出">
-              <LogOut size={18} />
-            </button>
           </div>
         </div>
       </header>
 
-      <div className="flex">
-        <aside className="sticky top-20 hidden h-[calc(100vh-5rem)] w-64 shrink-0 border-r border-slate-200/80 bg-white/95 px-4 py-5 shadow-sm lg:block">
-          <div className="mb-4 flex items-center gap-2 px-3 text-sm font-semibold text-tsinghua-800">
-            <Layers size={18} />
-            应用菜单
-          </div>
-          <div className="space-y-2">
-            <SidebarLink to="/" icon={Home}>事项首页</SidebarLink>
-            <SidebarLink to="/new" icon={FilePlus2}>提出意见</SidebarLink>
-            <SidebarLink to="/tickets" icon={ClipboardList}>我的事项</SidebarLink>
-            <SidebarLink to="/typical" icon={Megaphone}>典型问题发布</SidebarLink>
-            {user.role === "admin" && <SidebarLink to="/admin" icon={ShieldCheck}>后台管理</SidebarLink>}
-          </div>
+      <main className="min-h-[calc(100vh-84px)] px-5 py-8 sm:px-8">
+        <div className="page-fade mx-auto w-full max-w-7xl">{children}</div>
+      </main>
 
-          <div className="mt-8 rounded-md bg-tsinghua-50 p-4 text-sm text-tsinghua-900 ring-1 ring-tsinghua-100">
-            <div className="mb-2 flex items-center gap-2 font-semibold">
-              <ListChecks size={16} />
-              办理提示
-            </div>
-            <p className="leading-6">请尽量做到一事一条，便于责任单位准确定位并及时办理。</p>
-          </div>
-        </aside>
-
-        <main className="min-w-0 flex-1">
-          <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">{children}</div>
-        </main>
-      </div>
+      <button className="fixed bottom-6 right-6 z-30 flex h-14 items-center gap-3 rounded-2xl bg-ai-title px-5 text-sm font-semibold text-white shadow-[0_16px_40px_rgba(17,17,17,0.18)] transition duration-200 hover:-translate-y-0.5 hover:brightness-110">
+        <Bot size={20} />
+        智能助手
+      </button>
     </div>
   );
 }
