@@ -72,6 +72,20 @@ async function initDb() {
   `);
 
   await run(`
+    CREATE TABLE IF NOT EXISTS admins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER UNIQUE NOT NULL,
+      level INTEGER NOT NULL DEFAULT 2 CHECK(level IN (0, 1, 2)),
+      department TEXT NOT NULL,
+      assigned_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (assigned_by) REFERENCES users(id)
+    )
+  `);
+
+  await run(`
     CREATE TABLE IF NOT EXISTS tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -165,8 +179,38 @@ async function initDb() {
 
 async function migrateSchema() {
   const userColumns = await all("PRAGMA table_info(users)");
+  if (!userColumns.some((item) => item.name === "password")) {
+    await run("ALTER TABLE users ADD COLUMN password TEXT");
+    await run("UPDATE users SET password = ? WHERE password IS NULL OR password = ''", [
+      bcrypt.hashSync("123456", 10)
+    ]);
+  }
   if (!userColumns.some((item) => item.name === "department")) {
     await run("ALTER TABLE users ADD COLUMN department TEXT");
+  }
+
+  const adminTable = await get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admins'");
+  if (adminTable?.sql && !adminTable.sql.includes("0, 1, 2") && !adminTable.sql.includes("0,1,2")) {
+    await run("ALTER TABLE admins RENAME TO admins_old");
+    await run(`
+      CREATE TABLE admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER UNIQUE NOT NULL,
+        level INTEGER NOT NULL DEFAULT 2 CHECK(level IN (0, 1, 2)),
+        department TEXT NOT NULL,
+        assigned_by INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (assigned_by) REFERENCES users(id)
+      )
+    `);
+    await run(`
+      INSERT INTO admins (id, user_id, level, department, assigned_by, created_at, updated_at)
+      SELECT id, user_id, level, department, assigned_by, created_at, updated_at
+      FROM admins_old
+    `);
+    await run("DROP TABLE admins_old");
   }
 
   const ticketColumns = await all("PRAGMA table_info(tickets)");
@@ -185,28 +229,47 @@ async function migrateSchema() {
 async function seedDepartmentAdmins() {
   const password = bcrypt.hashSync("123456", 10);
   const accounts = [
-    ["admin", "党政办管理员", "010-62780000", "党政办"],
-    ["admin2", "信数中心管理员", "010-62780001", "信数中心"],
-    ["xszx_admin", "信数中心管理员", "010-62780001", "信数中心"],
-    ["xgb_admin", "学工办管理员", "010-62780002", "学工办"],
-    ["pyc_admin", "培养处管理员", "010-62780003", "培养处"],
-    ["cwb_admin", "财务办管理员", "010-62780004", "财务办"],
-    ["rsb_admin", "人事办管理员", "010-62780005", "人事办"]
+    ["super_admin", "超级管理员", "010-62789999", "党政办", 0],
+    ["admin", "张明", "010-62780000", "党政办", 1],
+    ["admin2", "李晨", "010-62780001", "信数中心", 2],
+    ["xszx_admin", "周宁", "010-62780001", "信数中心", 2],
+    ["xgb_admin", "王芳", "010-62780002", "学工办", 2],
+    ["pyc_admin", "陈静", "010-62780003", "培养处", 2],
+    ["cwb_admin", "赵磊", "010-62780004", "财务办", 2],
+    ["rsb_admin", "刘洋", "010-62780005", "人事办", 2]
   ];
 
-  for (const [username, name, phone, department] of accounts) {
+  for (const [username, name, phone, department, level] of accounts) {
     const existing = await get("SELECT id FROM users WHERE username = ?", [username]);
     if (existing) {
-      await run("UPDATE users SET name = ?, phone = ?, role = 'admin', department = ? WHERE username = ?", [
+      await run("UPDATE users SET name = ?, phone = ? WHERE username = ?", [
         name,
         phone,
-        department,
         username
       ]);
     } else {
       await run(
         "INSERT INTO users (username, password, name, phone, role, department) VALUES (?, ?, ?, ?, 'admin', ?)",
         [username, password, name, phone, department]
+      );
+    }
+
+    const user = await get("SELECT id, role FROM users WHERE username = ?", [username]);
+    const adminRecord = await get("SELECT id FROM admins WHERE user_id = ?", [user.id]);
+
+    if (username === "super_admin") {
+      await run("UPDATE users SET role = 'admin', department = ? WHERE id = ?", [department, user.id]);
+    }
+
+    if (adminRecord && username === "super_admin") {
+      await run(
+        "UPDATE admins SET level = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+        [level, department, user.id]
+      );
+    } else if (!adminRecord && (user.role === "admin" || username === "super_admin")) {
+      await run(
+        "INSERT INTO admins (user_id, level, department, assigned_by) VALUES (?, ?, ?, ?)",
+        [user.id, level, department, null]
       );
     }
   }

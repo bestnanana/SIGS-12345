@@ -23,9 +23,10 @@ start("api", ["server/index.js"]);
 start("web", [
   path.join(root, "node_modules", "vite", "bin", "vite.js"),
   "preview",
+  "--configLoader",
+  "native",
   "--host",
   "0.0.0.0",
   "--port",
-  "5173",
-  "client"
+  "5173"
 ]);

@@ -2,10 +2,15 @@ import React, { useState } from "react";
 import { Bell, Bot, ChevronDown, Search, UserRound } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-const navItems = [
-  { label: "提出意见", to: "/new" },
+const userNavItems = [
   { label: "首页", to: "/" },
+  { label: "提出意见", to: "/new" },
   { label: "我的申请", to: "/tickets" },
+  { label: "典型问题", to: "/typical" }
+];
+
+const adminNavItems = [
+  { label: "后台工作台", to: "/admin" },
   { label: "典型问题", to: "/typical" }
 ];
 
@@ -26,16 +31,29 @@ function LogoMark() {
   );
 }
 
-export default function Layout({ children, user, onLogout }) {
+export default function Layout({ children, user, actualUser = user, onLogout, onViewRoleChange }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const roleLabel = user.role === "admin" ? "管理员" : "用户";
+  const roleLabel = user.role === "admin"
+    ? Number(user.admin_level) === 0
+      ? "超级管理员"
+      : `${Number(user.admin_level) === 1 ? "1级" : "2级"}管理员`
+    : "用户";
   const initial = (user.name || roleLabel || "用").trim().slice(0, 1).toUpperCase();
+  const navItems = user.role === "admin" ? adminNavItems : userNavItems;
+  const isActualAdmin = actualUser.role === "admin";
+  const isAdminArea = user.role === "admin" && location.pathname.startsWith("/admin");
+  const mainClassName = isAdminArea
+    ? "min-h-[calc(100vh-84px)] px-3 py-5 sm:px-5 lg:px-6"
+    : "min-h-[calc(100vh-84px)] px-5 py-8 sm:px-8";
+  const contentClassName = isAdminArea
+    ? "page-fade mx-auto w-full max-w-[1840px]"
+    : "page-fade mx-auto w-full max-w-7xl";
 
   function isCurrent(item) {
     if (item.to === "/") return location.pathname === "/";
-    if (item.label === "我的申请") return location.pathname === "/tickets";
+    if (item.to === "/tickets") return location.pathname === "/tickets";
     return location.pathname.startsWith(item.to);
   }
 
@@ -43,7 +61,7 @@ export default function Layout({ children, user, onLogout }) {
     <div className="page-shell">
       <header className="sticky top-0 z-20 h-[84px] border-b border-ai-border bg-white">
         <div className="mx-auto flex h-full max-w-[1720px] items-center gap-6 px-6 lg:px-10">
-          <button onClick={() => navigate("/")} className="min-w-0 shrink-0 text-left">
+          <button onClick={() => navigate(user.role === "admin" ? "/admin" : "/")} className="min-w-0 shrink-0 text-left">
             <LogoMark />
           </button>
 
@@ -85,7 +103,44 @@ export default function Layout({ children, user, onLogout }) {
                 <ChevronDown size={16} className="hidden text-ai-body sm:block" />
               </button>
               {userMenuOpen && (
-                <div className="motion-popover absolute right-0 mt-3 w-32 rounded-xl border border-ai-border bg-white p-1 shadow-[0_12px_30px_rgba(17,17,17,0.08)]">
+                <div className="motion-popover absolute right-0 mt-3 w-48 rounded-xl border border-ai-border bg-white p-1 shadow-[0_12px_30px_rgba(17,17,17,0.08)]">
+                  <div className="border-b border-ai-border px-3 py-2">
+                    <div className="truncate text-sm font-semibold text-ai-title">{user.name}</div>
+                    <div className="mt-1 truncate text-xs text-ai-body">
+                      所属部门：{user.department || "未设置"}
+                    </div>
+                  </div>
+                  {isActualAdmin ? (
+                    <div className="border-b border-ai-border p-1">
+                      <div className="px-2 py-1 text-xs font-semibold text-ai-muted">切换身份</div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onViewRoleChange?.("admin");
+                          setUserMenuOpen(false);
+                          navigate("/admin");
+                        }}
+                        className={`h-9 w-full rounded-lg px-3 text-left text-sm transition duration-200 ${
+                          user.role === "admin" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
+                        }`}
+                      >
+                        管理员身份
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onViewRoleChange?.("user");
+                          setUserMenuOpen(false);
+                          navigate("/");
+                        }}
+                        className={`h-9 w-full rounded-lg px-3 text-left text-sm transition duration-200 ${
+                          user.role !== "admin" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
+                        }`}
+                      >
+                        普通用户身份
+                      </button>
+                    </div>
+                  ) : null}
                   <button
                     onClick={onLogout}
                     className="h-9 w-full rounded-lg px-3 text-left text-sm text-ai-body transition duration-200 hover:bg-[#F6F6FA] hover:text-ai-title"
@@ -99,8 +154,8 @@ export default function Layout({ children, user, onLogout }) {
         </div>
       </header>
 
-      <main className="min-h-[calc(100vh-84px)] px-5 py-8 sm:px-8">
-        <div className="page-fade mx-auto w-full max-w-7xl">{children}</div>
+      <main className={mainClassName}>
+        <div className={contentClassName}>{children}</div>
       </main>
 
       <button className="fixed bottom-6 right-6 z-30 flex h-14 items-center gap-3 rounded-2xl bg-ai-title px-5 text-sm font-semibold text-white shadow-[0_16px_40px_rgba(17,17,17,0.18)] transition duration-200 hover:-translate-y-0.5 hover:brightness-110">

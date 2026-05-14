@@ -23,9 +23,10 @@ function start(name, command, args) {
 start("api", process.execPath, ["server/index.js"]);
 start("web", process.execPath, [
   path.join(root, "node_modules", "vite", "bin", "vite.js"),
+  "--configLoader",
+  "native",
   "--host",
   "0.0.0.0",
   "--port",
-  "5173",
-  "client"
+  "5173"
 ]);

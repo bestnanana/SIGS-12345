@@ -15,6 +15,7 @@ const port = process.env.PORT || 3001;
 const jwtSecret = process.env.JWT_SECRET || "dev-secret";
 const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
+const SUPER_ADMIN_LEVEL = 0;
 
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -47,8 +48,35 @@ app.use("/uploads", express.static(uploadDir));
 const distPath = path.join(__dirname, "..", "client", "dist");
 app.use(express.static(distPath));
 
+function adminLevelOf(user) {
+  if (user?.role !== "admin") return null;
+  return Number(user.admin_level ?? 2);
+}
+
+function canResetPasswordByLevel(operatorLevel, targetRole, targetLevel) {
+  if (operatorLevel === SUPER_ADMIN_LEVEL) return true;
+  if (operatorLevel === 1) return targetRole !== "admin" || targetLevel === 2;
+  return targetRole !== "admin";
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    phone: user.phone,
+    role: user.role,
+    department: user.department,
+    admin_level: adminLevelOf(user)
+  };
+}
+
 function signUser(user) {
-  return jwt.sign({ id: user.id, role: user.role, department: user.department }, jwtSecret, { expiresIn: "7d" });
+  return jwt.sign(
+    { id: user.id, role: user.role, department: user.department, admin_level: adminLevelOf(user) },
+    jwtSecret,
+    { expiresIn: "7d" }
+  );
 }
 
 function auth(req, res, next) {
@@ -64,9 +92,43 @@ function auth(req, res, next) {
   }
 }
 
-function adminOnly(req, res, next) {
-  if (req.user?.role !== "admin") return res.status(403).json({ message: "需要管理员权限" });
-  next();
+async function adminOnly(req, res, next) {
+  try {
+    const user = await get(
+      `SELECT u.role, u.department, a.level AS admin_level
+       FROM users u
+       LEFT JOIN admins a ON a.user_id = u.id
+       WHERE u.id = ?`,
+      [req.user.id]
+    );
+    if (user?.role !== "admin") return res.status(403).json({ message: "需要管理员权限" });
+    req.user.role = user.role;
+    req.user.department = user.department;
+    req.user.admin_level = adminLevelOf(user);
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function firstLevelAdminOnly(req, res, next) {
+  try {
+    const user = await get(
+      `SELECT u.role, u.department, a.level AS admin_level
+       FROM users u
+       LEFT JOIN admins a ON a.user_id = u.id
+       WHERE u.id = ?`,
+      [req.user.id]
+    );
+    if (user?.role !== "admin") return res.status(403).json({ message: "需要管理员权限" });
+    if (![SUPER_ADMIN_LEVEL, 1].includes(adminLevelOf(user))) return res.status(403).json({ message: "需要1级或超级管理员权限" });
+    req.user.role = user.role;
+    req.user.department = user.department;
+    req.user.admin_level = adminLevelOf(user);
+    next();
+  } catch (error) {
+    next(error);
+  }
 }
 
 function mapTicket(row) {
@@ -111,9 +173,17 @@ async function ticketDetails(id, viewer) {
   );
   const ratings = await all("SELECT type, COUNT(*) AS count FROM ratings WHERE ticket_id = ? GROUP BY type", [id]);
   const transfers = await all(
-    `SELECT tr.*, u.name AS operator_name
+    `SELECT tr.*, u.name AS operator_name, target_admin.name AS target_operator_name
      FROM transfers tr
      JOIN users u ON u.id = tr.operator_id
+     LEFT JOIN users target_admin ON target_admin.id = (
+       SELECT a.user_id
+       FROM admins a
+       JOIN users au ON au.id = a.user_id
+       WHERE au.role = 'admin' AND a.department = tr.to_department
+       ORDER BY a.level ASC, a.id ASC
+       LIMIT 1
+     )
      WHERE tr.ticket_id = ?
      ORDER BY tr.created_at ASC`,
     [id]
@@ -141,23 +211,173 @@ async function saveFiles(files, ticketId = null, replyId = null) {
 
 app.post("/api/auth/login", async (req, res) => {
   const { username, password } = req.body;
-  const user = await get("SELECT * FROM users WHERE username = ?", [username]);
+  const user = await get(
+    `SELECT u.*, a.level AS admin_level
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.username = ?`,
+    [username]
+  );
   if (!user || !bcrypt.compareSync(password, user.password)) {
     return res.status(401).json({ message: "用户名或密码错误" });
   }
   res.json({
     token: signUser(user),
-    user: { id: user.id, username: user.username, name: user.name, phone: user.phone, role: user.role, department: user.department }
+    user: publicUser(user)
   });
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
-  const user = await get("SELECT id, username, name, phone, role, department FROM users WHERE id = ?", [req.user.id]);
-  res.json(user);
+  const user = await get(
+    `SELECT u.id, u.username, u.name, u.phone, u.role, u.department, a.level AS admin_level
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.id = ?`,
+    [req.user.id]
+  );
+  res.json(publicUser(user));
 });
 
 app.get("/api/departments", auth, async (req, res) => {
   res.json(adminDepartments);
+});
+
+app.get("/api/admin/users", auth, firstLevelAdminOnly, async (req, res) => {
+  const users = await all(
+    `SELECT u.id, u.username, u.name, u.phone, u.role, u.department, u.created_at,
+            a.level AS admin_level, a.department AS admin_department, a.updated_at AS admin_updated_at,
+            assigner.name AS assigned_by_name
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     LEFT JOIN users assigner ON assigner.id = a.assigned_by
+     ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END,
+              COALESCE(a.level, 9) ASC,
+              u.id ASC`
+  );
+  res.json(users.map((user) => ({
+    ...user,
+    admin_level: user.role === "admin" ? Number(user.admin_level ?? 2) : null
+  })));
+});
+
+app.get("/api/admin/password-users", auth, adminOnly, async (req, res) => {
+  const currentLevel = Number(req.user.admin_level ?? 2);
+  const users = await all(
+    `SELECT u.id, u.username, u.name, u.phone, u.role, u.department, u.created_at,
+            a.level AS admin_level, a.department AS admin_department
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.id <> ?
+     ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END,
+              COALESCE(a.level, 9) ASC,
+              u.id ASC`,
+    [req.user.id]
+  );
+
+  res.json(users.map((item) => {
+    const targetLevel = item.role === "admin" ? Number(item.admin_level ?? 2) : null;
+    return {
+      ...item,
+      admin_level: targetLevel,
+      can_reset_password: canResetPasswordByLevel(currentLevel, item.role, targetLevel)
+    };
+  }));
+});
+
+app.patch("/api/admin/users/:id/admin", auth, firstLevelAdminOnly, async (req, res) => {
+  const { role = "admin", level, department } = req.body;
+  const adminLevel = Number(level);
+  const userId = Number(req.params.id);
+  const operatorLevel = Number(req.user.admin_level ?? 2);
+
+  if (!Number.isInteger(userId)) return res.status(400).json({ message: "无效用户" });
+  if (!["user", "admin"].includes(role)) return res.status(400).json({ message: "请选择有效身份" });
+  if (role === "admin" && ![SUPER_ADMIN_LEVEL, 1, 2].includes(adminLevel)) return res.status(400).json({ message: "请选择有效管理员等级" });
+  if (role === "admin" && adminLevel === SUPER_ADMIN_LEVEL && operatorLevel !== SUPER_ADMIN_LEVEL) {
+    return res.status(403).json({ message: "只有超级管理员可以授予超级管理员权限" });
+  }
+  if (role === "admin" && !adminDepartments.includes(department)) return res.status(400).json({ message: "请选择有效部门" });
+  if (userId === req.user.id && (role !== "admin" || adminLevel !== operatorLevel)) {
+    return res.status(400).json({ message: "不能降低自己的管理员权限" });
+  }
+
+  const target = await get(
+    `SELECT u.id, u.role, a.level AS admin_level
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.id = ?`,
+    [userId]
+  );
+  if (!target) return res.status(404).json({ message: "用户不存在" });
+  const targetLevel = target.role === "admin" ? Number(target.admin_level ?? 2) : null;
+  if (targetLevel === SUPER_ADMIN_LEVEL && operatorLevel !== SUPER_ADMIN_LEVEL) {
+    return res.status(403).json({ message: "只有超级管理员可以调整超级管理员权限" });
+  }
+
+  if (role === "user") {
+    await run("UPDATE users SET role = 'user' WHERE id = ?", [userId]);
+    await run("DELETE FROM admins WHERE user_id = ?", [userId]);
+
+    const updatedUser = await get(
+      `SELECT u.id, u.username, u.name, u.phone, u.role, u.department, a.level AS admin_level
+       FROM users u
+       LEFT JOIN admins a ON a.user_id = u.id
+       WHERE u.id = ?`,
+      [userId]
+    );
+    return res.json(publicUser(updatedUser));
+  }
+
+  await run("UPDATE users SET role = 'admin', department = ? WHERE id = ?", [department, userId]);
+
+  const adminRecord = await get("SELECT id FROM admins WHERE user_id = ?", [userId]);
+  if (adminRecord) {
+    await run(
+      "UPDATE admins SET level = ?, department = ?, assigned_by = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+      [adminLevel, department, req.user.id, userId]
+    );
+  } else {
+    await run(
+      "INSERT INTO admins (user_id, level, department, assigned_by) VALUES (?, ?, ?, ?)",
+      [userId, adminLevel, department, req.user.id]
+    );
+  }
+
+  const updated = await get(
+    `SELECT u.id, u.username, u.name, u.phone, u.role, u.department, a.level AS admin_level
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.id = ?`,
+    [userId]
+  );
+  res.json(publicUser(updated));
+});
+
+app.patch("/api/admin/users/:id/password", auth, adminOnly, async (req, res) => {
+  const { password } = req.body;
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId)) return res.status(400).json({ message: "无效用户" });
+  if (userId === req.user.id) return res.status(400).json({ message: "不能在此处重置自己的密码" });
+  if (!password || String(password).length < 6) {
+    return res.status(400).json({ message: "新密码至少需要6位" });
+  }
+
+  const operatorLevel = Number(req.user.admin_level ?? 2);
+  const target = await get(
+    `SELECT u.id, u.role, a.level AS admin_level
+     FROM users u
+     LEFT JOIN admins a ON a.user_id = u.id
+     WHERE u.id = ?`,
+    [userId]
+  );
+  if (!target) return res.status(404).json({ message: "用户不存在" });
+
+  const targetLevel = target.role === "admin" ? Number(target.admin_level ?? 2) : null;
+  const canReset = canResetPasswordByLevel(operatorLevel, target.role, targetLevel);
+  if (!canReset) return res.status(403).json({ message: "只能重置低一级管理员或普通用户的密码" });
+
+  await run("UPDATE users SET password = ? WHERE id = ?", [bcrypt.hashSync(String(password), 10), userId]);
+  res.json({ ok: true });
 });
 
 app.get("/api/tickets", auth, async (req, res) => {

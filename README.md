@@ -9,21 +9,28 @@ npm install --cache ./.npm-cache
 npm run dev
 ```
 
+Windows PowerShell 如遇到 `npm.ps1` 执行策略限制，可使用：
+
+```bash
+npm.cmd run dev
+```
+
 前端地址：http://localhost:5173
 后端地址：http://localhost:3001
 
-前端会直接请求 `http://localhost:3001/api`，无需额外配置 Vite 代理。
+开发模式下前端统一请求 `/api` 和 `/uploads`，Vite 会自动代理到 `http://localhost:3001`。如需调整后端地址，可在启动前设置 `API_TARGET`。
 
 ## 演示账号
 
 - 学生用户：`student` / `123456`
-- 党政办管理员：`admin` / `123456`
-- 第二管理员（信数中心）：`admin2` / `123456`
-- 信数中心管理员：`xszx_admin` / `123456`
-- 学工办管理员：`xgb_admin` / `123456`
-- 培养处管理员：`pyc_admin` / `123456`
-- 财务办管理员：`cwb_admin` / `123456`
-- 人事办管理员：`rsb_admin` / `123456`
+- 超级管理员：`super_admin` / `123456`
+- 张明（党政办，1级管理员）：`admin` / `123456`
+- 李晨（信数中心，2级管理员）：`admin2` / `123456`
+- 周宁（信数中心，2级管理员）：`xszx_admin` / `123456`
+- 王芳（学工办，2级管理员）：`xgb_admin` / `123456`
+- 陈静（培养处，2级管理员）：`pyc_admin` / `123456`
+- 赵磊（财务办，2级管理员）：`cwb_admin` / `123456`
+- 刘洋（人事办，2级管理员）：`rsb_admin` / `123456`
 
 ## Minimax 配置
 

@@ -27,6 +27,12 @@ function AttachmentList({ items }) {
   );
 }
 
+function formatTransferTitle(item) {
+  const fromOperator = item.operator_name || "管理员";
+  const targetOperator = item.target_operator_name || "管理员";
+  return `${item.from_department}的${fromOperator} 转办给 ${item.to_department}的${targetOperator}`;
+}
+
 export default function TicketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -118,7 +124,7 @@ export default function TicketDetailPage() {
             {transfers.map((item) => (
               <div key={item.id} className="rounded-2xl border border-ai-border bg-ai-bg p-4 text-sm">
                 <div className="flex flex-wrap justify-between gap-3">
-                  <span className="font-medium text-ai-title">{item.from_department} 转办至 {item.to_department}</span>
+                  <span className="font-medium text-ai-title">{formatTransferTitle(item)}</span>
                   <span className="text-ai-muted">{formatTime(item.created_at)}</span>
                 </div>
                 {item.note ? <div className="mt-2 text-slate-600">说明：{item.note}</div> : null}
