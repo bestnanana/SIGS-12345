@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Bell, Bot, ChevronDown, Search, UserRound } from "lucide-react";
+import { Bell, ChevronDown, Search, UserRound } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const userNavItems = [
@@ -157,11 +157,6 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
       <main className={mainClassName}>
         <div className={contentClassName}>{children}</div>
       </main>
-
-      <button className="fixed bottom-6 right-6 z-30 flex h-14 items-center gap-3 rounded-2xl bg-ai-title px-5 text-sm font-semibold text-white shadow-[0_16px_40px_rgba(17,17,17,0.18)] transition duration-200 hover:-translate-y-0.5 hover:brightness-110">
-        <Bot size={20} />
-        智能助手
-      </button>
     </div>
   );
 }

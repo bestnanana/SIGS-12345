@@ -412,9 +412,9 @@ export default function AdminPage() {
 
       <div className="min-w-0">
         {activeView === "tickets" ? (
-          <div className="grid gap-5 xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] 2xl:gap-6">
-            <section className="app-card overflow-hidden p-0">
-              <div className="flex items-center justify-between border-b border-ai-border px-6 py-5">
+          <div className="grid items-start gap-5 xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] 2xl:gap-6">
+            <section className="app-card flex max-h-[calc(100vh-7.5rem)] min-h-[680px] flex-col overflow-hidden p-0">
+              <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-6 py-5">
                 <div>
                   <div className="text-2xl font-semibold tracking-tight text-ai-title">学生事项处理</div>
                   <div className="mt-2 text-sm text-ai-body">
@@ -431,7 +431,7 @@ export default function AdminPage() {
                 </button>
               </div>
 
-              <div className="max-h-[calc(100vh-12rem)] overflow-y-auto p-4 scrollbar-thin">
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-4 scrollbar-thin">
                 {loading ? (
                   <div className="p-8 text-center text-sm text-slate-500">加载中...</div>
                 ) : error ? (

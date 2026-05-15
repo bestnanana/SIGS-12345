@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { initDb, run, get, all, adminDepartments } = require("./db");
 const { askMinimax } = require("./minimax");
+const logger = require("./logger");
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -41,6 +42,7 @@ const upload = multer({
 });
 
 app.use(cors());
+app.use(logger.requestLogger);
 app.use(express.json());
 app.use("/uploads", express.static(uploadDir));
 
@@ -68,6 +70,16 @@ function publicUser(user) {
     role: user.role,
     department: user.department,
     admin_level: adminLevelOf(user)
+  };
+}
+
+function publicHandler(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.name,
+    department: user.department,
+    admin_level: Number(user.admin_level ?? 2)
   };
 }
 
@@ -172,6 +184,16 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   const ratings = await all("SELECT type, COUNT(*) AS count FROM ratings WHERE ticket_id = ? GROUP BY type", [id]);
+  const currentHandler = await get(
+    `SELECT u.id, u.name, u.department, a.level AS admin_level
+     FROM admins a
+     JOIN users u ON u.id = a.user_id
+     WHERE u.role = 'admin' AND a.department = ?
+     ORDER BY CASE WHEN a.level = 2 THEN 0 WHEN a.level = 1 THEN 1 ELSE 2 END,
+              a.id ASC
+     LIMIT 1`,
+    [ticket.current_department || ticket.department || "党政办"]
+  );
   const transfers = await all(
     `SELECT tr.*, u.name AS operator_name, target_admin.name AS target_operator_name
      FROM transfers tr
@@ -181,7 +203,8 @@ async function ticketDetails(id, viewer) {
        FROM admins a
        JOIN users au ON au.id = a.user_id
        WHERE au.role = 'admin' AND a.department = tr.to_department
-       ORDER BY a.level ASC, a.id ASC
+       ORDER BY CASE WHEN a.level = 2 THEN 0 WHEN a.level = 1 THEN 1 ELSE 2 END,
+                a.id ASC
        LIMIT 1
      )
      WHERE tr.ticket_id = ?
@@ -195,6 +218,7 @@ async function ticketDetails(id, viewer) {
     attachments,
     replyAttachments,
     transfers,
+    currentHandler: publicHandler(currentHandler),
     ratings: ratings.reduce((acc, item) => ({ ...acc, [item.type]: item.count }), {})
   };
 }
@@ -219,8 +243,21 @@ app.post("/api/auth/login", async (req, res) => {
     [username]
   );
   if (!user || !bcrypt.compareSync(password, user.password)) {
+    logger.warn("auth_login_failed", {
+      request_id: req.requestId,
+      username,
+      reason: "invalid_credentials"
+    });
     return res.status(401).json({ message: "用户名或密码错误" });
   }
+  logger.info("auth_login_success", {
+    request_id: req.requestId,
+    user_id: user.id,
+    username: user.username,
+    role: user.role,
+    department: user.department,
+    admin_level: adminLevelOf(user)
+  });
   res.json({
     token: signUser(user),
     user: publicUser(user)
@@ -325,6 +362,12 @@ app.patch("/api/admin/users/:id/admin", auth, firstLevelAdminOnly, async (req, r
        WHERE u.id = ?`,
       [userId]
     );
+    logger.info("admin_permission_updated", {
+      request_id: req.requestId,
+      operator_id: req.user.id,
+      target_user_id: userId,
+      role: "user"
+    });
     return res.json(publicUser(updatedUser));
   }
 
@@ -350,6 +393,14 @@ app.patch("/api/admin/users/:id/admin", auth, firstLevelAdminOnly, async (req, r
      WHERE u.id = ?`,
     [userId]
   );
+  logger.info("admin_permission_updated", {
+    request_id: req.requestId,
+    operator_id: req.user.id,
+    target_user_id: userId,
+    role: "admin",
+    department,
+    admin_level: adminLevel
+  });
   res.json(publicUser(updated));
 });
 
@@ -377,6 +428,11 @@ app.patch("/api/admin/users/:id/password", auth, adminOnly, async (req, res) => 
   if (!canReset) return res.status(403).json({ message: "只能重置低一级管理员或普通用户的密码" });
 
   await run("UPDATE users SET password = ? WHERE id = ?", [bcrypt.hashSync(String(password), 10), userId]);
+  logger.info("admin_password_reset", {
+    request_id: req.requestId,
+    operator_id: req.user.id,
+    target_user_id: userId
+  });
   res.json({ ok: true });
 });
 
@@ -416,6 +472,15 @@ app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) 
     result.lastID
   ]);
 
+  logger.info("ticket_created", {
+    request_id: req.requestId,
+    ticket_id: result.lastID,
+    submitter_id: req.user.id,
+    field,
+    department,
+    attachment_count: req.files?.length || 0,
+    is_anonymous: is_anonymous === "true"
+  });
   res.status(201).json({ id: result.lastID, ai });
 });
 
@@ -438,6 +503,12 @@ app.post("/api/tickets/:id/ratings", auth, async (req, res) => {
     req.user.id,
     type
   ]);
+  logger.info("ticket_rated", {
+    request_id: req.requestId,
+    ticket_id: Number(req.params.id),
+    user_id: req.user.id,
+    type
+  });
   res.json({ ok: true });
 });
 
@@ -486,6 +557,15 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
     req.params.id
   ]);
 
+  logger.info("ticket_replied", {
+    request_id: req.requestId,
+    ticket_id: Number(req.params.id),
+    reply_id: result.lastID,
+    operator_id: req.user.id,
+    department: user.department,
+    status: status || "replied",
+    attachment_count: req.files?.length || 0
+  });
   res.status(201).json({ id: result.lastID });
 });
 
@@ -501,6 +581,13 @@ app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => 
     return res.status(403).json({ message: "只有当前承办部门可以更新状态" });
   }
   await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status, req.params.id]);
+  logger.info("ticket_status_updated", {
+    request_id: req.requestId,
+    ticket_id: Number(req.params.id),
+    operator_id: req.user.id,
+    department: user.department,
+    status
+  });
   res.json({ ok: true });
 });
 
@@ -526,6 +613,14 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
     to_department,
     req.params.id
   ]);
+  logger.info("ticket_transferred", {
+    request_id: req.requestId,
+    ticket_id: Number(req.params.id),
+    operator_id: req.user.id,
+    from_department: ticket.current_department || "党政办",
+    to_department,
+    has_note: Boolean(note)
+  });
   res.json({ ok: true });
 });
 
@@ -537,6 +632,12 @@ app.patch("/api/admin/tickets/:id/publish", auth, adminOnly, async (req, res) =>
      WHERE id = ?`,
     [is_published ? 1 : 0, is_published ? 1 : 0, req.params.id]
   );
+  logger.info("ticket_publish_updated", {
+    request_id: req.requestId,
+    ticket_id: Number(req.params.id),
+    operator_id: req.user.id,
+    is_published: Boolean(is_published)
+  });
   res.json({ ok: true });
 });
 
@@ -555,6 +656,13 @@ app.get("/api/public/typical-tickets", async (req, res) => {
 });
 
 app.use((err, req, res, next) => {
+  logger.error("request_error", {
+    request_id: req.requestId,
+    method: req.method,
+    path: req.originalUrl || req.url,
+    user_id: req.user?.id,
+    error: err
+  });
   if (err instanceof multer.MulterError || err.message === "不支持的附件类型") {
     return res.status(400).json({ message: err.message });
   }
@@ -574,11 +682,23 @@ app.get("*", (req, res) => {
 initDb()
   .then(() => {
     app.listen(port, () => {
+      logger.info("server_started", { port });
       console.log(`API server running at http://localhost:${port}`);
       console.log("Seed users: student/123456, admin/123456");
     });
   })
   .catch((error) => {
+    logger.error("server_start_failed", { error });
     console.error("Failed to init database", error);
     process.exit(1);
   });
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("process_unhandled_rejection", { error: reason instanceof Error ? reason : { message: String(reason) } });
+});
+
+process.on("uncaughtException", (error) => {
+  logger.error("process_uncaught_exception", { error });
+  console.error(error);
+  process.exit(1);
+});

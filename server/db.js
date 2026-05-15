@@ -2,14 +2,141 @@ const fs = require("fs");
 const path = require("path");
 const initSqlJs = require("sql.js");
 const bcrypt = require("bcryptjs");
+const logger = require("./logger");
 
-const dbPath = path.join(__dirname, "data", "app.db");
+const dataDir = path.join(__dirname, "data");
+const dbPath = path.join(dataDir, "app.db");
+const lockPath = path.join(dataDir, "app.db.lock");
+const backupDir = path.join(dataDir, "backups");
 let db;
+let lockFd = null;
+let lockToken = null;
+let bootstrapping = false;
+let protectBootWrites = false;
+let backedUpBeforeWrite = false;
 const adminDepartments = ["信数中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
 
+function normalizeSql(sql) {
+  return String(sql || "").trim().replace(/^--.*$/gm, "").trim().toLowerCase();
+}
+
+function isWriteSql(sql) {
+  const normalized = normalizeSql(sql);
+  if (!normalized) return false;
+  return /^(insert|update|delete|replace|create|alter|drop|truncate|vacuum|reindex|attach|detach)\b/.test(normalized);
+}
+
+function isProcessAlive(pid) {
+  if (!pid || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+function readLockInfo() {
+  try {
+    return JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  } catch (error) {
+    return null;
+  }
+}
+
+function acquireDbLock() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  lockToken = `${process.pid}-${Date.now()}`;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      lockFd = fs.openSync(lockPath, "wx");
+      fs.writeFileSync(lockFd, JSON.stringify({
+        pid: process.pid,
+        token: lockToken,
+        started_at: new Date().toISOString(),
+        db_path: dbPath
+      }, null, 2));
+      return;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+
+      const lockInfo = readLockInfo();
+      if (lockInfo?.pid && isProcessAlive(Number(lockInfo.pid))) {
+        logger.error("db_lock_conflict", {
+          lock_path: lockPath,
+          owner_pid: lockInfo.pid
+        });
+        throw new Error(`数据库保护已阻止启动：app.db 正被进程 ${lockInfo.pid} 使用。请先停止旧后端进程，避免覆盖数据库文件。`);
+      }
+
+      fs.unlinkSync(lockPath);
+    }
+  }
+}
+
+function releaseDbLock() {
+  if (lockFd !== null) {
+    try {
+      fs.closeSync(lockFd);
+    } catch (error) {
+      // Ignore close errors during shutdown.
+    }
+    lockFd = null;
+  }
+
+  const lockInfo = readLockInfo();
+  if (lockInfo?.token === lockToken) {
+    try {
+      fs.unlinkSync(lockPath);
+    } catch (error) {
+      // Ignore cleanup errors during shutdown.
+    }
+  }
+}
+
+function installLockCleanup() {
+  process.once("exit", releaseDbLock);
+  ["SIGINT", "SIGTERM", "SIGHUP"].forEach((signal) => {
+    process.once(signal, () => {
+      releaseDbLock();
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  });
+}
+
+function timestampForFile() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function backupCurrentDb() {
+  if (backedUpBeforeWrite || !fs.existsSync(dbPath)) return;
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupPath = path.join(backupDir, `app.${timestampForFile()}.before-write.db`);
+  fs.copyFileSync(dbPath, backupPath);
+  logger.info("db_backup_created", { backup_path: backupPath });
+  backedUpBeforeWrite = true;
+}
+
 function persist() {
-  const data = db.export();
-  fs.writeFileSync(dbPath, Buffer.from(data));
+  if (lockFd === null) {
+    throw new Error("数据库保护已阻止写入：当前进程没有 app.db 写入锁。");
+  }
+
+  const data = Buffer.from(db.export());
+  if (fs.existsSync(dbPath)) {
+    const current = fs.readFileSync(dbPath);
+    if (current.equals(data)) return;
+  }
+
+  backupCurrentDb();
+  const tmpPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, dbPath);
+  logger.info("db_persisted", {
+    db_path: dbPath,
+    bytes: data.length
+  });
 }
 
 function normalizeParams(params) {
@@ -18,7 +145,11 @@ function normalizeParams(params) {
   return params;
 }
 
-function run(sql, params = []) {
+function run(sql, params = [], options = {}) {
+  if (bootstrapping && protectBootWrites && isWriteSql(sql) && !options.allowBootWrite) {
+    throw new Error("数据库保护已阻止启动阶段写库。现有 app.db 不会被服务端初始化、迁移或种子数据覆盖。");
+  }
+
   const stmt = db.prepare(sql);
   stmt.bind(normalizeParams(params));
   while (stmt.step()) {
@@ -26,7 +157,9 @@ function run(sql, params = []) {
   }
   stmt.free();
   const row = db.exec("SELECT last_insert_rowid() AS lastID, changes() AS changes")[0]?.values?.[0] || [0, 0];
-  persist();
+  if (options.persist !== false && isWriteSql(sql)) {
+    persist();
+  }
   return Promise.resolve({ lastID: row[0], changes: row[1] });
 }
 
@@ -51,14 +184,20 @@ function allSync(sql, params = []) {
 }
 
 async function initDb() {
+  acquireDbLock();
+  installLockCleanup();
+  const existingDb = fs.existsSync(dbPath);
+  protectBootWrites = existingDb && process.env.DB_PROTECT_EXISTING_ON_BOOT !== "0";
+  bootstrapping = true;
+
   const SQL = await initSqlJs({
     locateFile: (file) => path.join(__dirname, "..", "node_modules", "sql.js", "dist", file)
   });
-  db = fs.existsSync(dbPath) ? new SQL.Database(fs.readFileSync(dbPath)) : new SQL.Database();
+  db = existingDb ? new SQL.Database(fs.readFileSync(dbPath)) : new SQL.Database();
 
-  await run("PRAGMA foreign_keys = ON");
+  await run("PRAGMA foreign_keys = ON", [], { persist: false });
 
-  await run(`
+  await ensureTable("users", `
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
@@ -71,7 +210,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("admins", `
     CREATE TABLE IF NOT EXISTS admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER UNIQUE NOT NULL,
@@ -85,7 +224,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("tickets", `
     CREATE TABLE IF NOT EXISTS tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -107,7 +246,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("replies", `
     CREATE TABLE IF NOT EXISTS replies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
@@ -120,7 +259,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("attachments", `
     CREATE TABLE IF NOT EXISTS attachments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER,
@@ -136,7 +275,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("transfers", `
     CREATE TABLE IF NOT EXISTS transfers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
@@ -150,7 +289,7 @@ async function initDb() {
     )
   `);
 
-  await run(`
+  await ensureTable("ratings", `
     CREATE TABLE IF NOT EXISTS ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
@@ -167,17 +306,51 @@ async function initDb() {
 
   const userCount = await get("SELECT COUNT(*) AS count FROM users");
   if (userCount.count === 0) {
+    if (protectBootWrites) {
+      console.warn("数据库保护：现有 app.db 用户表为空，已跳过启动阶段种子用户写入。");
+      bootstrapping = false;
+      return;
+    }
     const password = bcrypt.hashSync("123456", 10);
     await run(
       "INSERT INTO users (username, password, name, phone, role) VALUES (?, ?, ?, ?, ?)",
-      ["student", password, "张同学", "13800000001", "user"]
+      ["student", password, "张同学", "13800000001", "user"],
+      { allowBootWrite: true }
     );
   }
 
-  await seedDepartmentAdmins();
+  if (protectBootWrites) {
+    logger.info("db_boot_seed_skipped", { db_path: dbPath });
+    console.log("数据库保护：已跳过启动阶段管理员种子数据同步，现有 app.db 不会被覆盖。");
+  } else {
+    await seedDepartmentAdmins();
+  }
+  bootstrapping = false;
+}
+
+function tableExists(name) {
+  const stmt = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?");
+  stmt.bind([name]);
+  const exists = stmt.step();
+  stmt.free();
+  return exists;
+}
+
+async function ensureTable(name, createSql) {
+  if (tableExists(name)) return;
+  if (protectBootWrites) {
+    throw new Error(`数据库保护已阻止创建缺失表 ${name}。请先人工备份并确认迁移方案。`);
+  }
+  await run(createSql, [], { allowBootWrite: true });
 }
 
 async function migrateSchema() {
+  if (protectBootWrites) {
+    logger.info("db_boot_migration_skipped", { db_path: dbPath });
+    console.log("数据库保护：已跳过启动阶段 schema 迁移，现有 app.db 不会被 ALTER/UPDATE 覆盖。");
+    return;
+  }
+
   const userColumns = await all("PRAGMA table_info(users)");
   if (!userColumns.some((item) => item.name === "password")) {
     await run("ALTER TABLE users ADD COLUMN password TEXT");

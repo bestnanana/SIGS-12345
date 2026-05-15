@@ -179,6 +179,45 @@ button:not(:disabled):active, a:active {
   .motion-underline {
     animation: underline-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
+
+  .login-stage {
+    position: relative;
+  }
+
+  .login-stage-leave main {
+    animation: login-leave 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .login-hero {
+    animation: login-hero-in 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .login-panel {
+    animation: login-panel-in 680ms 90ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .login-submit {
+    transform: translateZ(0);
+    transition-property: transform, box-shadow, filter, opacity;
+  }
+
+  .login-submit:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 20px 42px rgba(108, 76, 241, 0.3);
+  }
+
+  .login-submit:active:not(:disabled),
+  .login-submit.is-loading {
+    transform: translateY(0) scale(0.985);
+  }
+
+  .login-submit-bar {
+    animation: login-submit-progress 900ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  }
+
+  .login-success-mark {
+    animation: login-success-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
 }
 
 @keyframes page-in {
@@ -222,6 +261,67 @@ button:not(:disabled):active, a:active {
   to {
     opacity: 1;
     transform: translateX(-50%) scaleX(1);
+  }
+}
+
+@keyframes login-hero-in {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes login-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes login-submit-progress {
+  from {
+    width: 0%;
+    opacity: 0.85;
+  }
+  60% {
+    width: 82%;
+    opacity: 1;
+  }
+  to {
+    width: 100%;
+    opacity: 0.55;
+  }
+}
+
+@keyframes login-success-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes login-leave {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.985);
+    filter: blur(8px);
   }
 }
 

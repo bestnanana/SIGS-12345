@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Download, Forward, Paperclip, Star, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Clock3, Download, Forward, MessageSquare, Paperclip, Star, ThumbsDown, ThumbsUp, UserRound } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, serverOrigin } from "../api";
 import { formatTime, statusMap } from "../constants";
@@ -33,6 +33,19 @@ function formatTransferTitle(item) {
   return `${item.from_department}的${fromOperator} 转办给 ${item.to_department}的${targetOperator}`;
 }
 
+function adminLevelLabel(level) {
+  const labels = {
+    0: "超级管理员",
+    1: "一级管理员",
+    2: "二级管理员"
+  };
+  return labels[Number(level)] || "管理员";
+}
+
+function sortByTime(a, b) {
+  return new Date(a.time || 0).getTime() - new Date(b.time || 0).getTime();
+}
+
 export default function TicketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -57,6 +70,49 @@ export default function TicketDetailPage() {
     }, {});
   }, [data]);
 
+  const progressEvents = useMemo(() => {
+    const ticket = data?.ticket;
+    if (!ticket) return [];
+
+    const replies = Array.isArray(data.replies) ? data.replies : [];
+    const transfers = Array.isArray(data.transfers) ? data.transfers : [];
+    const events = [
+      {
+        key: `submitted-${ticket.id}`,
+        type: "submitted",
+        title: "提交事项",
+        time: ticket.created_at,
+        person: ticket.is_anonymous ? "匿名提交" : ticket.submitter_name || "学生",
+        detail: `提交至 ${ticket.department || "未指定"}，当前由 ${ticket.current_department || "党政办"} 承办。`
+      }
+    ];
+
+    transfers.forEach((item) => {
+      events.push({
+        key: `transfer-${item.id}`,
+        type: "transfer",
+        title: "转办事项",
+        time: item.created_at,
+        person: item.operator_name || "管理员",
+        detail: `${item.from_department} 转办至 ${item.to_department}${item.target_operator_name ? `，接收人：${item.target_operator_name}` : ""}${item.note ? `。说明：${item.note}` : ""}`
+      });
+    });
+
+    replies.forEach((reply) => {
+      events.push({
+        key: `reply-${reply.id}`,
+        type: "reply",
+        replyId: reply.id,
+        title: "管理员回复",
+        time: reply.created_at,
+        person: reply.replier_name || `${reply.department}管理员`,
+        detail: reply.content
+      });
+    });
+
+    return events.sort(sortByTime);
+  }, [data]);
+
   async function rate(type) {
     await api.post(`/tickets/${id}/ratings`, { type });
     load();
@@ -74,6 +130,8 @@ export default function TicketDetailPage() {
   const replies = Array.isArray(data.replies) ? data.replies : [];
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const transfers = Array.isArray(data.transfers) ? data.transfers : [];
+  const currentHandler = data.currentHandler;
+  const latestReply = replies.length ? replies[replies.length - 1] : null;
   const status = statusMap[ticket.status] || statusMap.pending;
 
   return (
@@ -112,6 +170,61 @@ export default function TicketDetailPage() {
         </div>
       </div>
 
+      <section className="app-card p-0">
+        <div className="border-b border-ai-border px-6 py-5">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-ai-title">
+            <Clock3 size={18} />
+            办理进度
+          </h2>
+        </div>
+        <div className="grid gap-4 p-6 lg:grid-cols-3">
+            <div className="rounded-2xl border border-ai-border bg-ai-bg p-4">
+              <div className="flex items-start gap-3">
+                <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-ai-primary" />
+                <div>
+                  <div className="text-sm font-semibold text-ai-title">当前办理状态</div>
+                  <div className="mt-2">
+                    <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ring-1 ${status.className}`}>{status.label}</span>
+                  </div>
+                  <div className="mt-2 text-xs text-ai-muted">最近更新：{formatTime(ticket.updated_at || ticket.created_at)}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-ai-border bg-ai-bg p-4">
+              <div className="flex items-start gap-3">
+                <UserRound size={18} className="mt-0.5 shrink-0 text-ai-primary" />
+                <div>
+                  <div className="text-sm font-semibold text-ai-title">当前办理人</div>
+                  <div className="mt-2 text-base font-semibold text-ai-title">{currentHandler?.name || "暂未分配"}</div>
+                  <div className="mt-1 text-xs text-ai-muted">
+                    {currentHandler
+                      ? `${currentHandler.department || ticket.current_department || "党政办"} · ${adminLevelLabel(currentHandler.admin_level)}`
+                      : `${ticket.current_department || "党政办"} 暂无可见办理人`}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-ai-border bg-ai-bg p-4">
+              <div className="flex items-start gap-3">
+                <MessageSquare size={18} className="mt-0.5 shrink-0 text-ai-primary" />
+                <div>
+                  <div className="text-sm font-semibold text-ai-title">管理员回复状况</div>
+                  <div className="mt-2 text-base font-semibold text-ai-title">
+                    {replies.length ? `已回复 ${replies.length} 次` : "尚未回复"}
+                  </div>
+                  <div className="mt-1 text-xs text-ai-muted">
+                    {latestReply
+                      ? `最近回复：${latestReply.replier_name || latestReply.department} · ${formatTime(latestReply.created_at)}`
+                      : "当前等待承办部门回复"}
+                  </div>
+                </div>
+              </div>
+            </div>
+        </div>
+      </section>
+
       {transfers.length ? (
         <section className="app-card p-0">
           <div className="border-b border-ai-border px-6 py-5">
@@ -136,25 +249,45 @@ export default function TicketDetailPage() {
 
       <section className="app-card p-0">
         <div className="border-b border-ai-border px-6 py-5">
-          <h2 className="text-lg font-semibold text-ai-title">官方回复</h2>
+          <h2 className="text-lg font-semibold text-ai-title">进度情况</h2>
         </div>
-        <div className="space-y-4 p-6">
-          {replies.length === 0 ? (
-            <div className="rounded-2xl bg-ai-bg p-5 text-sm text-ai-body">当前事项尚未回复，请关注后续办理进展。</div>
-          ) : (
-            replies.map((reply) => (
-              <article key={reply.id} className="rounded-[20px] border border-ai-border">
-                <div className="flex flex-wrap justify-between gap-3 border-b border-ai-border bg-ai-bg px-4 py-3 text-sm">
-                  <span className="font-medium text-ai-title">回复部门：{reply.department}</span>
-                  <span className="text-ai-muted">回复时间：{formatTime(reply.created_at)}</span>
-                </div>
-                <div className="whitespace-pre-wrap px-4 py-4 text-sm leading-7 text-ai-body">{reply.content}</div>
-                <div className="border-t border-slate-100 px-4 py-4">
-                  <AttachmentList items={replyFilesById[reply.id]} />
-                </div>
-              </article>
-            ))
-          )}
+        <div className="p-6">
+          <div className="relative space-y-0">
+            {progressEvents.map((event, index) => {
+              const isLast = index === progressEvents.length - 1;
+              const isReply = event.type === "reply";
+              return (
+                <article key={event.key} className="relative grid gap-4 pb-6 pl-12 last:pb-0 md:grid-cols-[160px_1fr]">
+                  {!isLast ? <div className="absolute left-[17px] top-9 h-[calc(100%-12px)] w-px bg-ai-border" /> : null}
+                  <div className="absolute left-0 top-1 flex h-9 w-9 items-center justify-center rounded-full border-4 border-white bg-ai-primary text-sm font-semibold text-white shadow-sm">
+                    {index + 1}
+                  </div>
+                  <div className="pt-1 text-xs text-ai-muted md:text-right">
+                    {formatTime(event.time)}
+                  </div>
+                  <div className="rounded-2xl border border-ai-border bg-ai-bg px-4 py-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-ai-title">{event.title}</div>
+                        <div className="mt-1 text-xs text-ai-muted">经办：{event.person}</div>
+                      </div>
+                      {isReply ? (
+                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
+                          已回复
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="mt-3 whitespace-pre-wrap text-sm leading-7 text-ai-body">{event.detail}</div>
+                    {isReply ? (
+                      <div className="mt-4 border-t border-slate-100 pt-4">
+                        <AttachmentList items={replyFilesById[event.replyId]} />
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
         </div>
       </section>
 
