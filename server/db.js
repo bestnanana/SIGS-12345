@@ -8,22 +8,19 @@ const dataDir = path.join(__dirname, "data");
 const dbPath = path.join(dataDir, "app.db");
 const lockPath = path.join(dataDir, "app.db.lock");
 const backupDir = path.join(dataDir, "backups");
+const adminDepartments = ["信息中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
+
 let db;
 let lockFd = null;
 let lockToken = null;
-let bootstrapping = false;
-let protectBootWrites = false;
 let backedUpBeforeWrite = false;
-const adminDepartments = ["信数中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
 
 function normalizeSql(sql) {
   return String(sql || "").trim().replace(/^--.*$/gm, "").trim().toLowerCase();
 }
 
 function isWriteSql(sql) {
-  const normalized = normalizeSql(sql);
-  if (!normalized) return false;
-  return /^(insert|update|delete|replace|create|alter|drop|truncate|vacuum|reindex|attach|detach)\b/.test(normalized);
+  return /^(insert|update|delete|replace|create|alter|drop|truncate|vacuum|reindex|attach|detach)\b/.test(normalizeSql(sql));
 }
 
 function isProcessAlive(pid) {
@@ -47,7 +44,6 @@ function readLockInfo() {
 function acquireDbLock() {
   fs.mkdirSync(dataDir, { recursive: true });
   lockToken = `${process.pid}-${Date.now()}`;
-
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       lockFd = fs.openSync(lockPath, "wx");
@@ -60,16 +56,10 @@ function acquireDbLock() {
       return;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-
       const lockInfo = readLockInfo();
       if (lockInfo?.pid && isProcessAlive(Number(lockInfo.pid))) {
-        logger.error("db_lock_conflict", {
-          lock_path: lockPath,
-          owner_pid: lockInfo.pid
-        });
-        throw new Error(`数据库保护已阻止启动：app.db 正被进程 ${lockInfo.pid} 使用。请先停止旧后端进程，避免覆盖数据库文件。`);
+        throw new Error(`数据库正在被进程 ${lockInfo.pid} 使用，请先停止旧后端进程。`);
       }
-
       fs.unlinkSync(lockPath);
     }
   }
@@ -84,7 +74,6 @@ function releaseDbLock() {
     }
     lockFd = null;
   }
-
   const lockInfo = readLockInfo();
   if (lockInfo?.token === lockToken) {
     try {
@@ -119,24 +108,16 @@ function backupCurrentDb() {
 }
 
 function persist() {
-  if (lockFd === null) {
-    throw new Error("数据库保护已阻止写入：当前进程没有 app.db 写入锁。");
-  }
-
+  if (lockFd === null) throw new Error("当前进程没有数据库写入锁。");
   const data = Buffer.from(db.export());
   if (fs.existsSync(dbPath)) {
     const current = fs.readFileSync(dbPath);
     if (current.equals(data)) return;
   }
-
   backupCurrentDb();
   const tmpPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, data);
   fs.renameSync(tmpPath, dbPath);
-  logger.info("db_persisted", {
-    db_path: dbPath,
-    bytes: data.length
-  });
 }
 
 function normalizeParams(params) {
@@ -146,85 +127,53 @@ function normalizeParams(params) {
 }
 
 function run(sql, params = [], options = {}) {
-  if (bootstrapping && protectBootWrites && isWriteSql(sql) && !options.allowBootWrite) {
-    throw new Error("数据库保护已阻止启动阶段写库。现有 app.db 不会被服务端初始化、迁移或种子数据覆盖。");
-  }
-
   const stmt = db.prepare(sql);
   stmt.bind(normalizeParams(params));
   while (stmt.step()) {
-    // Drain result rows for statements that return data.
+    // Drain rows for statements that return rows.
   }
   stmt.free();
   const row = db.exec("SELECT last_insert_rowid() AS lastID, changes() AS changes")[0]?.values?.[0] || [0, 0];
-  if (options.persist !== false && isWriteSql(sql)) {
-    persist();
-  }
+  if (options.persist !== false && isWriteSql(sql)) persist();
   return Promise.resolve({ lastID: row[0], changes: row[1] });
-}
-
-function get(sql, params = []) {
-  const rows = allSync(sql, params);
-  return Promise.resolve(rows[0]);
-}
-
-function all(sql, params = []) {
-  return Promise.resolve(allSync(sql, params));
 }
 
 function allSync(sql, params = []) {
   const stmt = db.prepare(sql);
   stmt.bind(normalizeParams(params));
   const rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
-  }
+  while (stmt.step()) rows.push(stmt.getAsObject());
   stmt.free();
   return rows;
+}
+
+function get(sql, params = []) {
+  return Promise.resolve(allSync(sql, params)[0]);
+}
+
+function all(sql, params = []) {
+  return Promise.resolve(allSync(sql, params));
 }
 
 async function initDb() {
   acquireDbLock();
   installLockCleanup();
   const existingDb = fs.existsSync(dbPath);
-  protectBootWrites = existingDb && process.env.DB_PROTECT_EXISTING_ON_BOOT !== "0";
-  bootstrapping = true;
-
   const SQL = await initSqlJs({
     locateFile: (file) => path.join(__dirname, "..", "node_modules", "sql.js", "dist", file)
   });
   db = existingDb ? new SQL.Database(fs.readFileSync(dbPath)) : new SQL.Database();
 
-  await run("PRAGMA foreign_keys = ON", [], { persist: false });
+  await run("PRAGMA foreign_keys = OFF", [], { persist: false });
+  if (!existingDb || process.env.DB_PROTECT_EXISTING_ON_BOOT === "0") {
+    await ensureSchema();
+    await seedDefaultPeople();
+  }
+}
 
-  await ensureTable("users", `
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      name TEXT NOT NULL,
-      phone TEXT,
-      department TEXT,
-      role TEXT DEFAULT 'user',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await ensureTable("admins", `
-    CREATE TABLE IF NOT EXISTS admins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER UNIQUE NOT NULL,
-      level INTEGER NOT NULL DEFAULT 2 CHECK(level IN (0, 1, 2)),
-      department TEXT NOT NULL,
-      assigned_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(id),
-      FOREIGN KEY (assigned_by) REFERENCES users(id)
-    )
-  `);
-
-  await ensureTable("tickets", `
+async function ensureSchema() {
+  await ensureDatahubPersonTables();
+  await run(`
     CREATE TABLE IF NOT EXISTS tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
@@ -233,7 +182,7 @@ async function initDb() {
       department TEXT,
       content TEXT NOT NULL,
       is_anonymous BOOLEAN DEFAULT 0,
-      submitter_id INTEGER NOT NULL,
+      submitter_id TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
       current_department TEXT DEFAULT '党政办',
       is_published BOOLEAN DEFAULT 0,
@@ -241,25 +190,20 @@ async function initDb() {
       ai_category TEXT,
       ai_suggestion TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (submitter_id) REFERENCES users(id)
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
-  await ensureTable("replies", `
+  await run(`
     CREATE TABLE IF NOT EXISTS replies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
       content TEXT NOT NULL,
-      replier_id INTEGER NOT NULL,
+      replier_id TEXT NOT NULL,
       department TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (replier_id) REFERENCES users(id)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
-  await ensureTable("attachments", `
+  await run(`
     CREATE TABLE IF NOT EXISTS attachments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER,
@@ -269,183 +213,153 @@ async function initDb() {
       file_path TEXT NOT NULL,
       file_size INTEGER NOT NULL,
       file_type TEXT NOT NULL,
-      uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (reply_id) REFERENCES replies(id)
+      uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
-  await ensureTable("transfers", `
+  await run(`
     CREATE TABLE IF NOT EXISTS transfers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
       from_department TEXT NOT NULL,
       to_department TEXT NOT NULL,
-      operator_id INTEGER NOT NULL,
+      operator_id TEXT NOT NULL,
       note TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (operator_id) REFERENCES users(id)
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
-  await ensureTable("ratings", `
+  await run(`
     CREATE TABLE IF NOT EXISTS ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_id INTEGER NOT NULL,
-      user_id INTEGER NOT NULL,
+      user_id TEXT NOT NULL,
       type TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(ticket_id, user_id, type),
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (user_id) REFERENCES users(id)
+      UNIQUE(ticket_id, user_id, type)
     )
   `);
+}
 
-  await migrateSchema();
+async function ensureDatahubPersonTables() {
+  await run(`
+    CREATE TABLE IF NOT EXISTS datahub_basic_persons (
+      id TEXT PRIMARY KEY,
+      union_id TEXT,
+      name TEXT,
+      type TEXT,
+      category TEXT,
+      department TEXT,
+      status TEXT,
+      appoint_attr TEXT,
+      appointment_form TEXT,
+      hire_post TEXT,
+      write_date TEXT,
+      username TEXT UNIQUE,
+      password TEXT,
+      password_hash TEXT,
+      phone TEXT,
+      role TEXT DEFAULT 'user',
+      raw_json TEXT NOT NULL DEFAULT '{}',
+      synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const columns = await all("PRAGMA table_info(datahub_basic_persons)");
+  const hasColumn = (name) => columns.some((item) => item.name === name);
+  if (!hasColumn("username")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN username TEXT");
+  if (!hasColumn("password")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN password TEXT");
+  if (!hasColumn("password_hash")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN password_hash TEXT");
+  if (!hasColumn("phone")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN phone TEXT");
+  if (!hasColumn("role")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN role TEXT DEFAULT 'user'");
+  await run("UPDATE datahub_basic_persons SET password_hash = password WHERE (password_hash IS NULL OR password_hash = '') AND password IS NOT NULL AND password != ''");
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_datahub_basic_persons_username ON datahub_basic_persons(username)");
+  await run("CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_union_id ON datahub_basic_persons(union_id)");
+  await run("CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_department ON datahub_basic_persons(department)");
+  await run("CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_write_date ON datahub_basic_persons(write_date)");
 
-  const userCount = await get("SELECT COUNT(*) AS count FROM users");
-  if (userCount.count === 0) {
-    if (protectBootWrites) {
-      console.warn("数据库保护：现有 app.db 用户表为空，已跳过启动阶段种子用户写入。");
-      bootstrapping = false;
-      return;
-    }
-    const password = bcrypt.hashSync("123456", 10);
+  await run(`
+    CREATE TABLE IF NOT EXISTS datahub_basic_person_sync_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      finished_at DATETIME,
+      start_date TEXT NOT NULL,
+      page_size INTEGER NOT NULL,
+      fetched_count INTEGER DEFAULT 0,
+      upserted_count INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error_message TEXT
+    )
+  `);
+}
+
+async function seedDefaultPeople() {
+  const count = await get("SELECT COUNT(*) AS count FROM datahub_basic_persons");
+  if (count.count > 0) return;
+  const passwordHash = bcrypt.hashSync("123456", 10);
+  await run(
+    `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, phone, role, raw_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ["local_student", "student", "student", passwordHash, "学生用户", "13800000001", "user", "{}"]
+  );
+  const adminAccounts = [
+    ["local_admin", "admin", "张明", "党政办"],
+    ["local_admin2", "admin2", "李晨", "信息中心"],
+    ["local_admin3", "admin3", "管理员", "党政办"]
+  ];
+  for (const [id, username, name, department] of adminAccounts) {
     await run(
-      "INSERT INTO users (username, password, name, phone, role) VALUES (?, ?, ?, ?, ?)",
-      ["student", password, "张同学", "13800000001", "user"],
-      { allowBootWrite: true }
+      `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, department, role, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, 'admin', ?)`,
+      [id, username, username, passwordHash, name, department, "{}"]
     );
   }
-
-  if (protectBootWrites) {
-    logger.info("db_boot_seed_skipped", { db_path: dbPath });
-    console.log("数据库保护：已跳过启动阶段管理员种子数据同步，现有 app.db 不会被覆盖。");
-  } else {
-    await seedDepartmentAdmins();
-  }
-  bootstrapping = false;
 }
 
-function tableExists(name) {
-  const stmt = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?");
-  stmt.bind([name]);
-  const exists = stmt.step();
-  stmt.free();
-  return exists;
-}
-
-async function ensureTable(name, createSql) {
-  if (tableExists(name)) return;
-  if (protectBootWrites) {
-    throw new Error(`数据库保护已阻止创建缺失表 ${name}。请先人工备份并确认迁移方案。`);
+async function upsertDatahubBasicPersons(rows = []) {
+  await ensureDatahubPersonTables();
+  let upserted = 0;
+  for (const row of rows) {
+    if (!row.id) continue;
+    await run(
+      `INSERT INTO datahub_basic_persons (
+         id, union_id, name, type, category, department, status,
+         appoint_attr, appointment_form, hire_post, write_date, raw_json,
+         synced_at, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET
+         union_id = excluded.union_id,
+         name = excluded.name,
+         type = excluded.type,
+         category = excluded.category,
+         department = excluded.department,
+         status = excluded.status,
+         appoint_attr = excluded.appoint_attr,
+         appointment_form = excluded.appointment_form,
+         hire_post = excluded.hire_post,
+         write_date = excluded.write_date,
+         raw_json = excluded.raw_json,
+         role = COALESCE(datahub_basic_persons.role, 'user'),
+         synced_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP`,
+      [
+        row.id,
+        row.union_id,
+        row.name,
+        row.type,
+        row.category,
+        row.department,
+        row.status,
+        row.appoint_attr,
+        row.appointment_form,
+        row.hire_post,
+        row.write_date,
+        row.raw_json
+      ]
+    );
+    upserted += 1;
   }
-  await run(createSql, [], { allowBootWrite: true });
-}
-
-async function migrateSchema() {
-  if (protectBootWrites) {
-    logger.info("db_boot_migration_skipped", { db_path: dbPath });
-    console.log("数据库保护：已跳过启动阶段 schema 迁移，现有 app.db 不会被 ALTER/UPDATE 覆盖。");
-    return;
-  }
-
-  const userColumns = await all("PRAGMA table_info(users)");
-  if (!userColumns.some((item) => item.name === "password")) {
-    await run("ALTER TABLE users ADD COLUMN password TEXT");
-    await run("UPDATE users SET password = ? WHERE password IS NULL OR password = ''", [
-      bcrypt.hashSync("123456", 10)
-    ]);
-  }
-  if (!userColumns.some((item) => item.name === "department")) {
-    await run("ALTER TABLE users ADD COLUMN department TEXT");
-  }
-
-  const adminTable = await get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admins'");
-  if (adminTable?.sql && !adminTable.sql.includes("0, 1, 2") && !adminTable.sql.includes("0,1,2")) {
-    await run("ALTER TABLE admins RENAME TO admins_old");
-    await run(`
-      CREATE TABLE admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER UNIQUE NOT NULL,
-        level INTEGER NOT NULL DEFAULT 2 CHECK(level IN (0, 1, 2)),
-        department TEXT NOT NULL,
-        assigned_by INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id),
-        FOREIGN KEY (assigned_by) REFERENCES users(id)
-      )
-    `);
-    await run(`
-      INSERT INTO admins (id, user_id, level, department, assigned_by, created_at, updated_at)
-      SELECT id, user_id, level, department, assigned_by, created_at, updated_at
-      FROM admins_old
-    `);
-    await run("DROP TABLE admins_old");
-  }
-
-  const ticketColumns = await all("PRAGMA table_info(tickets)");
-  if (!ticketColumns.some((item) => item.name === "current_department")) {
-    await run("ALTER TABLE tickets ADD COLUMN current_department TEXT DEFAULT '党政办'");
-  }
-  if (!ticketColumns.some((item) => item.name === "is_published")) {
-    await run("ALTER TABLE tickets ADD COLUMN is_published BOOLEAN DEFAULT 0");
-  }
-  if (!ticketColumns.some((item) => item.name === "published_at")) {
-    await run("ALTER TABLE tickets ADD COLUMN published_at DATETIME");
-  }
-  await run("UPDATE tickets SET current_department = COALESCE(NULLIF(current_department, ''), '党政办')");
-}
-
-async function seedDepartmentAdmins() {
-  const password = bcrypt.hashSync("123456", 10);
-  const accounts = [
-    ["super_admin", "超级管理员", "010-62789999", "党政办", 0],
-    ["admin", "张明", "010-62780000", "党政办", 1],
-    ["admin2", "李晨", "010-62780001", "信数中心", 2],
-    ["xszx_admin", "周宁", "010-62780001", "信数中心", 2],
-    ["xgb_admin", "王芳", "010-62780002", "学工办", 2],
-    ["pyc_admin", "陈静", "010-62780003", "培养处", 2],
-    ["cwb_admin", "赵磊", "010-62780004", "财务办", 2],
-    ["rsb_admin", "刘洋", "010-62780005", "人事办", 2]
-  ];
-
-  for (const [username, name, phone, department, level] of accounts) {
-    const existing = await get("SELECT id FROM users WHERE username = ?", [username]);
-    if (existing) {
-      await run("UPDATE users SET name = ?, phone = ? WHERE username = ?", [
-        name,
-        phone,
-        username
-      ]);
-    } else {
-      await run(
-        "INSERT INTO users (username, password, name, phone, role, department) VALUES (?, ?, ?, ?, 'admin', ?)",
-        [username, password, name, phone, department]
-      );
-    }
-
-    const user = await get("SELECT id, role FROM users WHERE username = ?", [username]);
-    const adminRecord = await get("SELECT id FROM admins WHERE user_id = ?", [user.id]);
-
-    if (username === "super_admin") {
-      await run("UPDATE users SET role = 'admin', department = ? WHERE id = ?", [department, user.id]);
-    }
-
-    if (adminRecord && username === "super_admin") {
-      await run(
-        "UPDATE admins SET level = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
-        [level, department, user.id]
-      );
-    } else if (!adminRecord && (user.role === "admin" || username === "super_admin")) {
-      await run(
-        "INSERT INTO admins (user_id, level, department, assigned_by) VALUES (?, ?, ?, ?)",
-        [user.id, level, department, null]
-      );
-    }
-  }
+  return upserted;
 }
 
 module.exports = {
@@ -453,5 +367,7 @@ module.exports = {
   run,
   get,
   all,
-  adminDepartments
+  adminDepartments,
+  ensureDatahubPersonTables,
+  upsertDatahubBasicPersons
 };

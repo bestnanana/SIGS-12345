@@ -5,7 +5,7 @@ import { useLanguage } from "../i18n";
 
 export default function LoginPage({ onLogin, authMessage = "" }) {
   const { t, language, setLanguage } = useLanguage();
-  const [form, setForm] = useState({ username: "student", password: "123456" });
+  const [form, setForm] = useState({ union_id: "student", password: "123456" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
@@ -104,12 +104,12 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
             </div>
 
             <label className="mb-4 block">
-              <span className="mb-2 block text-sm font-medium text-ai-body">{language === "en" ? "Username" : "用户名"}</span>
+              <span className="mb-2 block text-sm font-medium text-ai-body">{language === "en" ? "Union ID" : "人员编号"}</span>
               <div className="group flex items-center rounded-2xl border border-ai-border bg-white px-4 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
                 <UserRound size={18} className="text-ai-muted transition duration-200 group-focus-within:text-ai-primary" />
                 <input
-                  value={form.username}
-                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  value={form.union_id}
+                  onChange={(e) => setForm({ ...form, union_id: e.target.value })}
                   disabled={isBusy}
                   className="h-12 w-full border-0 bg-transparent px-3 text-ai-title outline-none disabled:cursor-not-allowed"
                   autoComplete="username"

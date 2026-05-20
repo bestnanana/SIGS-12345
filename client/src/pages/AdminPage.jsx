@@ -1,25 +1,18 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, KeyRound, Megaphone, Paperclip, RefreshCw, RotateCcw, Search, SendHorizontal, ShieldCheck, UserCheck } from "lucide-react";
+﻿import React, { useEffect, useMemo, useState } from "react";
+import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, Paperclip, RefreshCw, RotateCcw, Search, SendHorizontal, UsersRound } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, uploadConfig } from "../api";
-import { departments, formatTime } from "../constants";
+import { formatTime } from "../constants";
 import { useLanguage, useStatusMap } from "../i18n";
 
 const adminMenuItems = [
   { key: "tickets", labelKey: "admin.menuTickets", descriptionKey: "admin.menuTicketsDesc", icon: ClipboardList },
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
-  { key: "permissions", labelKey: "admin.menuPermissions", descriptionKey: "admin.menuPermissionsDesc", icon: ShieldCheck, levelOnly: 1 }
+  { key: "persons", labelKey: "人员管理", descriptionKey: "Datahub人员基础信息", icon: UsersRound }
 ];
 
 const ticketStatusOrder = ["pending", "processing", "completed"];
-const SUPER_ADMIN_LEVEL = 0;
-const normalizeTicketStatus = (status) => (["replied", "leader_approval", "approval", "transferred"].includes(status) ? "processing" : status);
-
-function adminLevelLabel(level) {
-  const numericLevel = level === null || level === undefined || level === "" ? 2 : Number(level);
-  if (numericLevel === SUPER_ADMIN_LEVEL) return "超级管理员";
-  return `${numericLevel || 2}级管理员`;
-}
+const normalizeTicketStatus = (status) => (["replied", "transferred"].includes(status) ? "processing" : status);
 
 function countBy(items, getKey) {
   return items.reduce((acc, item) => {
@@ -34,22 +27,8 @@ function formatPercent(value, total) {
   return `${Math.round((value / total) * 100)}%`;
 }
 
-function PrettySelect({ value, onChange, options, disabled = false, className = "" }) {
-  return (
-    <div className={`relative ${className}`}>
-      <select
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        className="h-10 w-full appearance-none rounded-xl border border-ai-border bg-white px-3 pr-9 text-sm font-medium text-ai-title outline-none transition duration-200 hover:border-ai-primary/30 focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10 disabled:cursor-not-allowed disabled:bg-ai-bg disabled:text-ai-muted"
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ai-muted">⌄</span>
-    </div>
-  );
+function labelFor(value, fallback = "-") {
+  return value === null || value === undefined || value === "" ? fallback : value;
 }
 
 export default function AdminPage() {
@@ -69,24 +48,19 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [adminUsers, setAdminUsers] = useState([]);
-  const [permissionDrafts, setPermissionDrafts] = useState({});
-  const [permissionsLoading, setPermissionsLoading] = useState(false);
-  const [permissionsError, setPermissionsError] = useState("");
-  const [savingUserId, setSavingUserId] = useState(null);
-  const [permissionQuery, setPermissionQuery] = useState("");
-  const [approvalReviewers, setApprovalReviewers] = useState([]);
-  const [approvalReviewerId, setApprovalReviewerId] = useState("");
-  const [passwordModalUser, setPasswordModalUser] = useState(null);
-  const [passwordValue, setPasswordValue] = useState("");
-  const [passwordError, setPasswordError] = useState("");
-  const [resettingUserId, setResettingUserId] = useState(null);
+  const [personRows, setPersonRows] = useState([]);
+  const [personTotal, setPersonTotal] = useState(0);
+  const [personPage, setPersonPage] = useState(1);
+  const [personPageSize] = useState(20);
+  const [personKeyword, setPersonKeyword] = useState("");
+  const [personSearch, setPersonSearch] = useState("");
+  const [personsLoading, setPersonsLoading] = useState(false);
+  const [personsError, setPersonsError] = useState("");
 
   const selected = useMemo(() => tickets.find((item) => item.id === selectedId), [tickets, selectedId]);
   const canHandleSelected = selected && user?.department && user.department === (selected.current_department || "党政办");
   const isCompleted = selected?.status === "completed";
   const canReplySelected = canHandleSelected && !isCompleted;
-  const needsLeaderApproval = Number(user?.admin_level ?? 2) === 2;
   const ticketGroups = useMemo(() => {
     return ticketStatusOrder
       .map((status) => ({
@@ -146,40 +120,26 @@ export default function AdminPage() {
     }
   }
 
-  async function loadAdminUsers() {
-    if (![SUPER_ADMIN_LEVEL, 1].includes(Number(user?.admin_level))) return;
-    setPermissionsLoading(true);
-    setPermissionsError("");
+  async function loadPersons(nextPage = personPage, keyword = personSearch) {
+    setPersonsLoading(true);
+    setPersonsError("");
     try {
-      const res = await api.get("/admin/users");
-      const nextUsers = Array.isArray(res.data) ? res.data : [];
-      setAdminUsers(nextUsers);
-      setPermissionDrafts(nextUsers.reduce((acc, item) => {
-        acc[item.id] = {
-          role: item.role === "admin" ? "admin" : "user",
-          level: String(item.admin_level ?? 2),
-          department: item.admin_department || item.department || "党政办"
-        };
-        return acc;
-      }, {}));
+      const res = await api.get("/datahub/basic-persons/stored", {
+        params: {
+          page: nextPage,
+          pageSize: personPageSize,
+          keyword
+        }
+      });
+      setPersonRows(Array.isArray(res.data?.rows) ? res.data.rows : []);
+      setPersonTotal(Number(res.data?.total || 0));
+      setPersonPage(Number(res.data?.page || nextPage));
     } catch (err) {
-      setPermissionsError(err.response?.data?.message || "权限数据加载失败");
+      setPersonRows([]);
+      setPersonTotal(0);
+      setPersonsError(err.response?.data?.message || "人员数据加载失败");
     } finally {
-      setPermissionsLoading(false);
-    }
-  }
-
-  async function loadApprovalReviewers() {
-    if (Number(user?.admin_level ?? 2) !== 2) return;
-    try {
-      const res = await api.get("/admin/approval-reviewers");
-      const nextReviewers = Array.isArray(res.data) ? res.data : [];
-      setApprovalReviewers(nextReviewers);
-      setApprovalReviewerId((current) => current || String(nextReviewers[0]?.id || ""));
-    } catch (err) {
-      setApprovalReviewers([]);
-      setApprovalReviewerId("");
-      setError(err.response?.data?.message || "审批人加载失败");
+      setPersonsLoading(false);
     }
   }
 
@@ -211,22 +171,10 @@ export default function AdminPage() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (user && activeView === "permissions" && ![SUPER_ADMIN_LEVEL, 1].includes(Number(user.admin_level))) {
-      setActiveView("tickets");
+    if (activeView === "persons") {
+      loadPersons(personPage, personSearch);
     }
-  }, [activeView, user]);
-
-  useEffect(() => {
-    if (activeView === "permissions" && [SUPER_ADMIN_LEVEL, 1].includes(Number(user?.admin_level))) {
-      loadAdminUsers();
-    }
-  }, [activeView, user?.admin_level]);
-
-  useEffect(() => {
-    if (user && Number(user.admin_level ?? 2) === 2) {
-      loadApprovalReviewers();
-    }
-  }, [user?.id, user?.admin_level, user?.department]);
+  }, [activeView, personPage, personSearch]);
 
   function chooseTicket(ticket) {
     setSelectedId(ticket.id);
@@ -235,7 +183,6 @@ export default function AdminPage() {
       content: ticket.ai_suggestion || "",
       status: "processing"
     });
-    setApprovalReviewerId((current) => current || String(approvalReviewers[0]?.id || ""));
   }
 
   async function togglePublish(ticket) {
@@ -252,21 +199,10 @@ export default function AdminPage() {
       const data = new FormData();
       data.append("content", reply.content);
       data.append("status", reply.status);
-      if (needsLeaderApproval) {
-        if (!approvalReviewerId) {
-          setError("请选择审批人");
-          setSubmitting(false);
-          return;
-        }
-        data.append("approval_user_id", approvalReviewerId);
-      }
       files.forEach((file) => data.append("attachments", file));
-      const res = await api.post(`/admin/tickets/${selectedId}/replies`, data, uploadConfig);
+      await api.post(`/admin/tickets/${selectedId}/replies`, data, uploadConfig);
       setReply({ ...reply, content: "" });
       setFiles([]);
-      if (res.data?.approval_required) {
-        setError("回复已提交领导审批，通过后将正式回复给提交人。");
-      }
       await loadTickets();
       await loadDetail(selectedId);
     } catch (err) {
@@ -308,81 +244,6 @@ export default function AdminPage() {
     }
   }
 
-  function updatePermissionDraft(userId, patch) {
-    setPermissionDrafts((current) => ({
-      ...current,
-      [userId]: {
-        ...(current[userId] || { role: "user", level: "2", department: "党政办" }),
-        ...patch
-      }
-    }));
-  }
-
-  async function saveAdminPermission(targetUser) {
-    const draft = permissionDrafts[targetUser.id] || { role: "user", level: "2", department: "党政办" };
-    setSavingUserId(targetUser.id);
-    setPermissionsError("");
-    try {
-      await api.patch(`/admin/users/${targetUser.id}/admin`, {
-        role: draft.role,
-        level: Number(draft.level),
-        department: draft.department
-      });
-      await loadAdminUsers();
-      if (targetUser.id === user?.id) {
-        await loadMe();
-      }
-    } catch (err) {
-      setPermissionsError(err.response?.data?.message || "权限保存失败");
-    } finally {
-      setSavingUserId(null);
-    }
-  }
-
-  function canResetPassword(targetUser) {
-    if (!targetUser || targetUser.id === user?.id) return false;
-    const operatorLevel = Number(user?.admin_level ?? 2);
-    const targetIsAdmin = targetUser.role === "admin";
-    const targetLevel = targetIsAdmin ? Number(targetUser.admin_level ?? 2) : null;
-    if (operatorLevel === SUPER_ADMIN_LEVEL) return true;
-    return operatorLevel === 1
-      ? !targetIsAdmin || targetLevel === 2
-      : !targetIsAdmin;
-  }
-
-  function openPasswordModal(targetUser) {
-    if (!canResetPassword(targetUser)) return;
-    setPasswordModalUser(targetUser);
-    setPasswordValue("");
-    setPasswordError("");
-  }
-
-  function closePasswordModal() {
-    if (resettingUserId) return;
-    setPasswordModalUser(null);
-    setPasswordValue("");
-    setPasswordError("");
-  }
-
-  async function resetUserPassword(e) {
-    e.preventDefault();
-    if (!passwordModalUser) return;
-    if (passwordValue.length < 6) {
-      setPasswordError("新密码至少需要6位");
-      return;
-    }
-    setResettingUserId(passwordModalUser.id);
-    setPasswordError("");
-    try {
-      await api.patch(`/admin/users/${passwordModalUser.id}/password`, { password: passwordValue });
-      closePasswordModal();
-    } catch (err) {
-      setPasswordError(err.response?.data?.message || "密码重置失败");
-    } finally {
-      setResettingUserId(null);
-    }
-  }
-
   const summaryCards = [
     { label: t("admin.visibleTickets"), value: stats.total, note: user?.department ? `${user.department}${t("admin.scope")}` : t("admin.allScope") },
     { label: t("admin.activeTickets"), value: stats.active, note: t("admin.activeTicketsNote") },
@@ -392,12 +253,13 @@ export default function AdminPage() {
   const maxStatusCount = Math.max(1, ...Object.values(stats.statusCounts));
   const maxDepartmentCount = Math.max(1, ...stats.departmentEntries.map(([, count]) => count));
   const maxFieldCount = Math.max(1, ...stats.fieldEntries.map(([, count]) => count));
+  const personTotalPages = Math.max(1, Math.ceil(personTotal / personPageSize));
+  const personPageStart = personTotal ? (personPage - 1) * personPageSize + 1 : 0;
+  const personPageEnd = Math.min(personTotal, personPage * personPageSize);
   const selectedStatus = selected ? statusMap[normalizeTicketStatus(selected.status)] || statusMap.pending : statusMap.pending;
   const currentHandlerText = selected?.current_department || selected?.department || "党政办";
   const selectedWorkflowStatus = normalizeTicketStatus(selected?.status);
-  const hasLeaderApprovalStep = needsLeaderApproval || ["leader_approval", "approval"].includes(selected?.status);
-  const isDepartmentCurrent = selectedWorkflowStatus === "processing" && !["leader_approval", "approval"].includes(selected?.status);
-  const isApprovalCurrent = ["leader_approval", "approval"].includes(selected?.status);
+  const isDepartmentCurrent = selectedWorkflowStatus === "processing";
   const workflowSteps = selected
     ? [
       {
@@ -425,27 +287,6 @@ export default function AdminPage() {
         ]
       },
       {
-        key: "approval",
-        title: "领导审批",
-        status: selected.status === "completed"
-          ? "done"
-          : isApprovalCurrent
-            ? "current"
-            : hasLeaderApprovalStep && selectedWorkflowStatus !== "pending" && !isDepartmentCurrent
-              ? "done"
-              : "todo",
-        icon: UserCheck,
-        tone: "blue",
-        lines: [
-          `审批状态：${isApprovalCurrent ? "待审批" : hasLeaderApprovalStep ? "待提交" : "无需领导审批"}`,
-          isApprovalCurrent
-            ? "办理意见已提交，等待领导审批确认。"
-            : hasLeaderApprovalStep
-              ? "办理部门提交意见后进入领导审批。"
-              : "当前事项可由办理部门直接形成结果。"
-        ]
-      },
-      {
         key: "finish",
         title: "处理完成",
         status: selected.status === "completed" ? "done" : "todo",
@@ -458,25 +299,7 @@ export default function AdminPage() {
       }
     ]
     : [];
-  const canManagePermissions = [SUPER_ADMIN_LEVEL, 1].includes(Number(user?.admin_level));
-  const canGrantSuperAdmin = Number(user?.admin_level) === SUPER_ADMIN_LEVEL;
-  const adminLevelOptions = [
-    ...(canGrantSuperAdmin ? [{ value: "0", label: "超级管理员" }] : []),
-    { value: "1", label: "1级管理员" },
-    { value: "2", label: "2级管理员" }
-  ];
-  const visibleAdminMenuItems = useMemo(
-    () => adminMenuItems.filter((item) => !item.levelOnly || canManagePermissions),
-    [canManagePermissions]
-  );
-  const filteredAdminUsers = useMemo(() => {
-    const keyword = permissionQuery.trim().toLowerCase();
-    if (!keyword) return adminUsers;
-    return adminUsers.filter((item) => {
-      const text = `${item.username || ""} ${item.name || ""}`.toLowerCase();
-      return text.includes(keyword);
-    });
-  }, [adminUsers, permissionQuery]);
+
   return (
     <>
     <div className="grid gap-5 xl:grid-cols-[236px_minmax(0,1fr)] 2xl:gap-6">
@@ -490,7 +313,7 @@ export default function AdminPage() {
         </div>
 
         <nav className="space-y-2">
-          {visibleAdminMenuItems.map((item) => {
+          {adminMenuItems.map((item) => {
             const Icon = item.icon;
             const active = activeView === item.key;
             return (
@@ -703,27 +526,6 @@ export default function AdminPage() {
                             required
                           />
                         </label>
-                        {needsLeaderApproval ? (
-                          <label className="mb-3 block">
-                            <span className="mb-1 block text-sm text-ai-body">领导审批人</span>
-                            <select
-                              value={approvalReviewerId}
-                              onChange={(e) => setApprovalReviewerId(e.target.value)}
-                              className="soft-input w-full"
-                              disabled={!canReplySelected}
-                              required
-                            >
-                              {approvalReviewers.length === 0 ? (
-                                <option value="">暂无可选审批人</option>
-                              ) : null}
-                              {approvalReviewers.map((reviewer) => (
-                                <option key={reviewer.id} value={String(reviewer.id)}>
-                                  {reviewer.name} · {Number(reviewer.admin_level) === 0 ? "超级管理员" : "1级管理员"} · {reviewer.department}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        ) : null}
                         <label className={`mb-5 flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-3 text-sm text-ai-body ${canReplySelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
                           <Paperclip size={16} />
                           <span className="truncate">{files.length ? `${files.length} 个附件已选择` : "上传官方附件"}</span>
@@ -760,7 +562,7 @@ export default function AdminPage() {
                             className="primary-button w-full"
                           >
                             <SendHorizontal size={16} />
-                            {isCompleted ? "已完成" : submitting ? "提交中..." : needsLeaderApproval ? "提交领导审批" : "提交办理结果"}
+                            {isCompleted ? "已完成" : submitting ? "提交中..." : "提交办理结果"}
                           </button>
                         </div>
                       </form>
@@ -929,255 +731,165 @@ export default function AdminPage() {
               )}
             </section>
           </div>
-        ) : activeView === "permissions" && canManagePermissions ? (
+        ) : activeView === "persons" ? (
           <div className="space-y-6">
             <section className="app-card mesh-hero p-8">
               <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="ai-chip mb-4">
-                    <ShieldCheck size={14} className="mr-1.5" />
-                    权限分配
+                    <UsersRound size={14} className="mr-1.5" />
+                    Datahub人员基础信息
                   </div>
-                  <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">管理员权限管理</h1>
+                  <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">人员管理</h1>
                   <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">
-                    超级管理员可授予超级、1级和2级管理员权限，1级管理员可分配1级或2级管理员；密码重置通过弹框完成。
+                    展示从人员基础信息接口同步到本地数据库的人员数据，可按姓名、人员编号或部门检索。
                   </p>
                 </div>
-                <button type="button" onClick={loadAdminUsers} className="ghost-button bg-white/80">
+                <button type="button" onClick={() => loadPersons(personPage, personSearch)} className="ghost-button bg-white/80">
                   <RefreshCw size={16} />
-                  刷新用户
+                  刷新数据
                 </button>
               </div>
             </section>
 
-            {permissionsError ? (
+            <section className="grid gap-4 md:grid-cols-3">
+              <div className="app-card p-5">
+                <div className="text-sm text-ai-body">入库人员</div>
+                <div className="mt-4 text-[36px] font-semibold leading-none tracking-tight text-ai-title">{personTotal}</div>
+                <div className="mt-3 text-xs text-ai-muted">Datahub同步数据</div>
+              </div>
+              <div className="app-card p-5">
+                <div className="text-sm text-ai-body">当前页</div>
+                <div className="mt-4 text-[36px] font-semibold leading-none tracking-tight text-ai-title">{personPage}</div>
+                <div className="mt-3 text-xs text-ai-muted">共 {personTotalPages} 页</div>
+              </div>
+              <div className="app-card p-5">
+                <div className="text-sm text-ai-body">显示范围</div>
+                <div className="mt-4 text-[28px] font-semibold leading-none tracking-tight text-ai-title">{personPageStart}-{personPageEnd}</div>
+                <div className="mt-3 text-xs text-ai-muted">每页 {personPageSize} 条</div>
+              </div>
+            </section>
+
+            {personsError ? (
               <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">
-                {permissionsError}
+                {personsError}
               </div>
             ) : null}
 
             <section className="app-card overflow-hidden p-0">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ai-border px-6 py-5">
                 <div>
-                  <h2 className="text-xl font-semibold text-ai-title">用户权限列表</h2>
-                  <p className="mt-1 text-sm text-ai-body">管理员等级、部门和密码重置都在这里处理。</p>
+                  <h2 className="text-xl font-semibold text-ai-title">人员数据列表</h2>
+                  <p className="mt-1 text-sm text-ai-body">字段来自 Datahub 人员基础信息接口。</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex h-10 w-72 items-center rounded-xl border border-ai-border bg-white px-3 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
+                <form
+                  className="flex flex-wrap items-center gap-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setPersonPage(1);
+                    setPersonSearch(personKeyword.trim());
+                  }}
+                >
+                  <label className="flex h-10 w-80 items-center rounded-xl border border-ai-border bg-white px-3 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
                     <Search size={16} className="text-ai-muted" />
                     <input
-                      value={permissionQuery}
-                      onChange={(e) => setPermissionQuery(e.target.value)}
+                      value={personKeyword}
+                      onChange={(e) => setPersonKeyword(e.target.value)}
                       className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-sm outline-none placeholder:text-ai-muted"
-                      placeholder="检索账号或姓名"
+                      placeholder="搜索姓名、编号或部门"
                     />
                   </label>
-                  <span className="rounded-full bg-ai-primary/10 px-3 py-1 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/10">
-                    {filteredAdminUsers.length} / {adminUsers.length} 位用户
-                  </span>
-                </div>
+                  <button type="submit" className="primary-button h-10 px-4">
+                    <Search size={16} />
+                    搜索
+                  </button>
+                </form>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="soft-table w-full min-w-[1040px]">
+                <table className="soft-table w-full min-w-[1120px]">
                   <thead>
                     <tr>
-                      <th>用户</th>
-                      <th>当前身份</th>
-                      <th>所属部门</th>
-                      <th>管理员等级</th>
-                      <th>密码</th>
-                      <th>操作</th>
+                      <th>姓名</th>
+                      <th>人员编号</th>
+                      <th>类型</th>
+                      <th>人员类别</th>
+                      <th>部门</th>
+                      <th>状态</th>
+                      <th>聘任属性</th>
+                      <th>聘任形式</th>
+                      <th>聘任岗位</th>
+                      <th>更新时间</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {permissionsLoading ? (
+                    {personsLoading ? (
                       <tr>
-                        <td colSpan="6" className="px-6 py-12 text-center text-ai-body">权限数据加载中...</td>
+                        <td colSpan="10" className="px-6 py-12 text-center text-ai-body">人员数据加载中...</td>
                       </tr>
-                    ) : filteredAdminUsers.length === 0 ? (
+                    ) : personRows.length === 0 ? (
                       <tr>
-                        <td colSpan="6" className="px-6 py-12 text-center text-ai-body">暂无匹配用户</td>
+                        <td colSpan="10" className="px-6 py-12 text-center text-ai-body">暂无人员数据</td>
                       </tr>
                     ) : (
-                      filteredAdminUsers.map((item) => {
-                        const draft = permissionDrafts[item.id] || {
-                          role: item.role === "admin" ? "admin" : "user",
-                          level: String(item.admin_level ?? 2),
-                          department: item.admin_department || item.department || "党政办"
-                        };
-                        const isAdmin = item.role === "admin";
-                        const draftIsAdmin = draft.role === "admin";
-                        const targetIsSuperAdmin = isAdmin && Number(item.admin_level ?? 2) === SUPER_ADMIN_LEVEL;
-                        const lockedSuperAdmin = targetIsSuperAdmin && !canGrantSuperAdmin;
-                        const rowAdminLevelOptions = lockedSuperAdmin
-                          ? [{ value: "0", label: "超级管理员" }, ...adminLevelOptions]
-                          : adminLevelOptions;
-                        const isSelfLevelDrop = item.id === user?.id && (draft.role !== "admin" || Number(draft.level) !== Number(user?.admin_level));
-                        const canResetTargetPassword = canResetPassword(item);
-                        return (
-                          <tr key={item.id}>
-                            <td>
-                              <div className="font-semibold text-ai-title">{item.name}</div>
-                              <div className="mt-1 text-xs text-ai-muted">{item.username} · {item.phone || "未留电话"}</div>
-                            </td>
-                            <td>
-                              <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ring-1 ${
-                                isAdmin ? "bg-ai-primary/10 text-ai-primary ring-ai-primary/10" : "bg-slate-100 text-slate-600 ring-slate-200"
-                              }`}>
-                                {isAdmin ? adminLevelLabel(item.admin_level) : "普通用户"}
-                              </span>
-                            </td>
-                            <td>
-                              <PrettySelect
-                                value={draft.department}
-                                onChange={(e) => updatePermissionDraft(item.id, { department: e.target.value })}
-                                disabled={!draftIsAdmin || lockedSuperAdmin}
-                                className="w-40"
-                                options={departments.map((dept) => ({ value: dept, label: dept }))}
-                              />
-                            </td>
-                            <td>
-                              <div className="flex gap-2">
-                                <PrettySelect
-                                  value={draft.role}
-                                  onChange={(e) => updatePermissionDraft(item.id, { role: e.target.value })}
-                                  disabled={lockedSuperAdmin}
-                                  className="w-28"
-                                  options={[
-                                    { value: "user", label: "普通用户" },
-                                    { value: "admin", label: "管理员" }
-                                  ]}
-                                />
-                                <PrettySelect
-                                  value={draft.level}
-                                  onChange={(e) => updatePermissionDraft(item.id, { level: e.target.value })}
-                                  disabled={!draftIsAdmin || lockedSuperAdmin}
-                                  className="w-32"
-                                  options={rowAdminLevelOptions}
-                                />
-                              </div>
-                              {isSelfLevelDrop ? (
-                                <div className="mt-1 text-xs text-amber-700">不能降低自己的管理员权限</div>
-                              ) : null}
-                              {lockedSuperAdmin ? (
-                                <div className="mt-1 text-xs text-ai-muted">仅超级管理员可调整</div>
-                              ) : null}
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                onClick={() => openPasswordModal(item)}
-                                disabled={!canResetTargetPassword}
-                                className="secondary-button h-10 whitespace-nowrap px-4"
-                              >
-                                <KeyRound size={16} />
-                                重置密码
-                              </button>
-                              {!canResetTargetPassword ? (
-                                <div className="mt-1 text-xs text-ai-muted">仅可重置低一级或普通用户</div>
-                              ) : null}
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                onClick={() => saveAdminPermission(item)}
-                                disabled={savingUserId === item.id || isSelfLevelDrop || lockedSuperAdmin}
-                                className="primary-button h-10 px-4"
-                              >
-                                <ShieldCheck size={16} />
-                                {savingUserId === item.id ? "保存中..." : draftIsAdmin ? "保存权限" : "设为普通用户"}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
+                      personRows.map((person) => (
+                        <tr key={person.id}>
+                          <td>
+                            <div className="font-semibold text-ai-title">{labelFor(person.name)}</div>
+                            <div className="mt-1 max-w-[180px] truncate text-xs text-ai-muted">{person.id}</div>
+                          </td>
+                          <td>{labelFor(person.union_id)}</td>
+                          <td>{labelFor(person.type)}</td>
+                          <td>{labelFor(person.category)}</td>
+                          <td>
+                            <span className="inline-flex max-w-[180px] truncate rounded-full bg-ai-bg px-3 py-1 text-xs font-semibold text-ai-body ring-1 ring-ai-border">
+                              {labelFor(person.department)}
+                            </span>
+                          </td>
+                          <td>{labelFor(person.status)}</td>
+                          <td>{labelFor(person.appoint_attr)}</td>
+                          <td>{labelFor(person.appointment_form)}</td>
+                          <td>{labelFor(person.hire_post)}</td>
+                          <td>{person.write_date ? formatTime(person.write_date) : "-"}</td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ai-border px-6 py-4">
+                <div className="text-sm text-ai-body">
+                  共 {personTotal} 条，当前显示 {personPageStart}-{personPageEnd}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPersonPage((page) => Math.max(1, page - 1))}
+                    disabled={personPage <= 1 || personsLoading}
+                    className="secondary-button h-10 px-4"
+                  >
+                    上一页
+                  </button>
+                  <span className="min-w-20 text-center text-sm font-semibold text-ai-title">
+                    {personPage} / {personTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPersonPage((page) => Math.min(personTotalPages, page + 1))}
+                    disabled={personPage >= personTotalPages || personsLoading}
+                    className="secondary-button h-10 px-4"
+                  >
+                    下一页
+                  </button>
+                </div>
               </div>
             </section>
           </div>
         ) : null}
       </div>
     </div>
-    {passwordModalUser ? (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm"
-        onClick={closePasswordModal}
-      >
-        <form
-          className="w-full max-w-md rounded-2xl border border-white/70 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.24)]"
-          onClick={(e) => e.stopPropagation()}
-          onSubmit={resetUserPassword}
-        >
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-ai-primary/10 text-ai-primary">
-              <KeyRound size={20} />
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-ai-title">重置密码</h2>
-              <p className="mt-1 text-sm text-ai-body">
-                {passwordModalUser.name} · {passwordModalUser.username}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-2xl bg-ai-bg px-4 py-3 text-sm text-ai-body">
-            <div className="flex items-center justify-between gap-3">
-              <span>目标身份</span>
-              <span className="font-semibold text-ai-title">
-                {passwordModalUser.role === "admin" ? adminLevelLabel(passwordModalUser.admin_level) : "普通用户"}
-              </span>
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <span>所属部门</span>
-              <span className="font-semibold text-ai-title">
-                {passwordModalUser.admin_department || passwordModalUser.department || "未设置"}
-              </span>
-            </div>
-          </div>
-
-          <label className="mt-5 block text-sm font-semibold text-ai-title" htmlFor="admin-password-reset">
-            新密码
-          </label>
-          <input
-            id="admin-password-reset"
-            type="password"
-            autoFocus
-            value={passwordValue}
-            onChange={(e) => setPasswordValue(e.target.value)}
-            className="soft-input mt-2 w-full"
-            placeholder="请输入至少6位新密码"
-          />
-
-          {passwordError ? (
-            <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-100">
-              {passwordError}
-            </div>
-          ) : null}
-
-          <div className="mt-6 flex justify-end gap-3">
-            <button
-              type="button"
-              onClick={closePasswordModal}
-              disabled={Boolean(resettingUserId)}
-              className="ghost-button h-10 px-4 disabled:cursor-not-allowed disabled:opacity-55"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={passwordValue.length < 6 || Boolean(resettingUserId)}
-              className="primary-button h-10 px-4"
-            >
-              <KeyRound size={16} />
-              {resettingUserId ? "重置中..." : "确认重置"}
-            </button>
-          </div>
-        </form>
-      </div>
-    ) : null}
     </>
   );
 }
+

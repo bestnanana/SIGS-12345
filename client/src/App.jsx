@@ -5,7 +5,6 @@ import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
-import LeaderApprovalPage from "./pages/LeaderApprovalPage";
 import MyTicketsPage from "./pages/MyTicketsPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
 import TicketFormPage from "./pages/TicketFormPage";
@@ -114,14 +113,7 @@ function App() {
         <Route path="/tickets" element={isAdmin ? <Navigate to="/admin" replace /> : <MyTicketsPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage user={effectiveUser} />} />
         <Route path="/typical" element={<TypicalIssuesPage />} />
-        <Route
-          path="/admin"
-          element={isAdmin ? <AdminPage /> : <Navigate to="/" replace />}
-        />
-        <Route
-          path="/leader-approvals"
-          element={isAdmin && Number(user.admin_level) !== 2 ? <LeaderApprovalPage /> : <Navigate to={isAdmin ? "/admin" : "/"} replace />}
-        />
+        <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

@@ -10,8 +10,7 @@ const userNavItems = [
 ];
 
 const adminNavItems = [
-  { labelKey: "nav.admin", to: "/admin" },
-  { labelKey: "nav.leaderApproval", to: "/leader-approvals", leaderOnly: true }
+  { labelKey: "nav.admin", to: "/admin" }
 ];
 
 function LogoMark() {
@@ -36,15 +35,9 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   const navigate = useNavigate();
   const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const roleLabel = user.role === "admin"
-    ? Number(user.admin_level) === 0
-      ? t("role.superAdmin")
-      : t("role.levelAdmin", { level: Number(user.admin_level) === 1 ? 1 : 2 })
-    : t("role.user");
+  const roleLabel = user.role === "admin" ? t("role.admin") : t("role.user");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
-  const navItems = user.role === "admin"
-    ? adminNavItems.filter((item) => !item.leaderOnly || Number(user.admin_level) !== 2)
-    : userNavItems;
+  const navItems = user.role === "admin" ? adminNavItems : userNavItems;
   const isActualAdmin = actualUser.role === "admin";
   const isAdminArea = user.role === "admin" && location.pathname.startsWith("/admin");
   const mainClassName = isAdminArea
