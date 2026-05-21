@@ -99,7 +99,11 @@ function App() {
   }
 
   if (!user) {
-    return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
+    if (location.pathname === "/local/login") {
+      return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
+    }
+    window.location.replace(location.pathname + location.search + location.hash);
+    return <div className="flex min-h-screen items-center justify-center text-tsinghua-700">{t("common.loading")}</div>;
   }
 
   const isAdmin = user.role === "admin" && viewRole !== "user";
@@ -114,6 +118,7 @@ function App() {
         <Route path="/tickets/:id" element={<TicketDetailPage user={effectiveUser} />} />
         <Route path="/typical" element={<TypicalIssuesPage />} />
         <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to="/" replace />} />
+        <Route path="/local/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

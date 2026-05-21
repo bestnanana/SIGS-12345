@@ -44,6 +44,26 @@ MINIMAX_MODEL=abab6.5s-chat
 
 未配置 Minimax 时，系统会自动使用本地规则生成事项分类和回复建议，保证完整流程可运行。
 
+## 统一身份认证第一步
+
+系统默认启用全局登录拦截。未登录访问业务页面或后端接口时，后端会 302 跳转到统一身份认证授权页。
+
+保留的本地登录白名单：
+
+- 本地登录页：`/local/login`
+- 本地登录提交：`/local/doLogin`
+
+相关配置：
+
+```env
+SSO_BASE_URL=https://sso.sigs.tsinghua.edu.cn
+SSO_CLIENT_ID=xxx
+SSO_CLIENT_SECRET=
+SSO_REDIRECT_URI=http://localhost:3001/sso/callback
+```
+
+生产环境可将 `SSO_BASE_URL` 设置为 `https://id.sigs.tsinghua.edu.cn`。SSO 回调 `/sso/callback` 会在后续步骤实现。
+
 ## 主要功能
 
 - JWT 登录认证与用户角色区分

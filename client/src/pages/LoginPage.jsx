@@ -22,7 +22,10 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
     setLoading(true);
     setError("");
     try {
-      const res = await api.post("/auth/login", form, { skipAuthExpiredHandler: true });
+      const res = await api.post("/doLogin", form, {
+        baseURL: "/local",
+        skipAuthExpiredHandler: true
+      });
       setTransitioning(true);
       transitionTimer.current = window.setTimeout(() => {
         onLogin(res.data);

@@ -18,8 +18,14 @@ const defaultPort = process.env.NODE_ENV === "production" ? 80 : 3001;
 const port = process.env.PORT || defaultPort;
 const jwtSecret = process.env.JWT_SECRET || "dev-secret";
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
+const sessionCookieName = process.env.SESSION_COOKIE_NAME || "campus.sid";
+const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 8 * 60 * 60 * 1000);
+const ssoBaseUrl = (process.env.SSO_BASE_URL || "https://sso.sigs.tsinghua.edu.cn").replace(/\/$/, "");
+const ssoClientId = process.env.SSO_CLIENT_ID || "xxx";
+const ssoRedirectUri = process.env.SSO_REDIRECT_URI || "";
 const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
+const sessions = new Map();
 
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -47,7 +53,96 @@ app.use(express.json());
 app.use("/uploads", express.static(uploadDir));
 
 const distPath = path.join(__dirname, "..", "client", "dist");
-app.use(express.static(distPath));
+app.use(express.static(distPath, { index: false }));
+
+function parseCookies(req) {
+  return String(req.headers.cookie || "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .reduce((acc, item) => {
+      const index = item.indexOf("=");
+      if (index === -1) return acc;
+      acc[decodeURIComponent(item.slice(0, index))] = decodeURIComponent(item.slice(index + 1));
+      return acc;
+    }, {});
+}
+
+function createSession(res, user) {
+  const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  const expiresAt = Date.now() + sessionMaxAgeMs;
+  sessions.set(sessionId, { loginUser: publicUser(user), expiresAt });
+  res.cookie(sessionCookieName, sessionId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: sessionMaxAgeMs,
+    path: "/"
+  });
+  return sessions.get(sessionId);
+}
+
+function loadSession(req) {
+  const sessionId = parseCookies(req)[sessionCookieName];
+  if (!sessionId) return null;
+  const session = sessions.get(sessionId);
+  if (!session?.loginUser || session.expiresAt <= Date.now()) {
+    sessions.delete(sessionId);
+    return null;
+  }
+  session.expiresAt = Date.now() + sessionMaxAgeMs;
+  return session;
+}
+
+function randomState() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
+
+function appOrigin(req) {
+  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+function ssoAuthorizeUrl(req) {
+  const authorizeUrl = new URL(`${ssoBaseUrl}/sso/oauth/authorize`);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("client_id", ssoClientId);
+  authorizeUrl.searchParams.set("redirect_uri", ssoRedirectUri || `${appOrigin(req)}/sso/callback`);
+  authorizeUrl.searchParams.set("state", randomState());
+  return authorizeUrl.toString();
+}
+
+function isLocalLoginWhitelist(req) {
+  const pathname = req.path;
+  return (
+    (req.method === "GET" && pathname === "/local/login") ||
+    (req.method === "POST" && pathname === "/local/doLogin")
+  );
+}
+
+function isPublicRoute(req) {
+  const pathname = req.path;
+  return (
+    pathname.startsWith("/assets/") ||
+    pathname.startsWith("/uploads/") ||
+    pathname === "/favicon.ico" ||
+    pathname === "/tsinghua-sigs-logo.png" ||
+    pathname === "/sigs-prompt-logo.svg"
+  );
+}
+
+function globalLoginInterceptor(req, res, next) {
+  if (isPublicRoute(req) || isLocalLoginWhitelist(req)) return next();
+  const session = loadSession(req);
+  if (session?.loginUser) {
+    req.session = session;
+    return next();
+  }
+  return res.redirect(302, ssoAuthorizeUrl(req));
+}
+
+app.use(globalLoginInterceptor);
 
 function publicUser(user) {
   if (!user) return null;
@@ -85,6 +180,13 @@ function tokenFromRequest(req) {
 }
 
 function auth(req, res, next) {
+  const session = loadSession(req);
+  if (session?.loginUser) {
+    req.session = session;
+    req.user = session.loginUser;
+    return next();
+  }
+
   const token = tokenFromRequest(req);
   if (!token) return res.status(401).json({ code: "TOKEN_MISSING", message: "请先登录" });
   try {
@@ -202,6 +304,10 @@ async function ticketDetails(id, viewer) {
 }
 
 app.post("/api/auth/login", async (req, res) => {
+  return res.status(404).json({ message: "本地登录入口已迁移至 /local/login" });
+});
+
+app.post("/local/doLogin", async (req, res) => {
   const unionId = String(req.body.union_id || req.body.username || "").trim();
   const { password } = req.body;
   const user = await get(
@@ -222,6 +328,7 @@ app.post("/api/auth/login", async (req, res) => {
     role: user.role,
     department: user.department
   });
+  createSession(res, user);
   res.json({
     token: signUser(user),
     expires_in: jwtExpiresIn,
@@ -418,6 +525,10 @@ app.get("/api/public/typical-tickets", async (req, res) => {
      ORDER BY t.published_at DESC`
   );
   res.json(rows);
+});
+
+app.get("/local/login", (req, res) => {
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 app.use((err, req, res, next) => {
