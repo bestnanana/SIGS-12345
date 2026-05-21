@@ -20,12 +20,19 @@ const jwtSecret = process.env.JWT_SECRET || "dev-secret";
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || "campus.sid";
 const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 8 * 60 * 60 * 1000);
-const ssoBaseUrl = (process.env.SSO_BASE_URL || "https://sso.sigs.tsinghua.edu.cn").replace(/\/$/, "");
-const ssoClientId = process.env.SSO_CLIENT_ID || "xxx";
-const ssoRedirectUri = process.env.SSO_REDIRECT_URI || "";
+const ssoAuthorizeBaseUrl = (process.env.SSO_AUTHORIZE_BASE_URL || "https://id.sigs.tsinghua.edu.cn").replace(/\/$/, "");
+const ssoApiBaseUrl = (process.env.SSO_API_BASE_URL || process.env.SSO_BASE_URL || "https://sso.sigs.tsinghua.edu.cn").replace(/\/$/, "");
+const ssoClientId = process.env.SSO_CLIENT_ID || "APP112";
+const ssoClientSecret = process.env.SSO_CLIENT_SECRET || "";
+const ssoRedirectUri = process.env.SSO_REDIRECT_URI || "http://10.103.0.148/";
+const ssoLogoutUrl = process.env.SSO_LOGOUT_URL || "https://sso.sigs.tsinghua.edu.cn/portal/sso/logout.html";
+const ssoLogoutRedirectUrl = process.env.SSO_LOGOUT_REDIRECT_URL || "http://10.103.0.148/";
+const ssoStateCookieName = process.env.SSO_STATE_COOKIE_NAME || "campus.oauth_state";
+const ssoStateMaxAgeMs = Number(process.env.SSO_STATE_MAX_AGE_MS || 10 * 60 * 1000);
 const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
 const sessions = new Map();
+const oauthStates = new Map();
 
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -82,6 +89,23 @@ function createSession(res, user) {
   return sessions.get(sessionId);
 }
 
+function clearAuthCookies(res) {
+  const cookieOptions = {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/"
+  };
+  res.clearCookie(sessionCookieName, cookieOptions);
+  res.clearCookie(ssoStateCookieName, cookieOptions);
+}
+
+function buildSsoLogoutUrl() {
+  const logoutUrl = new URL(ssoLogoutUrl);
+  logoutUrl.searchParams.set("redirectUrl", ssoLogoutRedirectUrl);
+  return logoutUrl.toString();
+}
+
 function loadSession(req) {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (!sessionId) return null;
@@ -95,29 +119,126 @@ function loadSession(req) {
 }
 
 function randomState() {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  let value = "";
+  for (let index = 0; index < 15; index += 1) {
+    value += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return value;
 }
 
-function appOrigin(req) {
-  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  const host = req.headers["x-forwarded-host"] || req.headers.host;
-  return `${proto}://${host}`;
+function createOauthState(res) {
+  const state = randomState();
+  const expiresAt = Date.now() + ssoStateMaxAgeMs;
+  oauthStates.set(state, { expiresAt });
+  res.cookie(ssoStateCookieName, state, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: ssoStateMaxAgeMs,
+    path: "/"
+  });
+  return state;
 }
 
-function ssoAuthorizeUrl(req) {
-  const authorizeUrl = new URL(`${ssoBaseUrl}/sso/oauth/authorize`);
+function verifyOauthState(req, state) {
+  const storedState = parseCookies(req)[ssoStateCookieName];
+  const record = state ? oauthStates.get(state) : null;
+  if (!state || !storedState || storedState !== state || !record || record.expiresAt <= Date.now()) {
+    if (state) oauthStates.delete(state);
+    return false;
+  }
+  oauthStates.delete(state);
+  return true;
+}
+
+function ssoAuthorizeUrl(req, res) {
+  const state = createOauthState(res);
+  const authorizeUrl = new URL(`${ssoAuthorizeBaseUrl}/sso/oauth/authorize`);
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("client_id", ssoClientId);
-  authorizeUrl.searchParams.set("redirect_uri", ssoRedirectUri || `${appOrigin(req)}/sso/callback`);
-  authorizeUrl.searchParams.set("state", randomState());
+  authorizeUrl.searchParams.set("redirect_uri", ssoRedirectUri);
+  authorizeUrl.searchParams.set("state", state);
   return authorizeUrl.toString();
+}
+
+async function exchangeSsoCodeForToken(code) {
+  if (!ssoClientSecret) {
+    const error = new Error("统一身份认证client_secret未配置");
+    error.status = 500;
+    throw error;
+  }
+  const tokenUrl = new URL(`${ssoApiBaseUrl}/sso/oauth/accessToken`);
+  tokenUrl.searchParams.set("grant_type", "authorization_code");
+  tokenUrl.searchParams.set("client_id", ssoClientId);
+  tokenUrl.searchParams.set("client_secret", ssoClientSecret);
+  tokenUrl.searchParams.set("code", code);
+
+  const response = await fetch(tokenUrl, { method: "POST" });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    data = { message: text };
+  }
+
+  const errorCode = data.error_code ?? data.errcode ?? data.code;
+  if (!response.ok || errorCode) {
+    const error = new Error(data.error_description || data.message || data.msg || "统一身份认证access_token换取失败");
+    error.status = response.status || 502;
+    error.ssoCode = String(errorCode || "");
+    throw error;
+  }
+  if (!data.access_token) {
+    const error = new Error("统一身份认证响应缺少access_token");
+    error.status = 502;
+    throw error;
+  }
+  return data;
+}
+
+async function fetchSsoUserInfo(accessToken) {
+  const userInfoUrl = new URL(`${ssoApiBaseUrl}/sso/oauth/userInfo`);
+  userInfoUrl.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(userInfoUrl, { method: "POST" });
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    data = { message: text };
+  }
+
+  if (!response.ok || Number(data.ret) !== 0) {
+    const error = new Error(Number(data.ret) === -1 ? "统一身份认证token无效或已过期，请重新登录" : data.msg || data.message || "统一身份认证用户信息获取失败");
+    error.status = Number(data.ret) === -1 ? 401 : (response.status || 502);
+    error.ssoRet = data.ret;
+    throw error;
+  }
+  if (!data.uid || !data.name) {
+    const error = new Error("统一身份认证用户信息缺少uid或name");
+    error.status = 502;
+    throw error;
+  }
+  return {
+    uid: String(data.uid).trim(),
+    name: String(data.name).trim(),
+    personType: String(data.personType || "").trim(),
+    personId: String(data.personId || "").trim(),
+    raw: data
+  };
 }
 
 function isLocalLoginWhitelist(req) {
   const pathname = req.path;
   return (
     (req.method === "GET" && pathname === "/local/login") ||
-    (req.method === "POST" && pathname === "/local/doLogin")
+    (req.method === "POST" && pathname === "/local/doLogin") ||
+    (req.method === "GET" && pathname === "/sso/authorize-url") ||
+    (req.method === "POST" && pathname === "/sso/manual-code") ||
+    (req.method === "GET" && pathname === "/sso/logout")
   );
 }
 
@@ -139,7 +260,7 @@ function globalLoginInterceptor(req, res, next) {
     req.session = session;
     return next();
   }
-  return res.redirect(302, ssoAuthorizeUrl(req));
+  return res.redirect(302, ssoAuthorizeUrl(req, res));
 }
 
 app.use(globalLoginInterceptor);
@@ -202,6 +323,32 @@ function auth(req, res, next) {
 }
 
 async function loadPerson(id) {
+  return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
+}
+
+async function loadOrCreateSsoPerson(ssoUser) {
+  await ensureDatahubPersonTables();
+  const existing = await get(
+    "SELECT * FROM datahub_basic_persons WHERE union_id = ? OR id = ? LIMIT 1",
+    [ssoUser.uid, ssoUser.personId || ssoUser.uid]
+  );
+  if (existing) {
+    await run(
+      `UPDATE datahub_basic_persons
+       SET union_id = ?, name = ?, type = COALESCE(NULLIF(?, ''), type),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [ssoUser.uid, ssoUser.name, ssoUser.personType, existing.id]
+    );
+    return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [existing.id]);
+  }
+
+  const id = ssoUser.personId || `sso_${ssoUser.uid}`;
+  await run(
+    `INSERT INTO datahub_basic_persons (id, union_id, username, name, type, role, raw_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'user', ?, CURRENT_TIMESTAMP)`,
+    [id, ssoUser.uid, ssoUser.uid, ssoUser.name, ssoUser.personType, JSON.stringify({ sso_person_id: ssoUser.personId })]
+  );
   return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
 }
 
@@ -334,6 +481,81 @@ app.post("/local/doLogin", async (req, res) => {
     expires_in: jwtExpiresIn,
     user: publicUser(user)
   });
+});
+
+app.get("/sso/authorize-url", (req, res) => {
+  res.json({
+    authorize_url: ssoAuthorizeUrl(req, res),
+    response_type: "code",
+    client_id: ssoClientId,
+    redirect_uri: ssoRedirectUri
+  });
+});
+
+app.post("/sso/manual-code", async (req, res) => {
+  const code = String(req.body?.code || "").trim();
+  const state = String(req.body?.state || "").trim();
+  if (!code || !state) {
+    return res.status(400).json({ message: "请填写认证回调 URL 中的 code 和 state" });
+  }
+  if (!verifyOauthState(req, state)) {
+    logger.warn("sso_state_check_failed", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state
+    });
+    return res.status(400).json({ message: "state校验失败，请重新发起统一身份认证登录" });
+  }
+  try {
+    const tokenData = await exchangeSsoCodeForToken(code);
+    const ssoUser = await fetchSsoUserInfo(tokenData.access_token);
+    const user = await loadOrCreateSsoPerson(ssoUser);
+    createSession(res, user);
+    logger.info("sso_access_token_exchanged", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state,
+      expires_in: tokenData.expires_in || tokenData.expiresIn || null,
+      user_id: user.id,
+      union_id: user.union_id
+    });
+    res.json({
+      ok: true,
+      state,
+      token_received: true,
+      user_info_received: true,
+      expires_in: tokenData.expires_in || tokenData.expiresIn || null,
+      token: signUser(user),
+      user: publicUser(user),
+      message: "统一身份认证登录成功。"
+    });
+  } catch (error) {
+    const ssoCodeMessages = {
+      "100016": "统一身份认证密钥错误，请检查client_secret",
+      "100017": "授权码无效或已被使用，请重新获取code"
+    };
+    const status = error.ssoRet === -1 ? 401 : (error.status || 502);
+    logger.warn("sso_access_token_exchange_failed", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state,
+      sso_code: error.ssoCode || "",
+      sso_ret: error.ssoRet ?? "",
+      message: error.message
+    });
+    res.status(status).json({
+      message: ssoCodeMessages[error.ssoCode] || error.message || "access_token获取失败",
+      sso_code: error.ssoCode || undefined,
+      sso_ret: error.ssoRet ?? undefined
+    });
+  }
+});
+
+app.get("/sso/logout", (req, res) => {
+  const sessionId = parseCookies(req)[sessionCookieName];
+  if (sessionId) sessions.delete(sessionId);
+  clearAuthCookies(res);
+  res.redirect(302, buildSsoLogoutUrl());
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {

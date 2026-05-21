@@ -82,6 +82,7 @@ function App() {
     setUser(null);
     setViewRole("");
     setAuthMessage("");
+    window.location.href = "/sso/logout";
   }
 
   function handleViewRoleChange(nextRole) {

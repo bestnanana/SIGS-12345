@@ -6,8 +6,12 @@ import { useLanguage } from "../i18n";
 export default function LoginPage({ onLogin, authMessage = "" }) {
   const { t, language, setLanguage } = useLanguage();
   const [form, setForm] = useState({ union_id: "student", password: "123456" });
+  const [ssoForm, setSsoForm] = useState({ callbackUrl: "", code: "", state: "" });
+  const [ssoMessage, setSsoMessage] = useState("");
+  const [ssoError, setSsoError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const transitionTimer = useRef(null);
 
@@ -34,6 +38,64 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
       setError(err.response?.data?.message || "登录失败");
       setLoading(false);
       setTransitioning(false);
+    }
+  }
+
+  async function startSsoLogin() {
+    setSsoError("");
+    setSsoMessage("");
+    setSsoLoading(true);
+    try {
+      const res = await api.get("/authorize-url", {
+        baseURL: "/sso",
+        skipAuthExpiredHandler: true
+      });
+      window.location.href = res.data.authorize_url;
+    } catch (err) {
+      setSsoError(err.response?.data?.message || "统一身份认证地址生成失败");
+    } finally {
+      setSsoLoading(false);
+    }
+  }
+
+  function updateCallbackUrl(value) {
+    const next = { ...ssoForm, callbackUrl: value };
+    try {
+      const parsed = new URL(value);
+      next.code = parsed.searchParams.get("code") || next.code;
+      next.state = parsed.searchParams.get("state") || next.state;
+    } catch (error) {
+      // The user may paste only part of the callback URL; keep manual fields editable.
+    }
+    setSsoForm(next);
+  }
+
+  async function submitManualCode(e) {
+    e.preventDefault();
+    setSsoError("");
+    setSsoMessage("");
+    setSsoLoading(true);
+    try {
+      const res = await api.post("/manual-code", {
+        code: ssoForm.code.trim(),
+        state: ssoForm.state.trim()
+      }, {
+        baseURL: "/sso",
+        skipAuthExpiredHandler: true
+      });
+      if (res.data?.token && res.data?.user) {
+        setSsoMessage(res.data?.message || "统一身份认证登录成功");
+        setTransitioning(true);
+        transitionTimer.current = window.setTimeout(() => {
+          onLogin(res.data);
+        }, 720);
+        return;
+      }
+      setSsoMessage(res.data?.message || "已收到授权码");
+    } catch (err) {
+      setSsoError(err.response?.data?.message || "授权码提交失败");
+    } finally {
+      setSsoLoading(false);
     }
   }
 
@@ -105,6 +167,69 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
               <h2 className="mt-3 text-[34px] font-semibold tracking-tight text-ai-title">{language === "en" ? "Welcome Back" : "欢迎回来"}</h2>
               <p className="mt-2 text-sm leading-6 text-ai-body">{language === "en" ? "Use your campus account to enter the service platform." : "使用校园账号进入诉求办理平台。"}</p>
             </div>
+
+            <section className="mb-6 rounded-2xl border border-ai-primary/15 bg-ai-primary/5 p-4">
+              <div className="text-sm font-semibold text-ai-title">统一身份认证测试</div>
+              <p className="mt-2 text-xs leading-5 text-ai-body">
+                第 1 步：跳转到测试环境认证页获取 code。本地开发时请在认证成功后的云服务器回调地址中复制 code 和 state，再粘贴到下方。
+              </p>
+              <button
+                type="button"
+                onClick={startSsoLogin}
+                disabled={ssoLoading}
+                className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-ai-primary px-4 text-sm font-semibold text-white transition duration-200 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <ArrowRight size={16} />
+                {ssoLoading ? "处理中..." : "跳转获取授权码"}
+              </button>
+              <form onSubmit={submitManualCode} className="mt-4 space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-ai-body">回调完整 URL</span>
+                  <input
+                    value={ssoForm.callbackUrl}
+                    onChange={(e) => updateCallbackUrl(e.target.value)}
+                    className="soft-input h-10 w-full text-sm"
+                    placeholder="http://10.103.0.148/?code=OC-xxx&state=..."
+                    disabled={ssoLoading}
+                  />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-ai-body">code</span>
+                    <input
+                      value={ssoForm.code}
+                      onChange={(e) => setSsoForm({ ...ssoForm, code: e.target.value })}
+                      className="soft-input h-10 w-full text-sm"
+                      placeholder="OC-xxx"
+                      disabled={ssoLoading}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-medium text-ai-body">state</span>
+                    <input
+                      value={ssoForm.state}
+                      onChange={(e) => setSsoForm({ ...ssoForm, state: e.target.value })}
+                      className="soft-input h-10 w-full text-sm"
+                      placeholder="随机串"
+                      disabled={ssoLoading}
+                    />
+                  </label>
+                </div>
+                <button
+                  type="submit"
+                  disabled={ssoLoading || !ssoForm.code.trim() || !ssoForm.state.trim()}
+                  className="ghost-button h-10 w-full justify-center disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  提交 code/state 给后端
+                </button>
+              </form>
+              {ssoMessage ? (
+                <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800 ring-1 ring-emerald-100">{ssoMessage}</div>
+              ) : null}
+              {ssoError ? (
+                <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 ring-1 ring-red-100">{ssoError}</div>
+              ) : null}
+            </section>
 
             <label className="mb-4 block">
               <span className="mb-2 block text-sm font-medium text-ai-body">{language === "en" ? "Union ID" : "人员编号"}</span>
