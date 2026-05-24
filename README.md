@@ -59,7 +59,7 @@ MINIMAX_MODEL=abab6.5s-chat
 SSO_BASE_URL=https://sso.sigs.tsinghua.edu.cn
 SSO_CLIENT_ID=xxx
 SSO_CLIENT_SECRET=
-SSO_REDIRECT_URI=http://localhost:3001/sso/callback
+SSO_REDIRECT_URI=http://localhost:3001/oauth2
 ```
 
 生产环境可将 `SSO_BASE_URL` 设置为 `https://id.sigs.tsinghua.edu.cn`。SSO 回调 `/sso/callback` 会在后续步骤实现。

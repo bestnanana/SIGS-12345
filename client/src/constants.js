@@ -39,3 +39,6 @@ export function formatTime(value) {
     minute: "2-digit"
   });
 }
+
+export const defaultFields = fields;
+export const defaultDepartments = departments;

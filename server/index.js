@@ -1,4 +1,4 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 
 const fs = require("fs");
 const path = require("path");
@@ -7,6 +7,7 @@ const cors = require("cors");
 const multer = require("multer");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const { initDb, run, get, all, adminDepartments, ensureDatahubPersonTables } = require("./db");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
@@ -21,14 +22,16 @@ const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || "campus.sid";
 const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 8 * 60 * 60 * 1000);
 const ssoAuthorizeBaseUrl = (process.env.SSO_AUTHORIZE_BASE_URL || "https://id.sigs.tsinghua.edu.cn").replace(/\/$/, "");
-const ssoApiBaseUrl = (process.env.SSO_API_BASE_URL || process.env.SSO_BASE_URL || "https://sso.sigs.tsinghua.edu.cn").replace(/\/$/, "");
+const ssoApiBaseUrl = (process.env.SSO_API_BASE_URL || process.env.SSO_BASE_URL || "https://id.sigs.tsinghua.edu.cn").replace(/\/$/, "");
 const ssoClientId = process.env.SSO_CLIENT_ID || "APP112";
 const ssoClientSecret = process.env.SSO_CLIENT_SECRET || "";
-const ssoRedirectUri = process.env.SSO_REDIRECT_URI || "http://10.103.0.148/";
+const ssoRedirectUri = process.env.SSO_REDIRECT_URI || "http://10.103.0.148/oauth2";
 const ssoLogoutUrl = process.env.SSO_LOGOUT_URL || "https://sso.sigs.tsinghua.edu.cn/portal/sso/logout.html";
 const ssoLogoutRedirectUrl = process.env.SSO_LOGOUT_REDIRECT_URL || "http://10.103.0.148/";
 const ssoStateCookieName = process.env.SSO_STATE_COOKIE_NAME || "campus.oauth_state";
 const ssoStateMaxAgeMs = Number(process.env.SSO_STATE_MAX_AGE_MS || 10 * 60 * 1000);
+const ssoStateSecret = process.env.SSO_STATE_SECRET || jwtSecret || ssoClientSecret || "dev-sso-state-secret";
+const ssoAllowLegacyStateFallback = process.env.SSO_ALLOW_LEGACY_STATE_FALLBACK !== "0";
 const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
 const sessions = new Map();
@@ -75,10 +78,16 @@ function parseCookies(req) {
     }, {});
 }
 
-function createSession(res, user) {
+function createSession(res, user, options = {}) {
+  const authSource = options.authSource || "local";
   const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
   const expiresAt = Date.now() + sessionMaxAgeMs;
-  sessions.set(sessionId, { loginUser: publicUser(user), expiresAt });
+  sessions.set(sessionId, {
+    loginUser: publicUser(user),
+    authSource,
+    accessToken: authSource === "sso" ? extractSsoAccessToken(options.tokenData || {}) : null,
+    expiresAt
+  });
   res.cookie(sessionCookieName, sessionId, {
     httpOnly: true,
     sameSite: "lax",
@@ -106,12 +115,98 @@ function buildSsoLogoutUrl() {
   return logoutUrl.toString();
 }
 
-function loadSession(req) {
+function renderSsoLoginPage(payload) {
+  const safePayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>统一身份认证登录中</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f8f8fb; }
+    main { width: min(420px, calc(100vw - 40px)); padding: 28px; border: 1px solid #e5e7eb; border-radius: 16px; background: white; box-shadow: 0 18px 50px rgba(17, 24, 39, 0.10); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    p { margin: 0; color: #4b5563; line-height: 1.7; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>统一身份认证登录成功</h1>
+    <p>正在进入系统，请稍候。</p>
+  </main>
+  <script>
+    const payload = ${safePayload};
+    localStorage.setItem("token", payload.token);
+    localStorage.setItem("user", JSON.stringify(payload.user));
+    localStorage.removeItem("viewRole");
+    window.location.replace(payload.redirect || "/");
+  </script>
+</body>
+</html>`;
+}
+
+function renderSsoErrorPage(message) {
+  const safeMessage = String(message || "统一身份认证登录失败").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[char]));
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>统一身份认证登录失败</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f8f8fb; }
+    main { width: min(460px, calc(100vw - 40px)); padding: 28px; border: 1px solid #fecaca; border-radius: 16px; background: white; box-shadow: 0 18px 50px rgba(17, 24, 39, 0.10); }
+    h1 { margin: 0 0 10px; font-size: 20px; color: #991b1b; }
+    p { margin: 0 0 18px; color: #4b5563; line-height: 1.7; }
+    a { color: #4f46e5; font-weight: 600; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>统一身份认证登录失败</h1>
+    <p>${safeMessage}</p>
+    <a href="/local/login">返回登录页</a>
+  </main>
+</body>
+</html>`;
+}
+
+async function loadSession(req, res) {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (!sessionId) return null;
   const session = sessions.get(sessionId);
   if (!session?.loginUser || session.expiresAt <= Date.now()) {
     sessions.delete(sessionId);
+    if (res) clearAuthCookies(res);
+    return null;
+  }
+  if (session.authSource !== "sso") {
+    session.expiresAt = Date.now() + sessionMaxAgeMs;
+    return session;
+  }
+  if (!session.accessToken) {
+    sessions.delete(sessionId);
+    if (res) clearAuthCookies(res);
+    return null;
+  }
+  try {
+    await fetchSsoUserInfo(session.accessToken);
+  } catch (error) {
+    sessions.delete(sessionId);
+    if (res) clearAuthCookies(res);
+    logger.warn("sso_session_access_token_invalid", {
+      request_id: req.requestId,
+      sso_ret: error.ssoRet ?? "",
+      message: error.message,
+      sso_response: sanitizeSsoResponse(error.ssoResponse)
+    });
     return null;
   }
   session.expiresAt = Date.now() + sessionMaxAgeMs;
@@ -121,14 +216,62 @@ function loadSession(req) {
 function randomState() {
   const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
   let value = "";
-  for (let index = 0; index < 15; index += 1) {
+  for (let index = 0; index < 24; index += 1) {
     value += chars[Math.floor(Math.random() * chars.length)];
   }
   return value;
 }
 
+function signState(nonce, expiresAt) {
+  return crypto
+    .createHmac("sha256", ssoStateSecret)
+    .update(`${nonce}.${expiresAt}`)
+    .digest("base64url");
+}
+
+function createSignedState() {
+  const nonce = randomState();
+  const expiresAt = Date.now() + ssoStateMaxAgeMs;
+  const signature = signState(nonce, expiresAt);
+  return `${nonce}.${expiresAt}.${signature}`;
+}
+
+function verifySignedState(state) {
+  const parts = String(state || "").split(".");
+  if (parts.length !== 3) return false;
+  const [nonce, expiresAtText, signature] = parts;
+  const expiresAt = Number(expiresAtText);
+  if (!nonce || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
+  const expected = signState(nonce, expiresAt);
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signature);
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+function queryValue(req, names) {
+  for (const name of names) {
+    const value = req.query?.[name];
+    if (Array.isArray(value)) {
+      const first = value.find((item) => String(item || "").trim());
+      if (first) return String(first).trim();
+    } else if (value !== undefined && value !== null && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return "";
+}
+
+function parseSsoCallbackParams(req) {
+  return {
+    code: queryValue(req, ["code", "auth_code", "authorization_code"]),
+    state: queryValue(req, ["state", "oauth_state"]),
+    relay: queryValue(req, ["r", "relay", "redirect", "redirect_uri"]),
+    rawKeys: Object.keys(req.query || {})
+  };
+}
+
 function createOauthState(res) {
-  const state = randomState();
+  const state = createSignedState();
   const expiresAt = Date.now() + ssoStateMaxAgeMs;
   oauthStates.set(state, { expiresAt });
   res.cookie(ssoStateCookieName, state, {
@@ -142,6 +285,11 @@ function createOauthState(res) {
 }
 
 function verifyOauthState(req, state) {
+  if (verifySignedState(state)) {
+    oauthStates.delete(state);
+    return true;
+  }
+
   const storedState = parseCookies(req)[ssoStateCookieName];
   const record = state ? oauthStates.get(state) : null;
   if (!state || !storedState || storedState !== state || !record || record.expiresAt <= Date.now()) {
@@ -152,6 +300,14 @@ function verifyOauthState(req, state) {
   return true;
 }
 
+function shouldAllowLegacyState(req, state) {
+  if (!ssoAllowLegacyStateFallback) return false;
+  if (!/^[0-9a-z]{10,40}$/i.test(String(state || ""))) return false;
+  const storedState = parseCookies(req)[ssoStateCookieName];
+  const record = state ? oauthStates.get(state) : null;
+  return !storedState && !record;
+}
+
 function ssoAuthorizeUrl(req, res) {
   const state = createOauthState(res);
   const authorizeUrl = new URL(`${ssoAuthorizeBaseUrl}/sso/oauth/authorize`);
@@ -160,6 +316,50 @@ function ssoAuthorizeUrl(req, res) {
   authorizeUrl.searchParams.set("redirect_uri", ssoRedirectUri);
   authorizeUrl.searchParams.set("state", state);
   return authorizeUrl.toString();
+}
+
+function firstString(...values) {
+  const value = values.find((item) => typeof item === "string" && item.trim());
+  return value ? value.trim() : "";
+}
+
+function extractSsoAccessToken(data) {
+  const nested = data?.data || data?.result || {};
+  const nestedUser = nested?.user || nested?.userinfo || {};
+  return firstString(
+    data?.access_token,
+    data?.accessToken,
+    data?.token,
+    data?.tokenId,
+    nested?.access_token,
+    nested?.accessToken,
+    nested?.token,
+    nested?.tokenId,
+    nestedUser?.access_token,
+    nestedUser?.accessToken,
+    nestedUser?.token,
+    nestedUser?.tokenId
+  );
+}
+
+function normalizeSsoUserInfo(data) {
+  const source = data?.data?.user || data?.data?.userinfo || data?.userinfo || data?.user || data?.data || data || {};
+  return {
+    uid: firstString(source.uid, source.union_id, source.unionId, source.sn, source.loginName, source.username, source.userName, source.account, source.personId),
+    name: firstString(source.name, source.personName, source.realName, source.userName, source.username, source.loginName, source.nickName),
+    personType: firstString(source.personType, source.type, source.category),
+    personId: firstString(source.personId, source.person_id, source.id, source.uid, source.sn),
+    raw: data
+  };
+}
+
+function sanitizeSsoResponse(data) {
+  if (!data || typeof data !== "object") return data;
+  const text = JSON.stringify(data, (key, value) => {
+    if (/token|secret|password/i.test(key)) return value ? "[REDACTED]" : value;
+    return value;
+  });
+  return text.length > 1200 ? `${text.slice(0, 1200)}...` : text;
 }
 
 async function exchangeSsoCodeForToken(code) {
@@ -173,6 +373,7 @@ async function exchangeSsoCodeForToken(code) {
   tokenUrl.searchParams.set("client_id", ssoClientId);
   tokenUrl.searchParams.set("client_secret", ssoClientSecret);
   tokenUrl.searchParams.set("code", code);
+  tokenUrl.searchParams.set("redirect_uri", ssoRedirectUri);
 
   const response = await fetch(tokenUrl, { method: "POST" });
   const text = await response.text();
@@ -183,18 +384,23 @@ async function exchangeSsoCodeForToken(code) {
     data = { message: text };
   }
 
-  const errorCode = data.error_code ?? data.errcode ?? data.code;
-  if (!response.ok || errorCode) {
+  const successCode = data.code === 0 || data.code === 200 || data.code === "0" || data.code === "200";
+  const errorCode = data.error_code ?? data.errcode ?? data.error ?? (successCode ? undefined : data.code);
+  if (!response.ok || errorCode || data.success === false || Number(data.ret) < 0) {
     const error = new Error(data.error_description || data.message || data.msg || "统一身份认证access_token换取失败");
     error.status = response.status || 502;
     error.ssoCode = String(errorCode || "");
+    error.ssoResponse = data;
     throw error;
   }
-  if (!data.access_token) {
+  const accessToken = extractSsoAccessToken(data);
+  if (!accessToken) {
     const error = new Error("统一身份认证响应缺少access_token");
     error.status = 502;
+    error.ssoResponse = data;
     throw error;
   }
+  data.access_token = accessToken;
   return data;
 }
 
@@ -211,24 +417,94 @@ async function fetchSsoUserInfo(accessToken) {
     data = { message: text };
   }
 
-  if (!response.ok || Number(data.ret) !== 0) {
+  const successCode = data.code === 0 || data.code === 200 || data.code === "0" || data.code === "200";
+  const hasRet = data.ret !== undefined && data.ret !== null;
+  if (!response.ok || (hasRet ? Number(data.ret) !== 0 : (data.success === false || (data.code !== undefined && !successCode)))) {
     const error = new Error(Number(data.ret) === -1 ? "统一身份认证token无效或已过期，请重新登录" : data.msg || data.message || "统一身份认证用户信息获取失败");
     error.status = Number(data.ret) === -1 ? 401 : (response.status || 502);
     error.ssoRet = data.ret;
+    error.ssoResponse = data;
     throw error;
   }
-  if (!data.uid || !data.name) {
+  const userInfo = normalizeSsoUserInfo(data);
+  if (!userInfo.uid || !userInfo.name) {
     const error = new Error("统一身份认证用户信息缺少uid或name");
     error.status = 502;
+    error.ssoResponse = data;
     throw error;
   }
-  return {
-    uid: String(data.uid).trim(),
-    name: String(data.name).trim(),
-    personType: String(data.personType || "").trim(),
-    personId: String(data.personId || "").trim(),
-    raw: data
-  };
+  return userInfo;
+}
+
+async function completeSsoLogin(code) {
+  const tokenData = await exchangeSsoCodeForToken(code);
+  const ssoUser = await fetchSsoUserInfo(tokenData.access_token);
+  const user = await loadOrCreateSsoPerson(ssoUser);
+  return { tokenData, user };
+}
+
+async function handleSsoCallback(req, res) {
+  const { code, state, relay, rawKeys } = parseSsoCallbackParams(req);
+  logger.info("sso_callback_received", {
+    request_id: req.requestId,
+    query_keys: rawKeys,
+    code_prefix: code.slice(0, 8),
+    state,
+    relay: relay ? "[received]" : ""
+  });
+  if (!code || !state) {
+    return res.status(400).type("html").send(renderSsoErrorPage("认证回调缺少 code 或 state，请重新登录。"));
+  }
+  if (!verifyOauthState(req, state) && !shouldAllowLegacyState(req, state)) {
+    logger.warn("sso_callback_state_check_failed", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state,
+      query_keys: rawKeys,
+      cookie_state_present: Boolean(parseCookies(req)[ssoStateCookieName]),
+      memory_state_present: Boolean(oauthStates.get(state)),
+      signed_state_valid: verifySignedState(state)
+    });
+    return res.status(400).type("html").send(renderSsoErrorPage("state 校验失败，请重新发起统一身份认证登录。"));
+  }
+  try {
+    const { tokenData, user } = await completeSsoLogin(code);
+    createSession(res, user, { authSource: "sso", tokenData });
+    logger.info("sso_callback_login_success", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state,
+      expires_in: tokenData.expires_in || tokenData.expiresIn || null,
+      user_id: user.id,
+      union_id: user.union_id
+    });
+    return res.type("html").set("Cache-Control", "no-store").send(renderSsoLoginPage({
+      token: signUser(user),
+      user: publicUser(user),
+      redirect: "/"
+    }));
+  } catch (error) {
+    const ssoCodeMessages = {
+      "100016": "统一身份认证密钥错误，请检查 client_secret。",
+      "100017": "授权码无效或已被使用，请重新获取 code。"
+    };
+    logger.warn("sso_callback_login_failed", {
+      request_id: req.requestId,
+      code_prefix: code.slice(0, 8),
+      state,
+      sso_code: error.ssoCode || "",
+      sso_ret: error.ssoRet ?? "",
+      message: error.message,
+      sso_response: sanitizeSsoResponse(error.ssoResponse)
+    });
+    if (error.ssoRet === -1) {
+      clearAuthCookies(res);
+      return res.redirect(302, ssoAuthorizeUrl(req, res));
+    }
+    return res.status(error.ssoRet === -1 ? 401 : (error.status || 502))
+      .type("html")
+      .send(renderSsoErrorPage(ssoCodeMessages[error.ssoCode] || error.message || "access_token 获取失败。"));
+  }
 }
 
 function isLocalLoginWhitelist(req) {
@@ -237,10 +513,21 @@ function isLocalLoginWhitelist(req) {
     (req.method === "GET" && pathname === "/local/login") ||
     (req.method === "POST" && pathname === "/local/doLogin") ||
     (req.method === "GET" && pathname === "/sso/authorize-url") ||
+    (req.method === "GET" && pathname === "/oauth2") ||
     (req.method === "POST" && pathname === "/sso/manual-code") ||
     (req.method === "GET" && pathname === "/sso/logout")
   );
 }
+
+app.get("/oauth2", handleSsoCallback);
+app.get("/sso/callback", handleSsoCallback);
+
+app.get("/", (req, res, next) => {
+  if (req.query?.code || req.query?.state) {
+    return handleSsoCallback(req, res);
+  }
+  return next();
+});
 
 function isPublicRoute(req) {
   const pathname = req.path;
@@ -253,9 +540,9 @@ function isPublicRoute(req) {
   );
 }
 
-function globalLoginInterceptor(req, res, next) {
+async function globalLoginInterceptor(req, res, next) {
   if (isPublicRoute(req) || isLocalLoginWhitelist(req)) return next();
-  const session = loadSession(req);
+  const session = await loadSession(req, res);
   if (session?.loginUser) {
     req.session = session;
     return next();
@@ -300,8 +587,8 @@ function tokenFromRequest(req) {
   return header.startsWith("Bearer ") ? header.slice(7) : null;
 }
 
-function auth(req, res, next) {
-  const session = loadSession(req);
+async function auth(req, res, next) {
+  const session = req.session || await loadSession(req, res);
   if (session?.loginUser) {
     req.session = session;
     req.user = session.loginUser;
@@ -475,7 +762,7 @@ app.post("/local/doLogin", async (req, res) => {
     role: user.role,
     department: user.department
   });
-  createSession(res, user);
+  createSession(res, user, { authSource: "local" });
   res.json({
     token: signUser(user),
     expires_in: jwtExpiresIn,
@@ -493,24 +780,25 @@ app.get("/sso/authorize-url", (req, res) => {
 });
 
 app.post("/sso/manual-code", async (req, res) => {
-  const code = String(req.body?.code || "").trim();
-  const state = String(req.body?.state || "").trim();
+  const code = String(req.body?.code || req.body?.auth_code || req.body?.authorization_code || "").trim();
+  const state = String(req.body?.state || req.body?.oauth_state || "").trim();
   if (!code || !state) {
     return res.status(400).json({ message: "请填写认证回调 URL 中的 code 和 state" });
   }
-  if (!verifyOauthState(req, state)) {
+  if (!verifyOauthState(req, state) && !shouldAllowLegacyState(req, state)) {
     logger.warn("sso_state_check_failed", {
       request_id: req.requestId,
       code_prefix: code.slice(0, 8),
-      state
+      state,
+      cookie_state_present: Boolean(parseCookies(req)[ssoStateCookieName]),
+      memory_state_present: Boolean(oauthStates.get(state)),
+      signed_state_valid: verifySignedState(state)
     });
     return res.status(400).json({ message: "state校验失败，请重新发起统一身份认证登录" });
   }
   try {
-    const tokenData = await exchangeSsoCodeForToken(code);
-    const ssoUser = await fetchSsoUserInfo(tokenData.access_token);
-    const user = await loadOrCreateSsoPerson(ssoUser);
-    createSession(res, user);
+    const { tokenData, user } = await completeSsoLogin(code);
+    createSession(res, user, { authSource: "sso", tokenData });
     logger.info("sso_access_token_exchanged", {
       request_id: req.requestId,
       code_prefix: code.slice(0, 8),
@@ -534,6 +822,10 @@ app.post("/sso/manual-code", async (req, res) => {
       "100016": "统一身份认证密钥错误，请检查client_secret",
       "100017": "授权码无效或已被使用，请重新获取code"
     };
+    if (error.ssoRet === -1) {
+      clearAuthCookies(res);
+      return res.redirect(302, ssoAuthorizeUrl(req, res));
+    }
     const status = error.ssoRet === -1 ? 401 : (error.status || 502);
     logger.warn("sso_access_token_exchange_failed", {
       request_id: req.requestId,
@@ -541,7 +833,8 @@ app.post("/sso/manual-code", async (req, res) => {
       state,
       sso_code: error.ssoCode || "",
       sso_ret: error.ssoRet ?? "",
-      message: error.message
+      message: error.message,
+      sso_response: sanitizeSsoResponse(error.ssoResponse)
     });
     res.status(status).json({
       message: ssoCodeMessages[error.ssoCode] || error.message || "access_token获取失败",

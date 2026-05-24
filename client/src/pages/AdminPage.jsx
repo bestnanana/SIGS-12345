@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, Paperclip, RefreshCw, RotateCcw, Search, SendHorizontal, UsersRound } from "lucide-react";
+import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, Paperclip, RefreshCw, RotateCcw, Search, SendHorizontal, Settings2, UsersRound } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, uploadConfig } from "../api";
 import { formatTime } from "../constants";
+import FormConfigManager from "../components/FormConfigManager";
 import { useLanguage, useStatusMap } from "../i18n";
 
 const adminMenuItems = [
   { key: "tickets", labelKey: "admin.menuTickets", descriptionKey: "admin.menuTicketsDesc", icon: ClipboardList },
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
-  { key: "persons", labelKey: "人员管理", descriptionKey: "Datahub人员基础信息", icon: UsersRound }
+  { key: "persons", labelKey: "人员管理", descriptionKey: "Datahub人员基础信息", icon: UsersRound },
+  { key: "config", labelKey: "配置管理", descriptionKey: "表单领域和部门配置", icon: Settings2 }
 ];
-
 const ticketStatusOrder = ["pending", "processing", "completed"];
 const normalizeTicketStatus = (status) => (["replied", "transferred"].includes(status) ? "processing" : status);
 
@@ -327,8 +328,8 @@ export default function AdminPage() {
               >
                 <Icon size={18} className="mt-0.5 shrink-0" />
                 <span className="min-w-0">
-                  <span className="block text-sm font-semibold">{t(item.labelKey)}</span>
-                  <span className={`mt-1 block text-xs leading-5 ${active ? "text-white/80" : "text-ai-muted"}`}>{t(item.descriptionKey)}</span>
+                  <span className="block text-sm font-semibold">{item.labelKey ? t(item.labelKey) : item.label}</span>
+                  <span className={`mt-1 block text-xs leading-5 ${active ? "text-white/80" : "text-ai-muted"}`}>{item.descriptionKey ? t(item.descriptionKey) : item.description}</span>
                 </span>
               </button>
             );
@@ -886,6 +887,8 @@ export default function AdminPage() {
               </div>
             </section>
           </div>
+        ) : activeView === "config" ? (
+          <FormConfigManager />
         ) : null}
       </div>
     </div>

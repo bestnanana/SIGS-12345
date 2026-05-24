@@ -1,0 +1,214 @@
+
+统一身份认证平台认证集成文档
+上海申石软件有限公司
+目录
+ TOC \o "1-3" \h \z \u HYPERLINK \l _Toc13950 统一身份认证平台认证集成文档 PAGEREF _Toc13950 \h 1
+ HYPERLINK \l _Toc32067 总体说明 PAGEREF _Toc32067 \h 2
+ HYPERLINK \l _Toc6122 1. 对接统一身份认证 PAGEREF _Toc6122 \h 2
+ HYPERLINK \l _Toc6589 1.1. OAuth2.0协议接入 PAGEREF _Toc6589 \h 3
+ HYPERLINK \l _Toc731 1.1.1. 概述 PAGEREF _Toc731 \h 3
+ HYPERLINK \l _Toc4077 1.1.2. 基本概念 PAGEREF _Toc4077 \h 3
+ HYPERLINK \l _Toc4841 1.1.3. 准备 PAGEREF _Toc4841 \h 5
+ HYPERLINK \l _Toc16654 1.1.4. 获取授权码（Authorization Code） PAGEREF _Toc16654 \h 5
+ HYPERLINK \l _Toc12351 1.1.5. 使用授权码换取 Access Token PAGEREF _Toc12351 \h 6
+ HYPERLINK \l _Toc22784 1.1.6. 获取用户信息 PAGEREF _Toc22784 \h 8
+ HYPERLINK \l _Toc4658 1.1.7. 第三方应用访问 PAGEREF _Toc4658 \h 10
+ HYPERLINK \l _Toc18662 1.1.8. 认证注销 PAGEREF _Toc18662 \h 10
+版本列表
+A-增加；M-修改；D-删除
+文档信息说明
+版本号
+日期
+撰写人
+修改类型
+描述
+1.0
+2026.1.13
+Ahwater
+A
+OAuth2.0集成文档
+总体说明
+随着信息化程度的提高，学校内部运行的系统将越来越多，虽然各系统功能不同，但都需要鉴别使用者的身份，这样带来一个突出的问题：用户面对多个系统需要重复输入账号、口令等信息，不仅繁琐，更重要的是容易出现口令丢失，造成不可估量的损失，并且师生入校和离校的全过程中，无法对各个内部应用系统的用户账户进行同步变动，对信息安全方面造成极大的安全隐患。同时，每个应用系统都有类似的认证模块，开发及维护的的代价很大。
+遵循智慧校园的建设路线，接入统一身份认证平台，解决用户系统登录问题，实现统一认证登录必须完成一下工作：
+对接统一身份认证
+数据对接，对接组织信息和用户信息
+对接统一身份认证
+参数说明
+参数
+参数值
+${url}
+测试环境：https://sso.sigs.tsinghua.edu.cn 
+生产环境：https://id.sigs.tsinghua.edu.cn
+${client_id}
+统一身份认证应用注册时，生成的唯一标识，请联系管理员提供
+client_id:xxxxx
+client_secret: xxxxx
+注意：之后文档出现的${}值均为变量，取值根据对应环境选择以上表格中的信息。
+OAuth2.0 HYPERLINK "https://authx-docs.nwpu.edu.cn/authx/index.html" \l "/guide/cas/oauth2/?id=oauth-20-%e5%8d%8f%e8%ae%ae%e6%8e%a5%e5%85%a5" 协议接入
+概述
+OAuth： 统一身份认证平台支持使用OAuth 2.0 协议对用户认证授权应用访问，本章节介绍OAuth 2.0 的基本概念和应用接入说明。
+基本概念
+OAuth： OAuth（开放授权）是一个开放标准，允许用户授权第三方网站访问他们存储在另外的服务提供者上的信息，而不需要将用户名和密码提供给第三方网站或分享他们数据的所有内容。
+授权方式：授权码模式（authorization code）通过客户端的后台服务器，向服务端认证。
+认证流程图如下所示：
+说明:
+（1）用户请求访问应用系统。
+（2）应用系统将认证请求发送到认证服务器，认证服务器判断是否认证，如果没有认证过，则重定向到认证登录页面进行统一认证。
+（3）认证成功后，重定向到应用系统指定URL，并返回code。
+（4）应用系统根据返回的code请求认证服务器获取access_token和refresh_token。
+（5）应用系统根据返回的access_token请求认证服务器获取用户信息。
+（6）登录到应用系统主页。
+准备
+提供应用域名、回调地址给到统一身份认证管理员，完成应用注册后，将 client_id、client_secret 给到应用对接方
+获取授权码（Authorization Code）
+跳转到授权页面
+用户访问第三方应用，若未登录时，第三方应用需要将用户浏览器重定向到认证服务的OAuth2授权页面 /oauth/authorize，同时可带上以下参数：
+参数说明：
+response_type
+响应类型：固定值 code
+client_id
+应用注册时，生成的唯一标识
+redirect_uri
+第三方应用的回调地址（须和应用注册时的回调地址保持匹配），便于 OAuth Server在完成认证、用户授权后，重新跳转到第三方应用时，传回 授权码（authorization code）。
+state
+第三方应用生成的随机字符串，返回第三方应用时，会原样返回。
+请求示例：
+第三方应用通过浏览器发起以下请求：
+GET 
+/sso/oauth/authorize?response_type=code&client_id=902&redirect_uri=https://example.com/oauth2/authcode&state=YOU-RANDOM_STATE
+HTTP/1.1
+Host: ${url}
+用户登录
+用户在登录页面输入自己的用户名、密码进行登录。
+由 OAuth Server对用户进行认证。
+响应
+若 OAuth Server认证成功，OAuth Server会将 授权码（authorization code） 通过第一步中的 redirect_uri，以 code 为参数名，传递给第三方应用。
+例如，SSO 服务使用以下响应，将浏览器重定向：
+HTTP/1.1 302 Found
+Location: https://sigs.test.com/oauth2/authcode?code=OC-2-lO-RjC5flQ3fqsw2LV0bAYEvy6rVfyXV&state=YOUR_RANDOM_STATE
+若 OAuth Server认证失败，OAuth Server重新回到登录页面。
+使用授权码换取 Access Token
+第三方应用获取到 授权码（Authorization Code） 后，须使用 授权码（Authorization Code） 换取 Access Token
+获取授权码（Authorization Code）
+第三方应用，从浏览器请求中获取请求参数 code 的参数值
+同时，校验 state 是否与 跳转到授权页面 之前，存储在应用服务器端的 state 是一致的。可防止 CSRF 攻击。建议务必校验。
+换取 Access Token
+第三方应用请求 sso/oauth/accessToken ，以换取 Access Token，并获取 JSON格式的响应结果。
+具体参数如下：
+参数说明：
+grant_type
+响应类型：固定值 authorization_code
+client_id
+应用注册时，生成的唯一标识
+client_secret
+应用注册时，生成的密钥
+code
+认证登录返回的 授权码（Authorization Code）
+请求示例：
+第三方应用须通过服务器端代码，请求换取 Access Token（请求可以为 GET 、POST）。这一步不发生在浏览器，而是第三方应用的服务端和OAuth Server直接通信。
+GET /sso/oauth/accessToken?grant_type=authorization_code&client_id=902&client_secret=902code=OC-2-lO-RjC5flQ3fqsw2LV0bAYEvy6rVfyXV 
+HTTP/1.1
+Host:${url}
+响应成功：
+HTTP/2 200
+content-type: application/json;charset=UTF-8
+{
+"access_token":"AT-1-4OAC0xUWy-QX0zfMr2ERQHUCxbTRSJZ-","token_type":"bearer","expires_in":28800,"refresh_token":"RT-1-MKzu3V2IbXeme1V-4dIilIu1s3jrP5bZ","scope":"read"
+}
+响应失败：
+HTTP/2 200 
+表示 client_id 或 client_secret 错误
+HTTP/2 200
+content-type: text/plain;charset=UTF-8
+{
+"error":100016,
+"error_description":"client secretkey is in valid"
+}
+失败代码说明：
+100016，应用密钥无效
+100017，授权码code无效
+获取用户信息
+第三方应用换取到 Access Token 后，可以通过 Access Token 调用 /sso/oauth/userInfo 接口，获取用户信息
+OAuth Server 会返回 JSON格式的响应结果。
+具体参数如下：
+参数说明：
+access_token
+换取 Access Token 时，返回的 access_token
+请求示例：
+第三方应用须通过服务器端代码，请求刷新 Access Token（请求可以为 GET 、POST）。这一步不发生在浏览器，而是第三方应用的服务端和OAuth Server（CAS 认证）直接通信。
+GET /POST
+/sso/oauth/userInfo?access_token=AT-1-4OAC0xUWy-QX0zfMr2ERQHUCxbTRSJZ- 
+HTTP/1.1
+Host: ${url}
+响应成功：
+HTTP/2 200
+content-type: application/json;charset=UTF-8
+{
+ "ret" : 0,
+"msg":"success",
+"uid":"test001"，
+"personName":"学生",
+"personType":"student",
+"personId":"1dddddddffffffffxx",
+"name"："测试"
+}
+响应失败：
+HTTP/2 200
+content-type: application/json;charset=UTF-8
+{
+ "ret" :-1，
+"msg":"invalid access_token" 
+}
+表示 accessToken 无效、过期 等
+属性定义：
+参数名
+参数类型
+说明
+ret
+int
+状态码: 0 成功 -1失败
+msg
+String
+状态码消息
+uid
+String
+用户工号
+name
+String
+用户名
+personType
+String
+主数据源用户人员类型
+personId
+String
+主数据源用户人员唯一id
+更多.....
+......
+联系管理员，配置需要的参数
+第三方应用访问
+第三方应用 信任该登录用户，然后根据用户名执行自己的业务逻辑（如：访问控制、权限判断等）。
+认证注销
+用户在第三方应用 中，结束业务操作后，若进行注销操作，则第三方应用 须在注销本地Session后，还须额外地跳转到 统一身份认证的注销页面，告知统一身份认证处理注销。
+注销本地Session、Cookie等
+第三方应用，注销本地Session。随后，通过浏览器重定向，跳转到 CAS认证的注销页面
+跳转到认证注销页面
+通过浏览器重定向，跳转到统一身份证的注销页面，并可携带以下参数：
+参数说明：
+redirectUrl（可选）
+如果传递了该参数，则会在注销后重定到对应页面。
+注：redirectUrl参数必须url编码
+使用以下响应，将浏览器重定向：
+请求方式: GET/POST
+请求地址: HYPERLINK "http://host:port/portal/unbindWeChat.action?sn=%7bsn%7d" ${url}/portal/sso/logout.html
+参数名称
+参数类型
+必须
+说明
+redirectUrl
+String
+否
+登出后的回调参数，如果不传该参数再次登入则默认进门户，传了该参数则会根据入参进入对应页面
+重定向到业务系统指定页面入参示例：
+${url}/portal/sso/logout.html?redirectUrl=https://www.baidu.com
+重定向到统一身份认证登录页面入参示例：
+${url}/portal/sso/logout.html?redirectUrl=/sso/oauth/authorize?response_type=code&client_id=应用id&redirect_uri=单点登录的接口地址（也就是对接Oauth2的回调地址）

@@ -14,7 +14,7 @@ export default defineConfig({
         target: apiTarget,
         changeOrigin: true
       },
-      "/local": {
+      "/local/doLogin": {
         target: apiTarget,
         changeOrigin: true
       },

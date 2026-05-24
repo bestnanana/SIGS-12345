@@ -5,7 +5,7 @@ const dictionaries = {
   zh: {
     "nav.home": "首页",
     "nav.new": "提出意见",
-    "nav.myTickets": "我的申请",
+    "nav.myTickets": "我发起的",
     "nav.admin": "后台工作台",
     "nav.typical": "典型问题",
 
@@ -55,11 +55,11 @@ const dictionaries = {
     "userStatus.handled": "已处理",
 
     "home.myTickets": "我发起的事项",
-    "home.myTicketsDesc": "同步显示“我的事项”中的事项数量。",
-    "home.enterMyTickets": "进入我的事项",
-    "home.unresolved": "待处理事项",
+    "home.myTicketsDesc": "同步显示“我发起的事项”中的事项数量。",
+    "home.enterMyTickets": "进入我发起的事项",
+    "home.unresolved": "待相关部门处理事项",
     "home.unresolvedDesc": "点击事项可进入对应详情页。",
-    "home.noUnresolved": "暂无待处理事项",
+    "home.noUnresolved": "暂无待相关部门处理事项",
     "home.ticketsLoading": "事项加载中...",
 
     "typical.title": "典型问题",
@@ -69,8 +69,8 @@ const dictionaries = {
     "typical.noAnswer": "该事项已发布，暂无公开答复。",
     "typical.tag": "典型问题",
 
-    "tickets.title": "我的事项",
-    "tickets.desc": "查看本人提交事项的办理进度与回复结果。",
+    "tickets.title": "我发起的事项",
+    "tickets.desc": "查看本人发起事项的办理进度与回复结果。",
     "tickets.all": "全部事项",
     "tickets.empty": "暂无事项",
     "tickets.emptyGroup": "该分类下暂无事项",
@@ -145,7 +145,7 @@ const dictionaries = {
   en: {
     "nav.home": "Home",
     "nav.new": "Submit",
-    "nav.myTickets": "My Tickets",
+    "nav.myTickets": "My Requests",
     "nav.admin": "Admin Console",
     "nav.typical": "Typical Issues",
 
@@ -194,12 +194,12 @@ const dictionaries = {
     "userStatus.processing": "In Progress",
     "userStatus.handled": "Handled",
 
-    "home.myTickets": "My Submitted Tickets",
-    "home.myTicketsDesc": "Shows the total number of tickets you submitted.",
-    "home.enterMyTickets": "Open My Tickets",
-    "home.unresolved": "Pending Tickets",
-    "home.unresolvedDesc": "Open a ticket to view its details.",
-    "home.noUnresolved": "No pending tickets",
+    "home.myTickets": "My Requests",
+    "home.myTicketsDesc": "Shows the total number of requests you initiated.",
+    "home.enterMyTickets": "Open My Requests",
+    "home.unresolved": "Requests Pending Department Handling",
+    "home.unresolvedDesc": "Open a request to view its details.",
+    "home.noUnresolved": "No pending requests",
     "home.ticketsLoading": "Loading tickets...",
 
     "typical.title": "Typical Issues",
@@ -209,8 +209,8 @@ const dictionaries = {
     "typical.noAnswer": "This issue is published, but no public reply is available.",
     "typical.tag": "Typical Issue",
 
-    "tickets.title": "My Tickets",
-    "tickets.desc": "Track the progress and replies for tickets you submitted.",
+    "tickets.title": "My Requests",
+    "tickets.desc": "Track the progress and replies for requests you initiated.",
     "tickets.all": "All Tickets",
     "tickets.empty": "No tickets",
     "tickets.emptyGroup": "No tickets in this status",

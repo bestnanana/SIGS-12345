@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, FileUp, RotateCcw, Save, SendHorizontal } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { api, uploadConfig } from "../api";
-import { departments, fields } from "../constants";
+import { defaultDepartments, defaultFields } from "../constants";
 import { useLanguage } from "../i18n";
 
 const acceptTypes = ".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4";
@@ -14,15 +14,44 @@ export default function TicketFormPage({ user }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [files, setFiles] = useState([]);
+  const [fieldOptions, setFieldOptions] = useState(defaultFields);
+  const [departmentOptions, setDepartmentOptions] = useState(defaultDepartments);
   const [form, setForm] = useState({
-    title: "",
-    field: "教务",
-    department: "党政办",
-    content: "",
-    phone: user.phone || "",
+    title: '',
+    field: defaultFields[0] || '',
+    department: defaultDepartments[0] || '',
+    content: '',
+    phone: user.phone || '',
     is_anonymous: false
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOptions() {
+      try {
+        const res = await api.get('/form-options', { skipAuthExpiredHandler: true });
+        const nextFields = Array.isArray(res.data?.fields) ? res.data.fields.map((item) => item.label).filter(Boolean) : [];
+        const nextDepartments = Array.isArray(res.data?.departments) ? res.data.departments.map((item) => item.label).filter(Boolean) : [];
+        if (cancelled) return;
+        setFieldOptions(nextFields.length ? nextFields : defaultFields);
+        setDepartmentOptions(nextDepartments.length ? nextDepartments : defaultDepartments);
+        setForm((current) => ({
+          ...current,
+          field: nextFields.includes(current.field) ? current.field : (nextFields[0] || current.field),
+          department: nextDepartments.includes(current.department) ? current.department : (nextDepartments[0] || current.department)
+        }));
+      } catch (err) {
+        if (!cancelled) {
+          setFieldOptions(defaultFields);
+          setDepartmentOptions(defaultDepartments);
+        }
+      }
+    }
+    loadOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   function onFilesChange(e) {
     const picked = Array.from(e.target.files || []);
     const tooLarge = picked.find((file) => file.size > 20 * 1024 * 1024);
@@ -95,7 +124,7 @@ export default function TicketFormPage({ user }) {
 
           <div className="form-label pt-1 text-sm font-semibold text-ai-title">{t("common.field")}</div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {fields.map((field) => (
+            {fieldOptions.map((field) => (
               <label key={field} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition duration-200 ${form.field === field ? "border-ai-primary/30 bg-ai-primary/10 text-ai-primary" : "border-ai-border text-ai-body hover:bg-ai-bg"}`}>
                 <input
                   type="radio"
@@ -111,7 +140,7 @@ export default function TicketFormPage({ user }) {
 
           <div className="form-label pt-1 text-sm font-semibold text-ai-title">{t("common.department")}</div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {departments.map((dept) => (
+            {departmentOptions.map((dept) => (
               <label key={dept} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition duration-200 ${form.department === dept ? "border-ai-primary/30 bg-ai-primary/10 text-ai-primary" : "border-ai-border text-ai-body hover:bg-ai-bg"}`}>
                 <input
                   type="radio"

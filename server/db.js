@@ -1,4 +1,4 @@
-const fs = require("fs");
+﻿const fs = require("fs");
 const path = require("path");
 const initSqlJs = require("sql.js");
 const bcrypt = require("bcryptjs");
@@ -14,6 +14,10 @@ let db;
 let lockFd = null;
 let lockToken = null;
 let backedUpBeforeWrite = false;
+const defaultFormOptionSeeds = {
+  fields: ["\u6559\u52a1", "\u4eba\u4e8b", "\u5b66\u5de5", "\u79d1\u7814", "\u540e\u52e4", "\u4fe1\u606f\u5316", "\u5176\u4ed6", "\u56fd\u9645\u5b66\u751f\u5b66\u8005"],
+  departments: ["\u4fe1\u6570\u4e2d\u5fc3", "\u515a\u653f\u529e", "\u5b66\u5de5\u529e", "\u57f9\u517b\u5904", "\u8d22\u52a1\u529e", "\u4eba\u4e8b\u529e"]
+};
 
 function normalizeSql(sql) {
   return String(sql || "").trim().replace(/^--.*$/gm, "").trim().toLowerCase();
@@ -167,12 +171,14 @@ async function initDb() {
   await run("PRAGMA foreign_keys = OFF", [], { persist: false });
   if (!existingDb || process.env.DB_PROTECT_EXISTING_ON_BOOT === "0") {
     await ensureSchema();
+    await seedDefaultFormOptions();
     await seedDefaultPeople();
   }
 }
 
 async function ensureSchema() {
   await ensureDatahubPersonTables();
+  await ensureFormConfigTables();
   await run(`
     CREATE TABLE IF NOT EXISTS tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,7 +190,7 @@ async function ensureSchema() {
       is_anonymous BOOLEAN DEFAULT 0,
       submitter_id TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
-      current_department TEXT DEFAULT '党政办',
+      current_department TEXT DEFAULT '鍏氭斂鍔?,
       is_published BOOLEAN DEFAULT 0,
       published_at DATETIME,
       ai_category TEXT,
@@ -292,6 +298,38 @@ async function ensureDatahubPersonTables() {
   `);
 }
 
+async function ensureFormConfigTables() {
+  await run(`
+    CREATE TABLE IF NOT EXISTS form_options (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(category, label)
+    )
+  `);
+  await run("CREATE INDEX IF NOT EXISTS idx_form_options_category ON form_options(category)");
+  await run("CREATE INDEX IF NOT EXISTS idx_form_options_active ON form_options(category, is_active, sort_order)");
+}
+
+async function seedDefaultFormOptions() {
+  const count = await get("SELECT COUNT(*) AS count FROM form_options");
+  if ((count?.count || 0) > 0) return;
+  for (const [category, labels] of Object.entries(defaultFormOptionSeeds)) {
+    for (let index = 0; index < labels.length; index += 1) {
+      const label = labels[index];
+      await run(
+        `INSERT INTO form_options (category, label, sort_order, is_active)
+         VALUES (?, ?, ?, 1)`,
+        [category, label, index]
+      );
+    }
+  }
+}
+
 async function seedDefaultPeople() {
   const count = await get("SELECT COUNT(*) AS count FROM datahub_basic_persons");
   if (count.count > 0) return;
@@ -299,7 +337,7 @@ async function seedDefaultPeople() {
   await run(
     `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, phone, role, raw_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ["local_student", "student", "student", passwordHash, "学生用户", "13800000001", "user", "{}"]
+    ["local_student", "student", "student", passwordHash, "瀛︾敓鐢ㄦ埛", "13800000001", "user", "{}"]
   );
   const adminAccounts = [
     ["local_admin", "admin", "张明", "党政办"],
@@ -313,6 +351,76 @@ async function seedDefaultPeople() {
       [id, username, username, passwordHash, name, department, "{}"]
     );
   }
+}
+
+async function listFormOptions(category = null, includeInactive = false) {
+  const params = [];
+  const clauses = [];
+  if (category) {
+    clauses.push("category = ?");
+    params.push(category);
+  }
+  if (!includeInactive) clauses.push("is_active = 1");
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return all(
+    `SELECT id, category, label, sort_order, is_active, created_at, updated_at
+     FROM form_options
+     ${where}
+     ORDER BY category ASC, sort_order ASC, id ASC`,
+    params
+  );
+}
+
+async function listFormOptionsGrouped(includeInactive = false) {
+  const rows = await listFormOptions(null, includeInactive);
+  return Object.fromEntries(
+    [
+      ["fields", rows.filter((row) => row.category === "fields" || row.category === "field")],
+      ["departments", rows.filter((row) => row.category === "departments" || row.category === "department")]
+    ]
+  );
+}
+
+async function getFormOptionLabels(category) {
+  const rows = await listFormOptions(category, false);
+  return rows.map((row) => row.label);
+}
+
+async function createFormOption(category, label, sortOrder = 0, isActive = true) {
+  return run(
+    `INSERT INTO form_options (category, label, sort_order, is_active, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [category, label, Number(sortOrder) || 0, isActive ? 1 : 0]
+  );
+}
+
+async function updateFormOption(id, fields = {}) {
+  const updates = [];
+  const params = [];
+  if (typeof fields.label === "string") {
+    updates.push("label = ?");
+    params.push(fields.label);
+  }
+  if (fields.sort_order !== undefined) {
+    updates.push("sort_order = ?");
+    params.push(Number(fields.sort_order) || 0);
+  }
+  if (fields.is_active !== undefined) {
+    updates.push("is_active = ?");
+    params.push(fields.is_active ? 1 : 0);
+  }
+  if (fields.category && Object.keys(defaultFormOptionSeeds).includes(fields.category)) {
+    updates.push("category = ?");
+    params.push(fields.category);
+  }
+  if (!updates.length) return { changes: 0 };
+  updates.push("updated_at = CURRENT_TIMESTAMP");
+  params.push(id);
+  return run(`UPDATE form_options SET ${updates.join(", ")} WHERE id = ?`, params);
+}
+
+async function deleteFormOption(id) {
+  return run("DELETE FROM form_options WHERE id = ?", [id]);
 }
 
 async function upsertDatahubBasicPersons(rows = []) {
@@ -369,5 +477,18 @@ module.exports = {
   all,
   adminDepartments,
   ensureDatahubPersonTables,
-  upsertDatahubBasicPersons
+  upsertDatahubBasicPersons,
+  ensureFormConfigTables,
+  seedDefaultFormOptions,
+  listFormOptions,
+  listFormOptionsGrouped,
+  getFormOptionLabels,
+  createFormOption,
+  updateFormOption,
+  deleteFormOption
 };
+
+
+
+
+

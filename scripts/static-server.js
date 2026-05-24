@@ -26,7 +26,9 @@ const types = {
 };
 
 const server = http.createServer((req, res) => {
-  if (req.url.startsWith("/api/") || req.url.startsWith("/uploads/")) {
+  const incomingUrl = new URL(req.url, `http://localhost:${port}`);
+  const isSsoRootCallback = incomingUrl.pathname === "/" && (incomingUrl.searchParams.has("code") || incomingUrl.searchParams.has("state"));
+  if (isSsoRootCallback || req.url.startsWith("/api/") || req.url.startsWith("/uploads/") || req.url.startsWith("/sso/") || req.url.startsWith("/local/")) {
     const proxyReq = http.request(
       {
         hostname: apiTarget.hostname,
@@ -48,7 +50,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const urlPath = decodeURIComponent(new URL(req.url, `http://localhost:${port}`).pathname);
+  const urlPath = decodeURIComponent(incomingUrl.pathname);
   const requested = path.normalize(urlPath).replace(/^([/\\])+/, "");
   const fullPath = path.join(dist, requested || "index.html");
   const safePath = fullPath.startsWith(dist) ? fullPath : path.join(dist, "index.html");

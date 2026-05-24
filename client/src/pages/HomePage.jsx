@@ -26,7 +26,7 @@ export default function HomePage({ user }) {
       } catch (err) {
         if (ignore) return;
         setTickets([]);
-        setTicketsError(err.response?.data?.message || "暂时无法加载我的事项。");
+        setTicketsError(err.response?.data?.message || "暂时无法加载我发起的事项。");
       } finally {
         if (!ignore) setLoadingTickets(false);
       }
