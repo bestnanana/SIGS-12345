@@ -8,7 +8,19 @@ const multer = require("multer");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const { initDb, run, get, all, adminDepartments, ensureDatahubPersonTables } = require("./db");
+const {
+  initDb,
+  run,
+  get,
+  all,
+  adminDepartments,
+  ensureDatahubPersonTables,
+  listFormOptionsGrouped,
+  getFormOptionLabels,
+  createFormOption,
+  updateFormOption,
+  deleteFormOption
+} = require("./db");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
 const { askMinimax } = require("./minimax");
@@ -17,6 +29,7 @@ const logger = require("./logger");
 const app = express();
 const defaultPort = process.env.NODE_ENV === "production" ? 80 : 3001;
 const port = process.env.PORT || defaultPort;
+const host = process.env.HOST || "127.0.0.1";
 const jwtSecret = process.env.JWT_SECRET || "dev-secret";
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || "campus.sid";
@@ -532,6 +545,7 @@ app.get("/", (req, res, next) => {
 function isPublicRoute(req) {
   const pathname = req.path;
   return (
+    pathname.startsWith("/api/") ||
     pathname.startsWith("/assets/") ||
     pathname.startsWith("/uploads/") ||
     pathname === "/favicon.ico" ||
@@ -702,6 +716,13 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   const ratings = await all("SELECT type, COUNT(*) AS count FROM ratings WHERE ticket_id = ? GROUP BY type", [id]);
+  const satisfaction = await get(
+    `SELECT s.*, p.name AS user_name
+     FROM satisfaction_surveys s
+     JOIN datahub_basic_persons p ON p.id = s.user_id
+     WHERE s.ticket_id = ?`,
+    [id]
+  );
   const currentHandler = await get(
     `SELECT id, name, department
      FROM datahub_basic_persons
@@ -733,7 +754,8 @@ async function ticketDetails(id, viewer) {
     replyAttachments,
     transfers,
     currentHandler: publicHandler(currentHandler),
-    ratings: ratings.reduce((acc, item) => ({ ...acc, [item.type]: item.count }), {})
+    ratings: ratings.reduce((acc, item) => ({ ...acc, [item.type]: item.count }), {}),
+    satisfaction: satisfaction || null
   };
 }
 
@@ -747,9 +769,9 @@ app.post("/local/doLogin", async (req, res) => {
   const user = await get(
     `SELECT *
      FROM datahub_basic_persons
-     WHERE union_id = ?
+     WHERE union_id = ? OR username = ?
      LIMIT 1`,
-    [unionId]
+    [unionId, unionId]
   );
   if (!user || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
     logger.warn("auth_login_failed", { request_id: req.requestId, union_id: unionId, reason: "invalid_credentials" });
@@ -852,11 +874,53 @@ app.get("/sso/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
-  res.json(publicUser(await loadPerson(req.user.id)));
+  if (req.session?.loginUser) {
+    return res.json(req.session.loginUser);
+  }
+  res.json(publicUser(await loadPerson(req.user.id)) || req.user);
 });
 
 app.get("/api/departments", auth, async (req, res) => {
   res.json(adminDepartments);
+});
+
+app.get("/api/form-options", auth, async (req, res) => {
+  res.json(await listFormOptionsGrouped(false));
+});
+
+app.get("/api/admin/form-options", auth, adminOnly, async (req, res) => {
+  const includeInactive = req.query.includeInactive !== "0";
+  res.json(await listFormOptionsGrouped(includeInactive));
+});
+
+app.post("/api/admin/form-options", auth, adminOnly, async (req, res) => {
+  const category = String(req.body.category || "").trim();
+  const label = String(req.body.label || "").trim();
+  if (!["fields", "departments"].includes(category)) {
+    return res.status(400).json({ message: "无效配置分类" });
+  }
+  if (!label) return res.status(400).json({ message: "请填写配置名称" });
+  try {
+    const result = await createFormOption(category, label, req.body.sort_order, req.body.is_active !== false);
+    res.status(201).json({ id: result.lastID });
+  } catch (error) {
+    if (/unique/i.test(error.message || "")) {
+      return res.status(409).json({ message: "该配置已存在" });
+    }
+    throw error;
+  }
+});
+
+app.patch("/api/admin/form-options/:id", auth, adminOnly, async (req, res) => {
+  const result = await updateFormOption(req.params.id, req.body || {});
+  if (!result.changes) return res.status(404).json({ message: "配置不存在或没有变化" });
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/form-options/:id", auth, adminOnly, async (req, res) => {
+  const result = await deleteFormOption(req.params.id);
+  if (!result.changes) return res.status(404).json({ message: "配置不存在" });
+  res.json({ ok: true });
 });
 
 app.post("/api/datahub/basic-persons", auth, async (req, res) => {
@@ -943,6 +1007,27 @@ app.post("/api/tickets/:id/ratings", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
+  const score = Number(req.body?.score);
+  const comment = String(req.body?.comment || "").trim();
+  if (!Number.isInteger(score) || score < 1 || score > 5) {
+    return res.status(400).json({ message: "请选择 1-5 分满意度评分" });
+  }
+  if (comment.length > 500) return res.status(400).json({ message: "评价内容不能超过 500 字" });
+  const ticket = await get("SELECT id, submitter_id, status FROM tickets WHERE id = ?", [req.params.id]);
+  if (!ticket) return res.status(404).json({ message: "事项不存在" });
+  if (ticket.submitter_id !== req.user.id) return res.status(403).json({ message: "只有事项发起人可以进行满意度评价" });
+  if (ticket.status !== "completed") return res.status(400).json({ message: "事项处理完成后才可以评价" });
+  const existingSurvey = await get("SELECT id FROM satisfaction_surveys WHERE ticket_id = ?", [req.params.id]);
+  if (existingSurvey) return res.status(409).json({ message: "该事项已提交满意度评价，不能重复评价" });
+  await run(
+    `INSERT INTO satisfaction_surveys (ticket_id, user_id, score, comment, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [req.params.id, req.user.id, score, comment]
+  );
+  res.json({ ok: true });
+});
+
 app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   const user = await loadPerson(req.user.id);
   const params = [];
@@ -955,10 +1040,14 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
     `SELECT t.*,
             CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE p.name END AS submitter_name,
             CASE WHEN t.is_anonymous = 1 THEN '' ELSE p.phone END AS submitter_phone,
+            s.score AS satisfaction_score,
+            s.comment AS satisfaction_comment,
+            s.updated_at AS satisfaction_updated_at,
             COUNT(a.id) AS attachment_count
      FROM tickets t
      JOIN datahub_basic_persons p ON p.id = t.submitter_id
      LEFT JOIN attachments a ON a.ticket_id = t.id
+     LEFT JOIN satisfaction_surveys s ON s.ticket_id = t.id
      ${scope}
      GROUP BY t.id
      ORDER BY t.updated_at DESC, t.created_at DESC`,
@@ -976,19 +1065,19 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
   if (!user?.department || user.department !== ticket.current_department) {
     return res.status(403).json({ message: "只有当前承办部门管理员可以回复处理" });
   }
-  if (status && !["completed", "processing"].includes(status)) return res.status(400).json({ message: "无效状态" });
+  if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
   const result = await run(
     "INSERT INTO replies (ticket_id, content, replier_id, department) VALUES (?, ?, ?, ?)",
     [req.params.id, content, req.user.id, user.department]
   );
   await saveFiles(req.files, null, result.lastID);
-  await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "processing", req.params.id]);
+  await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "completed", req.params.id]);
   res.status(201).json({ id: result.lastID });
 });
 
 app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => {
   const { status } = req.body;
-  if (!["pending", "processing", "completed"].includes(status)) return res.status(400).json({ message: "无效状态" });
+  if (!["pending", "completed"].includes(status)) return res.status(400).json({ message: "无效状态" });
   const user = await loadPerson(req.user.id);
   const ticket = await get("SELECT current_department FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
@@ -1013,7 +1102,7 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
     "INSERT INTO transfers (ticket_id, from_department, to_department, operator_id, note) VALUES (?, ?, ?, ?, ?)",
     [req.params.id, ticket.current_department || "党政办", to_department, req.user.id, note || ""]
   );
-  await run("UPDATE tickets SET current_department = ?, status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
+  await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
   res.json({ ok: true });
 });
 
@@ -1071,9 +1160,9 @@ app.get("*", (req, res) => {
 
 initDb()
   .then(() => {
-    app.listen(port, () => {
-      logger.info("server_started", { port });
-      console.log(`API server running at http://localhost:${port}`);
+    app.listen(port, host, () => {
+      logger.info("server_started", { host, port });
+      console.log(`API server running at http://${host}:${port}`);
       console.log("Seed accounts: student/123456, admin/123456");
     });
   })

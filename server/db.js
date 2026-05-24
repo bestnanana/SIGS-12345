@@ -169,11 +169,9 @@ async function initDb() {
   db = existingDb ? new SQL.Database(fs.readFileSync(dbPath)) : new SQL.Database();
 
   await run("PRAGMA foreign_keys = OFF", [], { persist: false });
-  if (!existingDb || process.env.DB_PROTECT_EXISTING_ON_BOOT === "0") {
-    await ensureSchema();
-    await seedDefaultFormOptions();
-    await seedDefaultPeople();
-  }
+  await ensureSchema();
+  await seedDefaultFormOptions();
+  await seedDefaultPeople();
 }
 
 async function ensureSchema() {
@@ -190,7 +188,7 @@ async function ensureSchema() {
       is_anonymous BOOLEAN DEFAULT 0,
       submitter_id TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
-      current_department TEXT DEFAULT '鍏氭斂鍔?,
+      current_department TEXT DEFAULT '党政办',
       is_published BOOLEAN DEFAULT 0,
       published_at DATETIME,
       ai_category TEXT,
@@ -242,6 +240,32 @@ async function ensureSchema() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(ticket_id, user_id, type)
     )
+  `);
+  await run(`
+    CREATE TABLE IF NOT EXISTS satisfaction_surveys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL UNIQUE,
+      user_id TEXT NOT NULL,
+      score INTEGER NOT NULL,
+      comment TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const satisfactionColumns = await all("PRAGMA table_info(satisfaction_surveys)");
+  const hasSatisfactionColumn = (name) => satisfactionColumns.some((item) => item.name === name);
+  if (!hasSatisfactionColumn("comment")) await run("ALTER TABLE satisfaction_surveys ADD COLUMN comment TEXT");
+  if (!hasSatisfactionColumn("updated_at")) await run("ALTER TABLE satisfaction_surveys ADD COLUMN updated_at DATETIME");
+  await normalizeTicketStatuses();
+}
+
+async function normalizeTicketStatuses() {
+  await run(`
+    UPDATE tickets
+    SET status = 'pending'
+    WHERE status IS NULL
+       OR status = ''
+       OR status NOT IN ('pending', 'completed')
   `);
 }
 
@@ -331,24 +355,33 @@ async function seedDefaultFormOptions() {
 }
 
 async function seedDefaultPeople() {
-  const count = await get("SELECT COUNT(*) AS count FROM datahub_basic_persons");
-  if (count.count > 0) return;
   const passwordHash = bcrypt.hashSync("123456", 10);
-  await run(
-    `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, phone, role, raw_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ["local_student", "student", "student", passwordHash, "瀛︾敓鐢ㄦ埛", "13800000001", "user", "{}"]
-  );
-  const adminAccounts = [
-    ["local_admin", "admin", "张明", "党政办"],
-    ["local_admin2", "admin2", "李晨", "信息中心"],
-    ["local_admin3", "admin3", "管理员", "党政办"]
+  const accounts = [
+    ["local_student", "student", "student", "学生用户", "13800000001", null, "user"],
+    ["local_super_admin", "super_admin", "super_admin", "超级管理员", null, "党政办", "admin"],
+    ["local_admin", "admin", "admin", "张明", null, "党政办", "admin"],
+    ["local_admin2", "admin2", "admin2", "李晨", null, "信息中心", "admin"],
+    ["local_admin3", "admin3", "admin3", "管理员", null, "党政办", "admin"],
+    ["local_admin4", "xszx_admin", "xszx_admin", "周宁", null, "信息中心", "admin"],
+    ["local_admin5", "xgb_admin", "xgb_admin", "王芳", null, "学工办", "admin"],
+    ["local_admin6", "pyc_admin", "pyc_admin", "陈静", null, "培养处", "admin"],
+    ["local_admin7", "cwb_admin", "cwb_admin", "赵磊", null, "财务办", "admin"],
+    ["local_admin8", "rsb_admin", "rsb_admin", "刘洋", null, "人事办", "admin"]
   ];
-  for (const [id, username, name, department] of adminAccounts) {
+  for (const [id, unionId, username, name, phone, department, role] of accounts) {
     await run(
-      `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, department, role, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, 'admin', ?)`,
-      [id, username, username, passwordHash, name, department, "{}"]
+      `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, phone, department, role, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         union_id = excluded.union_id,
+         username = excluded.username,
+         password_hash = excluded.password_hash,
+         name = excluded.name,
+         phone = COALESCE(datahub_basic_persons.phone, excluded.phone),
+         department = excluded.department,
+         role = excluded.role,
+         updated_at = CURRENT_TIMESTAMP`,
+      [id, unionId, username, passwordHash, name, phone, department, role, "{}"]
     );
   }
 }
@@ -487,8 +520,3 @@ module.exports = {
   updateFormOption,
   deleteFormOption
 };
-
-
-
-
-

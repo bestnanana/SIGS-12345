@@ -11,12 +11,12 @@ export default function MyTicketsPage() {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeStatus, setActiveStatus] = useState("all");
+  const [activeStatus, setActiveStatus] = useState("pending");
 
   const statusEntries = useMemo(() => Object.entries(statusMap), [statusMap]);
 
   const statusCounts = useMemo(() => {
-    const counts = statusEntries.reduce((acc, [status]) => ({ ...acc, [status]: 0 }), { all: tickets.length });
+    const counts = statusEntries.reduce((acc, [status]) => ({ ...acc, [status]: 0 }), {});
     tickets.forEach((ticket) => {
       const status = toUserStatusKey(ticket.status);
       counts[status] = (counts[status] || 0) + 1;
@@ -31,7 +31,7 @@ export default function MyTicketsPage() {
         meta,
         items: tickets.filter((ticket) => toUserStatusKey(ticket.status) === status)
       }))
-      .filter((group) => activeStatus === "all" || group.status === activeStatus);
+      .filter((group) => group.status === activeStatus);
   }, [activeStatus, statusEntries, tickets]);
 
   async function load() {
@@ -72,19 +72,7 @@ export default function MyTicketsPage() {
       </div>
 
       <div className="border-b border-ai-border px-6 py-5">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <button
-            type="button"
-            onClick={() => setActiveStatus("all")}
-            className={`rounded-xl border px-4 py-3 text-left transition duration-200 ${
-              activeStatus === "all"
-                ? "border-ai-primary bg-ai-primary/10 text-ai-primary"
-                : "border-ai-border bg-white text-ai-body hover:bg-[#F7F7FB]"
-            }`}
-          >
-            <div className="text-xs font-medium">{t("tickets.all")}</div>
-            <div className="mt-1 text-2xl font-semibold">{statusCounts.all}</div>
-          </button>
+        <div className="grid gap-3 sm:grid-cols-2">
           {statusEntries.map(([value, meta]) => (
             <button
               key={value}

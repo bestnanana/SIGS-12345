@@ -112,11 +112,11 @@ export default function FormConfigManager() {
 
   return (
     <div className="space-y-6">
-      <section className="app-card mesh-hero p-8">
+      <section className="app-card mesh-hero p-5">
         <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="ai-chip mb-4">后台配置</div>
-            <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">事项领域与部门</h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-ai-title">事项领域与部门</h1>
             <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">这里维护表单里可选的事项领域和部门，新增后会直接出现在提诉表单里。</p>
           </div>
           <button type="button" onClick={load} className="ghost-button bg-white/80">
@@ -130,15 +130,15 @@ export default function FormConfigManager() {
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">{error}</div>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-4 xl:grid-cols-2">
         {Object.entries(categoryMeta).map(([category, meta]) => (
           <section key={category} className="app-card overflow-hidden p-0">
-            <div className="border-b border-ai-border px-6 py-5">
+            <div className="border-b border-ai-border px-4 py-4 sm:px-5">
               <h2 className="text-xl font-semibold text-ai-title">{meta.title}</h2>
               <p className="mt-1 text-sm text-ai-body">{category === "fields" ? "用于表单里的事项领域单选项。" : "用于表单里的部门单选项。"}</p>
             </div>
 
-            <div className="border-b border-ai-border px-6 py-4">
+            <div className="border-b border-ai-border px-4 py-4 sm:px-5">
               <div className="flex flex-wrap items-center gap-3">
                 <input
                   value={drafts[category].label}
@@ -180,7 +180,7 @@ export default function FormConfigManager() {
                 <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
               ) : groups[category].length ? (
                 groups[category].map((item) => (
-                  <div key={item.id} className="grid gap-3 px-6 py-4 lg:grid-cols-[1fr_120px_96px_184px] lg:items-center">
+                  <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_96px_80px_92px] lg:items-center">
                     <input
                       value={item.label}
                       onChange={(e) => updateItem(category, item.id, { label: e.target.value })}
@@ -206,19 +206,21 @@ export default function FormConfigManager() {
                         type="button"
                         onClick={() => saveItem(category, item)}
                         disabled={savingKey === `${category}:${item.id}`}
-                        className="secondary-button h-10 px-4"
+                        className="secondary-button h-10 w-10 px-0"
+                        title="保存"
+                        aria-label="保存"
                       >
                         <Save size={16} />
-                        保存
                       </button>
                       <button
                         type="button"
                         onClick={() => removeItem(category, item.id)}
                         disabled={savingKey === `${category}:${item.id}`}
-                        className="ghost-button h-10 px-4 text-rose-600 hover:bg-rose-50"
+                        className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50"
+                        title="删除"
+                        aria-label="删除"
                       >
                         <Trash2 size={16} />
-                        删除
                       </button>
                     </div>
                   </div>

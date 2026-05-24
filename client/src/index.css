@@ -7,7 +7,7 @@
 }
 
 html {
-  font-size: 125%;
+  font-size: 112.5%;
   scroll-behavior: smooth;
 }
 
@@ -64,7 +64,7 @@ button:not(:disabled):active, a:active {
   }
 
   .app-card {
-    @apply rounded-[18px] border border-ai-border bg-white p-5 shadow-[0_4px_20px_rgba(0,0,0,0.04)] transition duration-300 ease-out sm:rounded-[20px] sm:p-6;
+    @apply rounded-xl border border-ai-border bg-white p-4 shadow-[0_4px_20px_rgba(0,0,0,0.04)] transition duration-300 ease-out sm:p-5;
     transform: translateZ(0);
     transition-property: transform, box-shadow, border-color, background-color, opacity;
     transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);

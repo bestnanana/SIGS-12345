@@ -41,7 +41,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   const isActualAdmin = actualUser.role === "admin";
   const isAdminArea = user.role === "admin" && location.pathname.startsWith("/admin");
   const mainClassName = isAdminArea
-    ? "min-h-[calc(100vh-137px)] px-3 py-5 sm:px-5 lg:min-h-[calc(100vh-84px)] lg:px-6"
+    ? "min-h-[calc(100vh-137px)] px-2 py-3 sm:px-4 sm:py-4 lg:min-h-[calc(100vh-72px)] lg:px-5"
     : "min-h-[calc(100vh-137px)] px-3 py-6 sm:px-6 sm:py-8 lg:min-h-[calc(100vh-84px)] lg:px-8";
   const contentClassName = isAdminArea
     ? "page-fade mx-auto w-full max-w-[1840px]"
@@ -56,7 +56,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   return (
     <div className="page-shell">
       <header className="tsinghua-header sticky top-0 z-20 border-b border-white/18">
-        <div className="mx-auto flex h-[84px] max-w-[1910px] items-center gap-6 px-6 lg:px-10">
+        <div className={`mx-auto flex max-w-[1910px] items-center px-4 sm:px-6 lg:px-8 ${isAdminArea ? "h-[72px] gap-4" : "h-[84px] gap-6"}`}>
           <button onClick={() => navigate(user.role === "admin" ? "/admin" : "/")} className="min-w-0 shrink-0 text-left">
             <LogoMark />
           </button>

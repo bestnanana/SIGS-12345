@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, Star, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, serverOrigin } from "../api";
 import { formatTime } from "../constants";
@@ -39,11 +39,20 @@ export default function TicketDetailPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [survey, setSurvey] = useState({ score: 5, comment: "" });
+  const [surveySaving, setSurveySaving] = useState(false);
+  const [surveyMessage, setSurveyMessage] = useState("");
 
   async function load() {
     setLoading(true);
     const res = await api.get(`/tickets/${id}`);
     setData(res.data);
+    if (res.data?.satisfaction) {
+      setSurvey({
+        score: Number(res.data.satisfaction.score || 5),
+        comment: res.data.satisfaction.comment || ""
+      });
+    }
     setLoading(false);
   }
 
@@ -89,9 +98,19 @@ export default function TicketDetailPage() {
     return events.sort(sortByTime);
   }, [data]);
 
-  async function rate(type) {
-    await api.post(`/tickets/${id}/ratings`, { type });
-    load();
+  async function submitSatisfaction(e) {
+    e.preventDefault();
+    setSurveySaving(true);
+    setSurveyMessage("");
+    try {
+      await api.post(`/tickets/${id}/satisfaction`, survey);
+      setSurveyMessage("满意度评价已提交");
+      await load();
+    } catch (err) {
+      setSurveyMessage(err.response?.data?.message || "满意度评价提交失败");
+    } finally {
+      setSurveySaving(false);
+    }
   }
 
   if (loading) {
@@ -102,11 +121,12 @@ export default function TicketDetailPage() {
     return <div className="app-card text-center text-ai-body">{t("detail.missing")}</div>;
   }
 
-  const { ticket, ratings } = data;
+  const { ticket } = data;
   const replies = Array.isArray(data.replies) ? data.replies : [];
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const latestReply = replies.length ? replies[replies.length - 1] : null;
   const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
+  const isCompleted = ticket.status === "completed";
 
   return (
     <div className="space-y-6">
@@ -233,25 +253,72 @@ export default function TicketDetailPage() {
         </div>
       </section>
 
-      <section className="app-card">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="font-semibold text-ai-title">{t("detail.rateTitle")}</div>
-            <div className="mt-1 text-sm text-ai-body">{t("detail.rateDesc")}</div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={() => rate("like")} className="ghost-button h-10">
-              <ThumbsUp size={16} /> {t("detail.like")} {ratings.like || 0}
-            </button>
-            <button onClick={() => rate("dislike")} className="ghost-button h-10">
-              <ThumbsDown size={16} /> {t("detail.dislike")} {ratings.dislike || 0}
-            </button>
-            <button onClick={() => rate("favorite")} className="ghost-button h-10">
-              <Star size={16} /> {t("detail.favorite")} {ratings.favorite || 0}
-            </button>
-          </div>
-        </div>
-      </section>
+      {isCompleted ? (
+        <section className="app-card">
+          <form onSubmit={submitSatisfaction} className="space-y-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="font-semibold text-ai-title">满意度调查</div>
+                <div className="mt-1 text-sm text-ai-body">请对本事项的办理过程和结果进行评分，评价将用于后台服务改进分析。</div>
+              </div>
+              {data.satisfaction ? (
+                <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                  已评价 · {data.satisfaction.score} 分
+                </span>
+              ) : null}
+            </div>
+
+            <div>
+              <div className="mb-2 text-sm font-medium text-ai-body">满意度评分</div>
+              <div className="flex flex-wrap gap-2">
+                {[1, 2, 3, 4, 5].map((score) => {
+                  const active = Number(survey.score) >= score;
+                  return (
+                    <button
+                      key={score}
+                      type="button"
+                      onClick={() => {
+                        if (!data.satisfaction) setSurvey((current) => ({ ...current, score }));
+                      }}
+                      disabled={Boolean(data.satisfaction)}
+                      className={`flex h-11 w-11 items-center justify-center rounded-xl border transition duration-200 ${
+                        active ? "border-amber-300 bg-amber-50 text-amber-500" : "border-ai-border bg-white text-ai-muted hover:bg-ai-bg"
+                      }`}
+                      title={`${score} 分`}
+                      aria-label={`${score} 分`}
+                    >
+                      <Star size={18} fill={active ? "currentColor" : "none"} />
+                    </button>
+                  );
+                })}
+                <span className="flex h-11 items-center px-2 text-sm font-semibold text-ai-title">{survey.score} / 5 分</span>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium text-ai-body">评价说明</span>
+              <textarea
+                value={survey.comment}
+                onChange={(e) => setSurvey((current) => ({ ...current, comment: e.target.value }))}
+                className="soft-textarea min-h-24 w-full"
+                maxLength={500}
+                readOnly={Boolean(data.satisfaction)}
+                placeholder="可填写对办理效率、沟通体验、处理结果的意见。"
+              />
+            </label>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-ai-muted">{surveyMessage || (data.satisfaction ? "满意度评价已提交，不能再次修改。" : "评价提交后不能修改，请确认后提交。")}</div>
+              {!data.satisfaction ? (
+                <button type="submit" disabled={surveySaving} className="primary-button">
+                  <SendHorizontal size={16} />
+                  {surveySaving ? "提交中..." : "提交评价"}
+                </button>
+              ) : null}
+            </div>
+          </form>
+        </section>
+      ) : null}
     </div>
   );
 }

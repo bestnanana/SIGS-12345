@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, Paperclip, RefreshCw, RotateCcw, Search, SendHorizontal, Settings2, UsersRound } from "lucide-react";
+import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, Search, SendHorizontal, Settings2, Star, UsersRound } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, uploadConfig } from "../api";
 import { formatTime } from "../constants";
@@ -12,8 +12,8 @@ const adminMenuItems = [
   { key: "persons", labelKey: "人员管理", descriptionKey: "Datahub人员基础信息", icon: UsersRound },
   { key: "config", labelKey: "配置管理", descriptionKey: "表单领域和部门配置", icon: Settings2 }
 ];
-const ticketStatusOrder = ["pending", "processing", "completed"];
-const normalizeTicketStatus = (status) => (["replied", "transferred"].includes(status) ? "processing" : status);
+const ticketStatusOrder = ["pending", "completed"];
+const normalizeTicketStatus = (status) => (status === "completed" ? "completed" : "pending");
 
 function countBy(items, getKey) {
   return items.reduce((acc, item) => {
@@ -35,16 +35,16 @@ function labelFor(value, fallback = "-") {
 export default function AdminPage() {
   const { t } = useLanguage();
   const fullStatusMap = useStatusMap();
-  const statusMap = useMemo(() => {
-    const { replied, ...visibleStatusMap } = fullStatusMap;
-    return visibleStatusMap;
-  }, [fullStatusMap]);
+  const statusMap = useMemo(() => ({
+    pending: fullStatusMap.pending,
+    completed: fullStatusMap.completed
+  }), [fullStatusMap]);
   const [activeView, setActiveView] = useState("tickets");
   const [user, setUser] = useState(null);
   const [tickets, setTickets] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [reply, setReply] = useState({ department: "党政办", content: "", status: "processing" });
+  const [reply, setReply] = useState({ department: "党政办", content: "", status: "completed" });
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -57,6 +57,7 @@ export default function AdminPage() {
   const [personSearch, setPersonSearch] = useState("");
   const [personsLoading, setPersonsLoading] = useState(false);
   const [personsError, setPersonsError] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1280);
 
   const selected = useMemo(() => tickets.find((item) => item.id === selectedId), [tickets, selectedId]);
   const canHandleSelected = selected && user?.department && user.department === (selected.current_department || "党政办");
@@ -85,17 +86,29 @@ export default function AdminPage() {
       .sort((a, b) => b[1] - a[1]);
     const departmentEntries = Object.entries(countBy(tickets, (ticket) => ticket.current_department || ticket.department))
       .sort((a, b) => b[1] - a[1]);
-    const repliedCount = statusCounts.completed || 0;
+    const satisfactionTickets = tickets.filter((ticket) => Number(ticket.satisfaction_score) > 0);
+    const satisfactionScoreSum = satisfactionTickets.reduce((sum, ticket) => sum + Number(ticket.satisfaction_score || 0), 0);
+    const satisfactionDistribution = [1, 2, 3, 4, 5].reduce((acc, score) => ({ ...acc, [score]: 0 }), {});
+    satisfactionTickets.forEach((ticket) => {
+      const score = Number(ticket.satisfaction_score);
+      satisfactionDistribution[score] = (satisfactionDistribution[score] || 0) + 1;
+    });
+    const completedCount = statusCounts.completed || 0;
 
     return {
       total,
-      active: total - (statusCounts.completed || 0),
+      active: total - completedCount,
+      completed: completedCount,
       published: tickets.filter((ticket) => ticket.is_published).length,
       statusCounts,
       fieldEntries,
       departmentEntries,
-      replyRate: formatPercent(repliedCount, total),
-      completeRate: formatPercent(statusCounts.completed || 0, total)
+      replyRate: formatPercent(completedCount, total),
+      completeRate: formatPercent(completedCount, total),
+      satisfactionCount: satisfactionTickets.length,
+      satisfactionAverage: satisfactionTickets.length ? (satisfactionScoreSum / satisfactionTickets.length).toFixed(1) : "-",
+      satisfactionRate: formatPercent(satisfactionTickets.length, completedCount),
+      satisfactionDistribution
     };
   }, [statusMap, tickets]);
 
@@ -182,7 +195,7 @@ export default function AdminPage() {
     setReply({
       department: user?.department || ticket.current_department || "党政办",
       content: ticket.ai_suggestion || "",
-      status: "processing"
+      status: "completed"
     });
   }
 
@@ -213,42 +226,10 @@ export default function AdminPage() {
     }
   }
 
-  async function markProcessing() {
-    if (!selectedId || !canReplySelected) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      await api.patch(`/admin/tickets/${selectedId}/status`, { status: "processing" });
-      await loadTickets();
-      await loadDetail(selectedId);
-    } catch (err) {
-      setError(err.response?.data?.message || "办理状态更新失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function returnForRework() {
-    if (!selectedId || !canReplySelected) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      await api.patch(`/admin/tickets/${selectedId}/status`, { status: "pending" });
-      setReply((current) => ({ ...current, content: "", status: "processing" }));
-      setFiles([]);
-      await loadTickets();
-      await loadDetail(selectedId);
-    } catch (err) {
-      setError(err.response?.data?.message || "退回重办失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   const summaryCards = [
     { label: t("admin.visibleTickets"), value: stats.total, note: user?.department ? `${user.department}${t("admin.scope")}` : t("admin.allScope") },
     { label: t("admin.activeTickets"), value: stats.active, note: t("admin.activeTicketsNote") },
-    { label: t("admin.replyRate"), value: stats.replyRate, note: t("admin.replyRateNote") },
+    { label: t("admin.replyRate"), value: stats.completed, note: t("admin.replyRateNote") },
     { label: t("admin.completeRate"), value: stats.completeRate, note: t("admin.completeRateNote") }
   ];
   const maxStatusCount = Math.max(1, ...Object.values(stats.statusCounts));
@@ -259,8 +240,7 @@ export default function AdminPage() {
   const personPageEnd = Math.min(personTotal, personPage * personPageSize);
   const selectedStatus = selected ? statusMap[normalizeTicketStatus(selected.status)] || statusMap.pending : statusMap.pending;
   const currentHandlerText = selected?.current_department || selected?.department || "党政办";
-  const selectedWorkflowStatus = normalizeTicketStatus(selected?.status);
-  const isDepartmentCurrent = selectedWorkflowStatus === "processing";
+  const sidebarWidthClass = sidebarCollapsed ? "grid-cols-[72px_minmax(0,1fr)]" : "grid-cols-[232px_minmax(0,1fr)]";
   const workflowSteps = selected
     ? [
       {
@@ -272,19 +252,19 @@ export default function AdminPage() {
         lines: [
           `提交人：${selected.submitter_name || "学生"}`,
           `提交时间：${formatTime(selected.created_at)}`,
-          `学生通过平台提交事项，待处理。`
+          `学生通过平台提交事项，等待相关部门处理。`
         ]
       },
       {
         key: "department",
-        title: "办理部门",
-        status: isDepartmentCurrent ? "current" : selectedWorkflowStatus === "pending" ? "todo" : "done",
+        title: "相关部门处理",
+        status: selected.status === "completed" ? "done" : "current",
         icon: FileCheck2,
         tone: "amber",
         lines: [
           `申请部门：${selected.department || "未指定"}`,
           `办理部门：${currentHandlerText}`,
-          isDepartmentCurrent ? "办理部门已受理，正在推进处理。" : selectedWorkflowStatus === "pending" ? "事项已提交，等待办理部门受理。" : "办理部门已完成阶段处理。"
+          selected.status === "completed" ? "相关部门已完成处理。" : "事项已提交，等待相关部门处理。"
         ]
       },
       {
@@ -303,40 +283,57 @@ export default function AdminPage() {
 
   return (
     <>
-    <div className="grid gap-5 xl:grid-cols-[236px_minmax(0,1fr)] 2xl:gap-6">
-      <aside className="app-card h-fit p-4 xl:sticky xl:top-[108px]">
-        <div className="px-2 pb-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-ai-muted">{t("admin.sideTitle")}</div>
-          <div className="mt-2 text-xl font-semibold tracking-tight text-ai-title">
-            {user?.department || t("common.department")}{t("admin.workbench")}
-          </div>
-          <div className="mt-2 text-sm leading-6 text-ai-body">{t("admin.sideDesc")}</div>
+    <div className={`grid min-w-0 gap-4 ${sidebarWidthClass}`}>
+      <aside className="app-card sticky top-[88px] h-[calc(100vh-104px)] overflow-hidden p-3">
+        <div className={`flex items-start justify-between gap-2 border-b border-ai-border pb-3 ${sidebarCollapsed ? "px-0" : "px-2"}`}>
+          {!sidebarCollapsed ? (
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-wide text-ai-muted">{t("admin.sideTitle")}</div>
+              <div className="mt-2 truncate text-lg font-semibold tracking-tight text-ai-title">
+                {user?.department || t("common.department")}{t("admin.workbench")}
+              </div>
+              <div className="mt-2 text-sm leading-6 text-ai-body">{t("admin.sideDesc")}</div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg"
+            title={sidebarCollapsed ? "展开菜单" : "收起菜单"}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
         </div>
 
-        <nav className="space-y-2">
+        <nav className="mt-3 space-y-2">
           {adminMenuItems.map((item) => {
             const Icon = item.icon;
             const active = activeView === item.key;
+            const label = item.labelKey ? t(item.labelKey) : item.label;
             return (
               <button
                 key={item.key}
                 type="button"
                 onClick={() => setActiveView(item.key)}
-                className={`flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition duration-200 ${
+                title={sidebarCollapsed ? label : undefined}
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
                   active ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
-                }`}
+                } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
               >
-                <Icon size={18} className="mt-0.5 shrink-0" />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold">{item.labelKey ? t(item.labelKey) : item.label}</span>
-                  <span className={`mt-1 block text-xs leading-5 ${active ? "text-white/80" : "text-ai-muted"}`}>{item.descriptionKey ? t(item.descriptionKey) : item.description}</span>
-                </span>
+                <Icon size={18} className="shrink-0" />
+                {!sidebarCollapsed ? (
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold">{label}</span>
+                    <span className={`mt-1 block text-xs leading-5 ${active ? "text-white/80" : "text-ai-muted"}`}>{item.descriptionKey ? t(item.descriptionKey) : item.description}</span>
+                  </span>
+                ) : null}
               </button>
             );
           })}
         </nav>
 
-        <div className="mt-5 border-t border-ai-border px-2 pt-5 text-sm text-ai-body">
+        {!sidebarCollapsed ? (
+        <div className="mt-4 border-t border-ai-border px-2 pt-4 text-sm text-ai-body">
           <div className="flex items-center justify-between">
             <span>{t("admin.pendingWork")}</span>
             <span className="font-semibold text-ai-title">{stats.active}</span>
@@ -346,16 +343,17 @@ export default function AdminPage() {
             <span className="font-semibold text-ai-title">{stats.published}</span>
           </div>
         </div>
+        ) : null}
       </aside>
 
       <div className="min-w-0">
         {activeView === "tickets" ? (
-          <div className="grid items-start gap-5 xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] 2xl:gap-6">
-            <section className="app-card flex max-h-[calc(100vh-7.5rem)] min-h-[680px] flex-col overflow-hidden p-0">
-              <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-6 py-5">
+          <div className={`grid items-start gap-4 ${sidebarCollapsed ? "xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]" : "2xl:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]"}`}>
+            <section className="app-card flex max-h-none flex-col overflow-hidden p-0 xl:max-h-[calc(100vh-11rem)] xl:min-h-[calc(100vh-11rem)] 2xl:max-h-[calc(100vh-104px)] 2xl:min-h-[calc(100vh-104px)]">
+              <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-4 py-3.5 sm:px-5">
                 <div>
-                  <div className="text-2xl font-semibold tracking-tight text-ai-title">{t("admin.ticketProcessing")}</div>
-                  <div className="mt-2 text-sm text-ai-body">
+                  <div className="text-xl font-semibold tracking-tight text-ai-title">{t("admin.ticketProcessing")}</div>
+                  <div className="mt-1 text-sm text-ai-body">
                     {user?.department ? `${user.department}${t("admin.ticketQueue")}` : t("admin.viewAndReply")}
                   </div>
                 </div>
@@ -369,7 +367,7 @@ export default function AdminPage() {
                 </button>
               </div>
 
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 pt-4 scrollbar-thin">
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3 scrollbar-thin">
                 {loading ? (
                   <div className="p-8 text-center text-sm text-slate-500">{t("common.loading")}</div>
                 ) : error ? (
@@ -401,7 +399,7 @@ export default function AdminPage() {
                                 key={ticket.id}
                                 type="button"
                                 onClick={() => chooseTicket(ticket)}
-                                className={`w-full rounded-[20px] border p-4 text-left transition duration-200 ease-out hover:-translate-y-0.5 ${
+                                className={`w-full rounded-xl border p-3 text-left transition duration-200 ease-out hover:-translate-y-0.5 ${
                                   selectedId === ticket.id ? "border-ai-primary/30 bg-ai-primary/10 shadow-sm" : "border-ai-border bg-white hover:bg-ai-bg"
                                 }`}
                               >
@@ -421,6 +419,7 @@ export default function AdminPage() {
                                   <span>{ticket.field}</span>
                                   <span>{t("common.department")}：{ticket.department || t("common.notAssigned")}</span>
                                   <span>{t("common.currentDepartment")}：{ticket.current_department || "党政办"}</span>
+                                  {ticket.satisfaction_score ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 ring-1 ring-amber-200">满意度 {ticket.satisfaction_score} 分</span> : null}
                                   {ticket.is_published ? <span className="rounded-full bg-teal-50 px-2 py-0.5 text-teal-700 ring-1 ring-teal-200">{t("admin.published")}</span> : null}
                                 </div>
                               </button>
@@ -439,10 +438,10 @@ export default function AdminPage() {
                 <div className="p-12 text-center text-ai-body">{t("admin.selectTicket")}</div>
               ) : (
                 <>
-                  <div className="mesh-hero border-b border-ai-border px-8 py-6">
+                  <div className="mesh-hero border-b border-ai-border px-4 py-4 sm:px-5">
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-lg font-semibold text-ai-title">
+                        <div className="flex flex-wrap gap-x-5 gap-y-2 text-base font-semibold text-ai-title">
                           <span>事项编号：#{String(selected.id).padStart(6, "0")}</span>
                           <span>提交时间：{formatTime(selected.created_at)}</span>
                         </div>
@@ -470,16 +469,16 @@ export default function AdminPage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-5 p-5 2xl:grid-cols-[minmax(0,1fr)_360px] 2xl:gap-6 2xl:p-6">
-                    <div className="space-y-6">
+                  <div className="grid gap-4 p-4 2xl:grid-cols-[minmax(0,1fr)_330px] 2xl:p-5">
+                    <div className="space-y-4">
                       <section>
                         <h3 className="mb-3 font-semibold text-ai-title">{t("admin.ticketContent")}</h3>
-                        <div className="whitespace-pre-wrap rounded-[16px] border border-ai-border bg-white p-5 text-sm leading-7 text-ai-body">
+                        <div className="whitespace-pre-wrap rounded-xl border border-ai-border bg-white p-4 text-sm leading-7 text-ai-body">
                           {selected.content}
                         </div>
                       </section>
 
-                      <section className="rounded-[16px] border border-ai-border p-5">
+                      <section className="rounded-xl border border-ai-border p-4">
                         <div className="mb-4 flex items-center justify-between gap-3">
                           <h3 className="font-semibold text-ai-title">{t("admin.currentStatus")}</h3>
                           <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${selectedStatus.badgeClassName || selectedStatus.className}`}>
@@ -492,7 +491,7 @@ export default function AdminPage() {
                         </div>
                       </section>
 
-                      <form onSubmit={submitReply} className={`rounded-[16px] border p-5 ${canReplySelected ? "border-ai-border" : "border-ai-border bg-ai-bg"}`}>
+                      <form onSubmit={submitReply} className={`rounded-xl border p-4 ${canReplySelected ? "border-ai-border" : "border-ai-border bg-ai-bg"}`}>
                         <h3 className="mb-4 font-semibold text-ai-title">处理信息</h3>
                         {!canHandleSelected ? (
                           <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
@@ -539,31 +538,10 @@ export default function AdminPage() {
                             disabled={!canReplySelected}
                           />
                         </label>
-                        <div className="space-y-2">
-                          <button
-                            type="button"
-                            onClick={markProcessing}
-                            disabled={submitting || !canReplySelected}
-                            className="primary-button w-full bg-amber-600 hover:brightness-105"
-                          >
-                            <CheckCircle2 size={16} />
-                            确认办理
-                          </button>
-                          <button
-                            type="button"
-                            onClick={returnForRework}
-                            disabled={submitting || !canReplySelected}
-                            className="ghost-button w-full"
-                          >
-                            <RotateCcw size={16} />
-                            退回重办
-                          </button>
-                          <button
-                            disabled={submitting || !canReplySelected}
-                            className="primary-button w-full"
-                          >
+                        <div>
+                          <button disabled={submitting || !canReplySelected} className="primary-button w-full">
                             <SendHorizontal size={16} />
-                            {isCompleted ? "已完成" : submitting ? "提交中..." : "提交办理结果"}
+                            {isCompleted ? "处理完成" : submitting ? "提交中..." : "提交处理完成结果"}
                           </button>
                         </div>
                       </form>
@@ -571,7 +549,7 @@ export default function AdminPage() {
                     </div>
 
                     <aside className="space-y-5">
-                      <section className="rounded-[16px] border border-ai-border p-5">
+                      <section className="rounded-xl border border-ai-border p-4">
                         <h3 className="mb-4 font-semibold text-ai-title">事项流转流程</h3>
                         <div className="relative">
                           {workflowSteps.map((step, index) => {
@@ -608,6 +586,31 @@ export default function AdminPage() {
                           })}
                         </div>
                       </section>
+
+                      <section className="rounded-xl border border-ai-border p-4">
+                        <h3 className="mb-4 font-semibold text-ai-title">满意度调查</h3>
+                        {detail?.satisfaction ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-3 text-amber-800 ring-1 ring-amber-100">
+                              <span className="text-sm font-semibold">评分</span>
+                              <span className="flex items-center gap-1 text-sm font-semibold">
+                                <Star size={16} fill="currentColor" />
+                                {detail.satisfaction.score} / 5
+                              </span>
+                            </div>
+                            <div className="rounded-xl bg-ai-bg px-3 py-3 text-sm leading-6 text-ai-body">
+                              {detail.satisfaction.comment || "用户未填写文字评价。"}
+                            </div>
+                            <div className="text-xs text-ai-muted">
+                              评价人：{detail.satisfaction.user_name || selected.submitter_name} · {formatTime(detail.satisfaction.updated_at || detail.satisfaction.created_at)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-xl bg-ai-bg px-3 py-4 text-sm text-ai-body">
+                            {selected.status === "completed" ? "事项已完成，等待发起人提交满意度评价。" : "事项完成后将开放满意度评价。"}
+                          </div>
+                        )}
+                      </section>
                     </aside>
                   </div>
                 </>
@@ -616,14 +619,14 @@ export default function AdminPage() {
           </div>
         ) : activeView === "analytics" ? (
           <div className="space-y-6">
-            <section className="app-card mesh-hero p-8">
+            <section className="app-card mesh-hero p-5">
               <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="ai-chip mb-4">
                     <BarChart3 size={14} className="mr-1.5" />
                     数据统计分析
                   </div>
-                  <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">事项运行概览</h1>
+                  <h1 className="text-2xl font-semibold tracking-tight text-ai-title">事项运行概览</h1>
                   <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">
                     统计当前管理员权限范围内的事项数量、状态分布、部门流向和事项领域。
                   </p>
@@ -637,15 +640,38 @@ export default function AdminPage() {
 
             <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {summaryCards.map((card) => (
-                <div key={card.label} className="app-card p-5">
+                <div key={card.label} className="app-card p-4">
                   <div className="text-sm text-ai-body">{card.label}</div>
-                  <div className="mt-4 text-[36px] font-semibold leading-none tracking-tight text-ai-title">{card.value}</div>
-                  <div className="mt-3 text-xs text-ai-muted">{card.note}</div>
+                  <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{card.value}</div>
+                  <div className="mt-2 text-xs text-ai-muted">{card.note}</div>
                 </div>
               ))}
             </section>
 
-            <section className="grid gap-6 xl:grid-cols-2">
+            <section className="grid gap-4 md:grid-cols-3">
+              <div className="app-card p-4">
+                <div className="text-sm text-ai-body">满意度平均分</div>
+                <div className="mt-3 flex items-end gap-2">
+                  <span className="text-3xl font-semibold leading-none tracking-tight text-ai-title">{stats.satisfactionAverage}</span>
+                  <span className="text-sm font-semibold text-ai-muted">/ 5</span>
+                </div>
+                <div className="mt-2 text-xs text-ai-muted">已评价 {stats.satisfactionCount} 项</div>
+              </div>
+              <div className="app-card p-4">
+                <div className="text-sm text-ai-body">满意度覆盖率</div>
+                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{stats.satisfactionRate}</div>
+                <div className="mt-2 text-xs text-ai-muted">已完成事项中的评价占比</div>
+              </div>
+              <div className="app-card p-4">
+                <div className="text-sm text-ai-body">高满意评价</div>
+                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">
+                  {(stats.satisfactionDistribution[4] || 0) + (stats.satisfactionDistribution[5] || 0)}
+                </div>
+                <div className="mt-2 text-xs text-ai-muted">4-5 分评价数量</div>
+              </div>
+            </section>
+
+            <section className="grid gap-4 xl:grid-cols-2">
               <div className="app-card">
                 <div className="mb-5 flex items-center justify-between">
                   <div>
@@ -707,6 +733,36 @@ export default function AdminPage() {
 
             <section className="app-card">
               <div className="mb-5">
+                <h2 className="text-xl font-semibold text-ai-title">满意度评分分布</h2>
+                <p className="mt-1 text-sm text-ai-body">按 1-5 分统计发起人的满意度调查结果。</p>
+              </div>
+              <div className="space-y-4">
+                {[5, 4, 3, 2, 1].map((score) => {
+                  const count = stats.satisfactionDistribution[score] || 0;
+                  const maxScoreCount = Math.max(1, ...Object.values(stats.satisfactionDistribution));
+                  return (
+                    <div key={score}>
+                      <div className="mb-2 flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2 font-medium text-ai-title">
+                          <Star size={15} className="text-amber-500" fill="currentColor" />
+                          {score} 分
+                        </span>
+                        <span className="text-ai-body">{count} 项</span>
+                      </div>
+                      <div className="h-2.5 overflow-hidden rounded-full bg-ai-bg">
+                        <div
+                          className="h-full rounded-full bg-amber-500"
+                          style={{ width: `${(count / maxScoreCount) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="app-card">
+              <div className="mb-5">
                 <h2 className="text-xl font-semibold text-ai-title">事项领域分布</h2>
                 <p className="mt-1 text-sm text-ai-body">用于识别高频问题领域和后续治理重点。</p>
               </div>
@@ -734,14 +790,14 @@ export default function AdminPage() {
           </div>
         ) : activeView === "persons" ? (
           <div className="space-y-6">
-            <section className="app-card mesh-hero p-8">
+            <section className="app-card mesh-hero p-5">
               <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="ai-chip mb-4">
                     <UsersRound size={14} className="mr-1.5" />
                     Datahub人员基础信息
                   </div>
-                  <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">人员管理</h1>
+                  <h1 className="text-2xl font-semibold tracking-tight text-ai-title">人员管理</h1>
                   <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">
                     展示从人员基础信息接口同步到本地数据库的人员数据，可按姓名、人员编号或部门检索。
                   </p>
@@ -754,19 +810,19 @@ export default function AdminPage() {
             </section>
 
             <section className="grid gap-4 md:grid-cols-3">
-              <div className="app-card p-5">
+              <div className="app-card p-4">
                 <div className="text-sm text-ai-body">入库人员</div>
-                <div className="mt-4 text-[36px] font-semibold leading-none tracking-tight text-ai-title">{personTotal}</div>
+                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{personTotal}</div>
                 <div className="mt-3 text-xs text-ai-muted">Datahub同步数据</div>
               </div>
-              <div className="app-card p-5">
+              <div className="app-card p-4">
                 <div className="text-sm text-ai-body">当前页</div>
-                <div className="mt-4 text-[36px] font-semibold leading-none tracking-tight text-ai-title">{personPage}</div>
+                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{personPage}</div>
                 <div className="mt-3 text-xs text-ai-muted">共 {personTotalPages} 页</div>
               </div>
-              <div className="app-card p-5">
+              <div className="app-card p-4">
                 <div className="text-sm text-ai-body">显示范围</div>
-                <div className="mt-4 text-[28px] font-semibold leading-none tracking-tight text-ai-title">{personPageStart}-{personPageEnd}</div>
+                <div className="mt-3 text-2xl font-semibold leading-none tracking-tight text-ai-title">{personPageStart}-{personPageEnd}</div>
                 <div className="mt-3 text-xs text-ai-muted">每页 {personPageSize} 条</div>
               </div>
             </section>
@@ -778,20 +834,20 @@ export default function AdminPage() {
             ) : null}
 
             <section className="app-card overflow-hidden p-0">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ai-border px-6 py-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ai-border px-4 py-4 sm:px-5">
                 <div>
                   <h2 className="text-xl font-semibold text-ai-title">人员数据列表</h2>
                   <p className="mt-1 text-sm text-ai-body">字段来自 Datahub 人员基础信息接口。</p>
                 </div>
                 <form
-                  className="flex flex-wrap items-center gap-3"
+                  className="flex w-full flex-wrap items-center gap-3 lg:w-auto"
                   onSubmit={(e) => {
                     e.preventDefault();
                     setPersonPage(1);
                     setPersonSearch(personKeyword.trim());
                   }}
                 >
-                  <label className="flex h-10 w-80 items-center rounded-xl border border-ai-border bg-white px-3 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
+                  <label className="flex h-10 w-full items-center rounded-xl border border-ai-border bg-white px-3 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10 sm:w-80">
                     <Search size={16} className="text-ai-muted" />
                     <input
                       value={personKeyword}
@@ -808,7 +864,7 @@ export default function AdminPage() {
               </div>
 
               <div className="overflow-x-auto">
-                <table className="soft-table w-full min-w-[1120px]">
+                <table className="soft-table w-full min-w-[980px]">
                   <thead>
                     <tr>
                       <th>姓名</th>
@@ -859,7 +915,7 @@ export default function AdminPage() {
                 </table>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ai-border px-6 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ai-border px-4 py-4 sm:px-5">
                 <div className="text-sm text-ai-body">
                   共 {personTotal} 条，当前显示 {personPageStart}-{personPageEnd}
                 </div>
@@ -895,4 +951,3 @@ export default function AdminPage() {
     </>
   );
 }
-

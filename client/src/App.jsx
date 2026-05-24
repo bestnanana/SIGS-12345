@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { AUTH_EXPIRED_EVENT, api, clearAuthStorage } from "./api";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
@@ -30,6 +30,7 @@ function App() {
   const [loading, setLoading] = useState(Boolean(localStorage.getItem("token")));
   const [authMessage, setAuthMessage] = useState("");
   const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
     function handleAuthExpired(event) {
@@ -75,6 +76,10 @@ function App() {
     setUser(payload.user);
     setViewRole("");
     setAuthMessage("");
+    const target = location.pathname === "/local/login"
+      ? (payload.user?.role === "admin" ? "/admin" : "/")
+      : `${location.pathname}${location.search}${location.hash}`;
+    navigate(target, { replace: true });
   }
 
   function handleLogout() {
@@ -100,11 +105,7 @@ function App() {
   }
 
   if (!user) {
-    if (location.pathname === "/local/login") {
-      return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
-    }
-    window.location.replace(location.pathname + location.search + location.hash);
-    return <div className="flex min-h-screen items-center justify-center text-tsinghua-700">{t("common.loading")}</div>;
+    return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
   }
 
   const isAdmin = user.role === "admin" && viewRole !== "user";

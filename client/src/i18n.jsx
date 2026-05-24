@@ -46,13 +46,10 @@ const dictionaries = {
     "common.notAssigned": "暂未分配",
     "common.anonymous": "匿名",
 
-    "status.pending": "待处理",
-    "status.processing": "处理中",
-    "status.replied": "已回复",
-    "status.completed": "已完成",
-    "userStatus.pending": "待处理",
-    "userStatus.processing": "处理中",
-    "userStatus.handled": "已处理",
+    "status.pending": "待相关部门处理",
+    "status.completed": "处理完成",
+    "userStatus.pending": "待相关部门处理",
+    "userStatus.handled": "处理完成",
 
     "home.myTickets": "我发起的事项",
     "home.myTicketsDesc": "同步显示“我发起的事项”中的事项数量。",
@@ -129,10 +126,10 @@ const dictionaries = {
     "admin.visibleTickets": "可见事项",
     "admin.scope": "权限范围",
     "admin.allScope": "全部范围",
-    "admin.activeTickets": "处理中事项",
+    "admin.activeTickets": "待相关部门处理事项",
     "admin.activeTicketsNote": "未完成事项总量",
-    "admin.replyRate": "回复覆盖率",
-    "admin.replyRateNote": "已完成占比",
+    "admin.replyRate": "处理完成事项",
+    "admin.replyRateNote": "当前已处理完成数量",
     "admin.completeRate": "完成率",
     "admin.completeRateNote": "已完成事项占比",
     "admin.priority": "优先处理",
@@ -186,13 +183,10 @@ const dictionaries = {
     "common.notAssigned": "Unassigned",
     "common.anonymous": "Anonymous",
 
-    "status.pending": "Pending",
-    "status.processing": "In Progress",
-    "status.replied": "Replied",
+    "status.pending": "Pending Department Handling",
     "status.completed": "Completed",
-    "userStatus.pending": "Pending",
-    "userStatus.processing": "In Progress",
-    "userStatus.handled": "Handled",
+    "userStatus.pending": "Pending Department Handling",
+    "userStatus.handled": "Completed",
 
     "home.myTickets": "My Requests",
     "home.myTicketsDesc": "Shows the total number of requests you initiated.",
@@ -271,8 +265,8 @@ const dictionaries = {
     "admin.allScope": "All scope",
     "admin.activeTickets": "Active Tickets",
     "admin.activeTicketsNote": "Total unfinished tickets",
-    "admin.replyRate": "Reply Rate",
-    "admin.replyRateNote": "Completed percentage",
+    "admin.replyRate": "Completed Tickets",
+    "admin.replyRateNote": "Current completed ticket count",
     "admin.completeRate": "Completion Rate",
     "admin.completeRateNote": "Completed ticket percentage",
     "admin.priority": "Priority",
@@ -337,18 +331,15 @@ export function useUserStatusMap() {
   const { t } = useLanguage();
   return useMemo(() => {
     const pending = baseStatusMap.pending;
-    const processing = baseStatusMap.processing;
     const handled = baseStatusMap.completed;
     return {
       pending: { ...pending, label: t("userStatus.pending") },
-      processing: { ...processing, label: t("userStatus.processing") },
       handled: { ...handled, label: t("userStatus.handled") }
     };
   }, [t]);
 }
 
 export function toUserStatusKey(status) {
-  if (status === "pending") return "pending";
   if (status === "completed") return "handled";
-  return "processing";
+  return "pending";
 }

@@ -4,25 +4,13 @@ export const departments = ["信数中心", "党政办", "学工办", "培养处
 
 export const statusMap = {
   pending: {
-    label: "待处理",
+    label: "待相关部门处理",
     className: "bg-amber-50 text-amber-800 ring-amber-200/80",
     badgeClassName: "bg-amber-50 text-amber-800 ring-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]",
     dotClassName: "bg-amber-500"
   },
-  processing: {
-    label: "处理中",
-    className: "bg-sky-50 text-sky-800 ring-sky-200/80",
-    badgeClassName: "bg-sky-50 text-sky-800 ring-sky-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]",
-    dotClassName: "bg-sky-500"
-  },
-  replied: {
-    label: "已回复",
-    className: "bg-teal-50 text-teal-800 ring-teal-200/80",
-    badgeClassName: "bg-teal-50 text-teal-800 ring-teal-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]",
-    dotClassName: "bg-teal-500"
-  },
   completed: {
-    label: "已完成",
+    label: "处理完成",
     className: "bg-slate-100 text-slate-800 ring-slate-200",
     badgeClassName: "bg-slate-100 text-slate-700 ring-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.72)]",
     dotClassName: "bg-slate-500"
