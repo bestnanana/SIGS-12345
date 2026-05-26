@@ -1,0 +1,505 @@
+
+统一认证系统说明文档
+V-0.3
+上海申石软件有限公司
+目录
+TOC \o "1-3" \h \u HYPERLINK \l _Toc2517 统一认证系统说明文档 PAGEREF _Toc2517 \h 1
+ HYPERLINK \l _Toc2305 上海申石软件有限公司 PAGEREF _Toc2305 \h 1
+ HYPERLINK \l _Toc18180 1. 概述 PAGEREF _Toc18180 \h 5
+ HYPERLINK \l _Toc27288 2. 开发指南 PAGEREF _Toc27288 \h 5
+ HYPERLINK \l _Toc30326 2.1接口调用流程 PAGEREF _Toc30326 \h 5
+ HYPERLINK \l _Toc194 2.2环境信息 PAGEREF _Toc194 \h 5
+ HYPERLINK \l _Toc25371 3. 接口说明 PAGEREF _Toc25371 \h 6
+ HYPERLINK \l _Toc22405 3.1微信扫码解绑 PAGEREF _Toc22405 \h 6
+ HYPERLINK \l _Toc2646 3.2修改密码 PAGEREF _Toc2646 \h 7
+ HYPERLINK \l _Toc23145 修改密码页面（登录状态下） PAGEREF _Toc23145 \h 7
+ HYPERLINK \l _Toc9873 3.3获取令牌 PAGEREF _Toc9873 \h 7
+ HYPERLINK \l _Toc27427 3.4分页查询账号信息 PAGEREF _Toc27427 \h 8
+ HYPERLINK \l _Toc18365 3.5分页查询已删除账号信息 PAGEREF _Toc18365 \h 10
+ HYPERLINK \l _Toc687 3.6获取用户应用连接 PAGEREF _Toc687 \h 11
+ HYPERLINK \l _Toc12426 3.6 切换用户应用账号 PAGEREF _Toc12426 \h 12
+ HYPERLINK \l _Toc22547 3.7 账号委托 PAGEREF _Toc22547 \h 12
+ HYPERLINK \l _Toc9878 3.8 登出 PAGEREF _Toc9878 \h 13
+版本列表
+A-添加; M-修改; D-删除;
+版本号
+日期
+修改类型
+修订人
+备注
+V1.0
+2021-10-27
+A
+申石团队
+创建文档初稿
+V1.1
+2022-04-01
+M
+申石团队
+账号接口内容调整
+V4.0
+2023-03-27
+M
+申石团队
+增加账号委托、账号切换接口
+概述
+本接口文档是统一身份认证管理系统（以下简称IAM）组织和用户接口文档，所有的请求都为http协议，编码格式统一使用UTF-8，数据格式统一使用JSON。
+开发指南
+所有的接口都会返回code,开发者需根据code存在且为0判断为成功，否则为失败（code意请见 HYPERLINK "https://work.weixin.qq.com/api/doc/90000/90135/90664" \l "10649" 错误码），msg仅作参考。
+对用户、组织和部门只做逻辑删除（禁用操作），调用方如果想删除用户、组织和部门，调用更新接口，修改状态即可。
+2.1接口调用流程
+1、获取令牌。
+2、缓存和刷新令牌。调用者需要缓存令牌，用于后续接口的调用。当令牌失效或过期时，需要重新获取。
+3、调用具体的业务接口。
+2.2环境信息 
+环境信息
+统一身份认证系统地址(URL)
+测试环境
+https://sso.sigs.tsinghua.edu.cn
+生产环境
+https://id.sigs.tsinghua.edu.cn
+注意：之后文档出现的${URL}值均为变量，取值根据对应环境选择以上表格中的信息。
+接口说明
+3.1微信扫码解绑
+请求方式:POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/portal/unbindWeChat.action?sn={sn}
+请求参数说明：
+参数名称
+参数类型
+必须
+说明
+sn
+String
+是
+用户工号（未登录状态下）
+返回参数说明：
+参数名称
+参数类型
+示例值
+说明
+code
+Number
+100000001
+返回码
+success
+Boolean
+true
+返回状态
+msg
+String
+“微信解绑成功”
+返回描述
+返回示例：
+{
+ "code": 100000001,
+ "success": true,
+ "msg": "微信解除绑定成功"
+}
+3.2修改密码
+修改密码页面（登录状态下）
+ HYPERLINK "http://${URL}/portal/openpwd.html" http://${URL}/portal/openpwd.html?redirect_uri={redirect_uri}
+请求参数说明：
+参数名称
+参数类型
+必须
+说明
+redirect_uri
+String
+是
+回调地址（修改密码后回跳的地址）
+3.3获取令牌
+请求方式:POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/api/sys/login
+请求头说明：
+参数名称
+参数类型
+必须
+说明
+Content-Type
+String
+是
+application/json;charset=UTF-8
+请求体说明：
+参数名称
+参数类型
+必须
+说明
+username
+String
+是
+用户名
+password
+String
+是
+密码
+(username:data;password:123456)
+返回参数说明：
+参数名称
+参数类型
+说明
+Code
+int
+状态信息
+success
+Boolean
+返回状态
+msg
+String
+令牌信息
+pfs
+List
+系统用户权限信息
+userinfo
+系统用户信息
+返回示例：
+{
+ "code": 100000001,
+ "success": true,
+ "msg": "c94d56c5-d11b-41ae-beec-d3974970baff",
+ "pfs": [
+"/im/data/account/AccountLis",
+...
+ ],
+ "userinfo": {
+ 
+ }
+}
+返回状态说明：
+参数名称
+说明
+100000001
+成功
+100000003
+账号不存在
+100000004
+未知错误
+100000005
+登陆认证错误
+100000006
+登录账号被禁用
+3.4分页查询账号信息
+请求方式:POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/api/im/data/account/accountList
+请求头说明：
+参数名称
+参数类型
+必须
+说明
+uim-login-user-id
+String
+是
+令牌
+Content-Type
+String
+是
+application/json;charset=UTF-8
+请求体说明：
+参数名称
+参数类型
+必须
+说明
+appSn
+String
+否
+应用sn
+loginName
+String
+否
+账号名
+startTime
+String
+否
+查询开始时间范围yyyy-MM-dd HH:mm:ss格式
+endTime
+String
+否
+查询结束时间范围yyyy-MM-dd HH:mm:ss格式
+page
+int
+否
+页数,默认1
+pageSize
+int
+否
+数量,默认100
+返回参数说明：
+参数名称
+参数类型
+说明
+totalcount
+int
+记录总数
+pageSize
+int
+每页显示记录数
+currentPage
+int
+当前页数
+totalPageCount
+int
+总页数
+dataList
+List<T>
+分页结果集
+id
+long
+账号id
+appSn
+String
+应用sn(id)
+appName
+String
+应用名
+loginName
+String
+登录名
+personId
+Stirng
+主数据源人员唯一标识id
+status
+int
+账号状态
+createTime
+String
+创建时间
+updateTime
+String
+修改时间
+返回示例：
+{
+ "msg": "成功",
+ "code": 200,
+ "data": {
+ "dataList": [
+ {
+ "id": 21,
+ "appSn": "APP001",
+ "loginName": "LS002",
+ "personId": "LS002",
+ "status": 1,
+ "createTime": "2022-03-01 14:07:53",
+ "updateTime": "2022-03-31 09:43:47",
+ "appName": "统一认证"
+ },
+ {
+ "id": 33,
+ "appSn": "APP001",
+ "loginName": "2017670108",
+ "personId": "default_sigshr_2021_09_15_547",
+ "status": 1,
+ "createTime": "2022-03-31 09:27:46",
+ "updateTime": "2022-03-31 09:43:02",
+ "appName": "统一认证"
+ }
+ ],
+ "totalcount": 2,
+ "pageSize": 100,
+ "currentPage": 1,
+ "totalPageCount": 1
+ }
+}
+返回状态说明：
+参数名称
+说明
+200
+OK
+-1
+失败/无数据
+3.5分页查询已删除账号信息
+请求方式:POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/api/sys/log/findDeleteAccountInfoPage
+请求头说明：
+参数名称
+参数类型
+必须
+说明
+uim-login-user-id
+String
+是
+令牌
+Content-Type
+String
+是
+application/json;charset=UTF-8
+请求体说明：
+参数名称
+参数类型
+必须
+说明
+startTime
+String
+否
+查询开始时间范围yyyy-MM-dd HH:mm:ss格式
+endTime
+String
+否
+查询结束时间范围yyyy-MM-dd HH:mm:ss格式
+page
+int
+否
+页数,默认1
+pageSize
+int
+否
+数量,默认100
+返回参数说明：
+参数名称
+参数类型
+说明
+totalcount
+int
+记录总数
+pageSize
+int
+每页显示记录数
+currentPage
+int
+当前页数
+totalPageCount
+int
+总页数
+data
+List<T>
+分页结果集
+data[0].msg
+String
+状态消息
+data[0].code
+int
+状态码
+data[0].writeTime
+String
+删除时间
+返回状态说明：
+参数名称
+说明
+200
+OK
+-1
+失败/无数据
+3.6获取用户应用连接
+请求方式:POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/api/im/app/getAppsInfo
+请求头说明：
+参数名称
+参数类型
+必须
+说明
+uim-login-user-id
+String
+是
+令牌
+Content-Type
+String
+是
+application/json;charset=UTF-8
+请求体说明：
+参数名称
+参数类型
+必须
+说明
+sn
+String
+是
+用户工号/学号
+返回参数说明：
+参数名称
+参数类型
+说明
+data
+JsonArray
+应用信息列表
+data[0].msg
+String
+状态消息
+data[0].code
+int
+状态码
+data[0].app.clientId
+String
+应用id
+data[0].app.appName
+String
+应用名称
+data[0].app.url
+String
+应用连接
+返回状态说明：
+参数名称
+说明
+200
+OK
+-1
+失败/无数据
+返回示例：
+{
+"code": 200,
+"msg":"成功",
+ "data": [
+ {
+ "app": {
+ "clientId": "APP008",
+ "appName": "网络准入系统",
+ "url": "http://127.0.0.1:8882/sso/request?tokenId=123"
+ }
+ },
+ {
+ "app": {
+ "clientId": "APP025",
+ "appName": "师生服务中心",
+ "url": "http://127.0.0.1:8882/sso/request?tokenId=12345"
+ }
+ }
+ ]
+}
+3.6 切换用户应用账号
+请求方式:GET
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${url}/sso/oauth/authorize?client_id=${client_id}&response_type=code&redirect_uri=${url}/api/open/appAccount/accountSelection.html?secretKey=${secretKey}
+参数名称
+参数类型
+必须
+说明
+client_id
+String
+是
+统一身份认证颁发的应用id
+response_type
+String 
+是
+固定code
+redirect_uri
+String
+是
+固定：${url}/api/open/appAccount/accountSelection.html?secretKey=${secretKey}。注：url为统一身份认证平台域名,secretKey从统一身份认证平台申请的应用密钥，该参数值需要加密，请向管理人员获取RSA公钥后进行加密,加密后参数值使用 encodeURIComponent进行2次编码
+3.7 账号委托
+请求方式:GET
+请求地址：
+ HYPERLINK "http://${url}/sso/oauth/authorize?client_id=${client_id}&response_type=code&redirect_uri=${url}/portal/open/accounTentrustment.html" http://${url}/sso/oauth/authorize?client_id=${client_id}&response_type=code&redirect_uri=${url}/portal/open/accounTentrustment.html
+参数名称
+参数类型
+必须
+说明
+client_id
+String
+是
+统一身份认证颁发的应用id
+response_type
+String 
+是
+固定code
+redirect_uri
+String
+是
+固定：${url}/portal/open/accounTentrustment.html
+注：url为统一身份认证平台域名
+3.8 登出
+请求方式:GET/POST
+请求地址： HYPERLINK "http://host:port/portal/unbindWeChat.action?sn={sn}" http://${URL}/portal/sso/logout.html
+参数名称
+参数类型
+必须
+说明
+redirectUrl
+String
+否
+登出后的回调参数，如果不传该参数再次登入则默认进门户，传了该参数再次登录会回调到当前业务系统中。示例： HYPERLINK "https://id.sigs.tsinghua.edu.cn/portal/sso/logout.html?redirectUrl=/sso/oauth/authorize?response_type=code&client_id=应用id&redirect_uri=单点登录的接口地址（也就是对接oauthde" https://id.sigs.tsinghua.edu.cn/portal/sso/logout.html?redirectUrl=/sso/oauth/authorize?response_type=code&client_id=应用id&redirect_uri=单点登录的接口地址（也就是对接Oauth2的回调地址）
