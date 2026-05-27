@@ -699,12 +699,17 @@ async function loadOrCreateSsoPerson(ssoUser) {
     [ssoUser.uid, ssoUser.personId || ssoUser.uid]
   );
   if (existing) {
+    // Sync role from admin_users if this person is a registered admin
+    const adminRow = await get("SELECT role, department FROM admin_users WHERE union_id = ?", [ssoUser.uid]);
+    const role = adminRow?.role || existing.role || "user";
+    const dept = adminRow?.department || existing.department;
     await run(
       `UPDATE datahub_basic_persons
        SET union_id = ?, name = ?, type = COALESCE(NULLIF(?, ''), type),
+           role = ?, department = ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [ssoUser.uid, ssoUser.name, ssoUser.personType, existing.id]
+      [ssoUser.uid, ssoUser.name, ssoUser.personType, role, dept, existing.id]
     );
     return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [existing.id]);
   }
