@@ -39,38 +39,46 @@ function normalizeBasicPersonRow(row = {}) {
 async function fetchBasicPersons(body = {}) {
   assertDatahubConfig();
   const sqlArgs = normalizeBasicPersonQuery(body);
-  const response = await fetch(DATAHUB_BASIC_PERSON_URL, {
-    method: "POST",
-    headers: {
-      Accept: "application/vnd.api+json",
-      "Authorization-Type": "Apikey",
-      Authorization: DATAHUB_API_KEY,
-      ServiceId: DATAHUB_SERVICE_ID,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ sql_args: sqlArgs })
-  });
-
-  const text = await response.text();
-  let data;
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.DATAHUB_TIMEOUT_MS || 30000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch (error) {
-    data = { message: text };
-  }
+    const response = await fetch(DATAHUB_BASIC_PERSON_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/vnd.api+json",
+        "Authorization-Type": "Apikey",
+        Authorization: DATAHUB_API_KEY,
+        ServiceId: DATAHUB_SERVICE_ID,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ sql_args: sqlArgs }),
+      signal: controller.signal
+    });
 
-  if (!response.ok || data.status === "error") {
-    const error = new Error(data.message || data.msg || "Datahub人员基础信息接口调用失败");
-    error.status = response.status || 502;
-    error.response = data;
-    throw error;
-  }
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (error) {
+      data = { message: text };
+    }
 
-  return {
-    sql_args: sqlArgs,
-    rows: Array.isArray(data.result?.rows) ? data.result.rows.map(normalizeBasicPersonRow) : [],
-    raw: data
-  };
+    if (!response.ok || data.status === "error") {
+      const error = new Error(data.message || data.msg || "Datahub人员基础信息接口调用失败");
+      error.status = response.status || 502;
+      error.response = data;
+      throw error;
+    }
+
+    return {
+      sql_args: sqlArgs,
+      rows: Array.isArray(data.result?.rows) ? data.result.rows.map(normalizeBasicPersonRow) : [],
+      raw: data
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = {

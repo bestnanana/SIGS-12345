@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AUTH_EXPIRED_EVENT, api, clearAuthStorage } from "./api";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
@@ -9,7 +9,11 @@ import MyTicketsPage from "./pages/MyTicketsPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
 import TicketFormPage from "./pages/TicketFormPage";
 import TypicalIssuesPage from "./pages/TypicalIssuesPage";
-import { useLanguage } from "./i18n";
+import { useLanguage, useLocale, useLocaleNavigate } from "./i18n";
+
+function isAdminRole(role) {
+  return role === "admin" || role === "super_admin" || role === "liaison";
+}
 
 function readSavedUser() {
   const saved = localStorage.getItem("user");
@@ -25,12 +29,13 @@ function readSavedUser() {
 
 function App() {
   const { t } = useLanguage();
+  const { locale } = useLocale();
   const [user, setUser] = useState(readSavedUser);
   const [viewRole, setViewRole] = useState(() => localStorage.getItem("viewRole") || "");
   const [loading, setLoading] = useState(Boolean(localStorage.getItem("token")));
   const [authMessage, setAuthMessage] = useState("");
   const location = useLocation();
-  const navigate = useNavigate();
+  const navigate = useLocaleNavigate();
 
   useEffect(() => {
     function handleAuthExpired(event) {
@@ -46,6 +51,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let ignore = false;
     const token = localStorage.getItem("token");
     if (!token) {
       setLoading(false);
@@ -53,20 +59,25 @@ function App() {
     }
     api.get("/auth/me")
       .then((res) => {
+        if (ignore) return;
         setUser(res.data);
         localStorage.setItem("user", JSON.stringify(res.data));
-        if (res.data.role !== "admin") {
+        if (!isAdminRole(res.data.role)) {
           localStorage.removeItem("viewRole");
           setViewRole("");
         }
       })
       .catch(() => {
+        if (ignore) return;
         clearAuthStorage();
         setUser(null);
         setViewRole("");
         setAuthMessage("登录已失效，请重新登录");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+    return () => { ignore = true; };
   }, []);
 
   function handleLogin(payload) {
@@ -76,9 +87,11 @@ function App() {
     setUser(payload.user);
     setViewRole("");
     setAuthMessage("");
-    const target = location.pathname === "/local/login"
-      ? (payload.user?.role === "admin" ? "/admin" : "/")
-      : `${location.pathname}${location.search}${location.hash}`;
+    const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
+    const isLoginPage = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
+    const target = isLoginPage
+      ? (isAdminRole(payload.user?.role) ? "/admin" : "/")
+      : `${pathNoLocale}${location.search}${location.hash}`;
     navigate(target, { replace: true });
   }
 
@@ -87,7 +100,7 @@ function App() {
     setUser(null);
     setViewRole("");
     setAuthMessage("");
-    window.location.href = "/sso/logout";
+    window.location.href = `/sso/logout?locale=${locale}`;
   }
 
   function handleViewRoleChange(nextRole) {
@@ -108,20 +121,20 @@ function App() {
     return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
   }
 
-  const isAdmin = user.role === "admin" && viewRole !== "user";
+  const isAdmin = isAdminRole(user.role) && viewRole !== "user";
   const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user" } : user;
 
   return (
     <Layout user={effectiveUser} actualUser={user} onLogout={handleLogout} onViewRoleChange={handleViewRoleChange}>
       <Routes location={location}>
-        <Route path="/" element={isAdmin ? <Navigate to="/admin" replace /> : <HomePage user={effectiveUser} />} />
-        <Route path="/new" element={isAdmin ? <Navigate to="/admin" replace /> : <TicketFormPage user={effectiveUser} />} />
-        <Route path="/tickets" element={isAdmin ? <Navigate to="/admin" replace /> : <MyTicketsPage />} />
+        <Route path="/" element={isAdmin ? <Navigate to={`/${locale}/admin`} replace /> : <HomePage user={effectiveUser} />} />
+        <Route path="/new" element={isAdmin ? <Navigate to={`/${locale}/admin`} replace /> : <TicketFormPage user={effectiveUser} />} />
+        <Route path="/tickets" element={isAdmin ? <Navigate to={`/${locale}/admin`} replace /> : <MyTicketsPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage user={effectiveUser} />} />
         <Route path="/typical" element={<TypicalIssuesPage />} />
-        <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to="/" replace />} />
-        <Route path="/local/login" element={<Navigate to="/" replace />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to={`/${locale}/`} replace />} />
+        <Route path="/local/login" element={<Navigate to={`/${locale}/`} replace />} />
+        <Route path="*" element={<Navigate to={`/${locale}/`} replace />} />
       </Routes>
     </Layout>
   );

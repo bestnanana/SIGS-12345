@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, CheckCircle2, Clock3, Copy, Download, Link2, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
+import { useParams } from "react-router-dom";
 import { api, serverOrigin } from "../api";
 import { formatTime } from "../constants";
-import { toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
+import { useLocaleNavigate, useLanguage, useUserStatusMap, toUserStatusKey } from "../i18n";
 
 function AttachmentList({ items, emptyText = "暂无附件" }) {
   if (!items?.length) return <div className="text-sm text-slate-500">{emptyText}</div>;
@@ -33,31 +33,42 @@ function sortByTime(a, b) {
 }
 
 export default function TicketDetailPage() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const dateLocale = language === "en" ? "en-US" : "zh-CN";
   const statusMap = useUserStatusMap();
   const { id } = useParams();
-  const navigate = useNavigate();
+  const navigate = useLocaleNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [survey, setSurvey] = useState({ score: 5, comment: "" });
   const [surveySaving, setSurveySaving] = useState(false);
   const [surveyMessage, setSurveyMessage] = useState("");
+  const [copyMsg, setCopyMsg] = useState("");
 
   async function load() {
     setLoading(true);
-    const res = await api.get(`/tickets/${id}`);
-    setData(res.data);
-    if (res.data?.satisfaction) {
-      setSurvey({
-        score: Number(res.data.satisfaction.score || 5),
-        comment: res.data.satisfaction.comment || ""
-      });
+    setError("");
+    try {
+      const res = await api.get(`/tickets/${id}`);
+      setData(res.data);
+      if (res.data?.satisfaction) {
+        setSurvey({
+          score: Number(res.data.satisfaction.score || 5),
+          comment: res.data.satisfaction.comment || ""
+        });
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || t("detail.loadFailed"));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   useEffect(() => {
-    load();
+    let ignore = false;
+    if (!ignore) load();
+    return () => { ignore = true; };
   }, [id]);
 
   const replyFilesById = useMemo(() => {
@@ -117,6 +128,10 @@ export default function TicketDetailPage() {
     return <div className="app-card text-center text-ai-body">{t("common.loading")}</div>;
   }
 
+  if (error) {
+    return <div className="app-card text-center text-red-600">{error}</div>;
+  }
+
   if (!data?.ticket) {
     return <div className="app-card text-center text-ai-body">{t("detail.missing")}</div>;
   }
@@ -126,23 +141,43 @@ export default function TicketDetailPage() {
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const latestReply = replies.length ? replies[replies.length - 1] : null;
   const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
+  const shareUrl = data?.ticket?.share_code
+    ? `${window.location.origin}/api/public/ticket/${data.ticket.share_code}`
+    : "";
+
+  function copyShareUrl() {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopyMsg("已复制");
+      setTimeout(() => setCopyMsg(""), 2000);
+    }).catch(() => {});
+  }
+
   const isCompleted = ticket.status === "completed";
 
   return (
     <div className="space-y-6">
       <div className="app-card overflow-hidden p-0">
         <div className="mesh-hero border-b border-ai-border px-8 py-6">
-          <button onClick={() => navigate(-1)} className="mb-5 flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
-            <ArrowLeft size={16} />
-            {t("action.back")}
-          </button>
+          <div className="mb-5 flex items-center justify-between">
+            <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
+              <ArrowLeft size={16} />
+              {t("action.back")}
+            </button>
+            {shareUrl ? (
+              <button onClick={copyShareUrl} className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/30 transition duration-200 hover:bg-ai-primary/5">
+                <Link2 size={14} />
+                {copyMsg || "复制分享链接"}
+              </button>
+            ) : null}
+          </div>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h1 className="text-[32px] font-semibold tracking-tight text-ai-title">{ticket.title}</h1>
               <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm text-ai-body">
                 <span>{t("common.department")}：{ticket.department || t("common.notAssigned")}</span>
                 <span>{t("common.submitter")}：{ticket.is_anonymous ? t("common.anonymous") : ticket.submitter_name}</span>
-                <span>{t("common.submittedAt")}：{formatTime(ticket.created_at)}</span>
+                <span>{t("common.submittedAt")}：{formatTime(ticket.created_at, dateLocale)}</span>
               </div>
             </div>
             <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${status.badgeClassName || status.className}`}>
@@ -185,7 +220,7 @@ export default function TicketDetailPage() {
                       {status.label}
                     </span>
                   </div>
-                  <div className="mt-2 text-xs text-ai-muted">{t("common.updatedAt")}：{formatTime(ticket.updated_at || ticket.created_at)}</div>
+                  <div className="mt-2 text-xs text-ai-muted">{t("common.updatedAt")}：{formatTime(ticket.updated_at || ticket.created_at, dateLocale)}</div>
                 </div>
               </div>
             </div>
@@ -200,7 +235,7 @@ export default function TicketDetailPage() {
                   </div>
                   <div className="mt-1 text-xs text-ai-muted">
                     {latestReply
-                      ? `最近回复：${latestReply.replier_name || latestReply.department} · ${formatTime(latestReply.created_at)}`
+                      ? `最近回复：${latestReply.replier_name || latestReply.department} · ${formatTime(latestReply.created_at, dateLocale)}`
                       : "当前等待承办部门回复"}
                   </div>
                 </div>
@@ -225,7 +260,7 @@ export default function TicketDetailPage() {
                     {index + 1}
                   </div>
                   <div className="pt-1 text-xs text-ai-muted md:text-right">
-                    {formatTime(event.time)}
+                    {formatTime(event.time, dateLocale)}
                   </div>
                   <div className="rounded-2xl border border-ai-border bg-ai-bg px-4 py-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">

@@ -59,7 +59,9 @@ function writeLog(level, event, details = {}) {
       message: line.slice(0, maxLogLineLength)
     });
   }
-  fs.appendFileSync(logPath(), `${line}\n`, "utf8");
+  fs.appendFile(logPath(), `${line}\n`, "utf8", (err) => {
+    if (err) console.error("log_write_failed", err);
+  });
 }
 
 function requestId() {

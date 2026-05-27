@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, FileUp, RotateCcw, Save, SendHorizontal } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import { api, uploadConfig } from "../api";
 import { defaultDepartments, defaultFields } from "../constants";
-import { useLanguage } from "../i18n";
+import { useLocaleNavigate, useLanguage } from "../i18n";
 
 const acceptTypes = ".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4";
 
 export default function TicketFormPage({ user }) {
   const { t } = useLanguage();
-  const navigate = useNavigate();
+  const navigate = useLocaleNavigate();
   const [noticeOpen, setNoticeOpen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -52,6 +51,29 @@ export default function TicketFormPage({ user }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("ticketDraft");
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      if (!draft || !draft.title) return;
+      const restore = window.confirm("检测到上次未提交的表单草稿，是否恢复？");
+      if (restore) {
+        setForm((prev) => ({
+          ...prev,
+          title: draft.title || prev.title,
+          field: draft.field || prev.field,
+          department: draft.department || prev.department,
+          content: draft.content || prev.content,
+          phone: draft.phone || prev.phone,
+          is_anonymous: draft.is_anonymous || false
+        }));
+      }
+      localStorage.removeItem("ticketDraft");
+    } catch (e) { /* ignore corrupt drafts */ }
+  }, []);
+
   function onFilesChange(e) {
     const picked = Array.from(e.target.files || []);
     const tooLarge = picked.find((file) => file.size > 20 * 1024 * 1024);

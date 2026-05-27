@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ChevronDown, UserRound } from "lucide-react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { useLanguage } from "../i18n";
+import { useLocation } from "react-router-dom";
+import { useLanguage, useLocale, useLocaleNavigate, LocaleLink, switchLocalePath } from "../i18n";
 
 const userNavItems = [
   { labelKey: "nav.home", to: "/" },
@@ -30,16 +30,34 @@ function LogoMark() {
   );
 }
 
+function stripLocale(pathname) {
+  return pathname.replace(/^\/(?:cn|en)/, "") || "/";
+}
+
 export default function Layout({ children, user, actualUser = user, onLogout, onViewRoleChange }) {
-  const { language, setLanguage, t } = useLanguage();
-  const navigate = useNavigate();
+  const { t, locale } = useLanguage();
+  const { otherLocale } = useLocale();
+  const navigate = useLocaleNavigate();
   const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const roleLabel = user.role === "admin" ? t("role.admin") : t("role.user");
+  const userMenuRef = useRef(null);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    function handleClick(e) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [userMenuOpen]);
+  const isAdminLike = user.role === "admin" || user.role === "super_admin" || user.role === "liaison";
+  const roleLabel = isAdminLike ? t(`role.${user.role}`) : t("role.user");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
-  const navItems = user.role === "admin" ? adminNavItems : userNavItems;
-  const isActualAdmin = actualUser.role === "admin";
-  const isAdminArea = user.role === "admin" && location.pathname.startsWith("/admin");
+  const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison";
+  const isAdminArea = isAdminLike && stripLocale(location.pathname).startsWith("/admin");
+  const navItems = isAdminArea ? [] : userNavItems;
   const mainClassName = isAdminArea
     ? "min-h-[calc(100vh-137px)] px-2 py-3 sm:px-4 sm:py-4 lg:min-h-[calc(100vh-72px)] lg:px-5"
     : "min-h-[calc(100vh-137px)] px-3 py-6 sm:px-6 sm:py-8 lg:min-h-[calc(100vh-84px)] lg:px-8";
@@ -48,22 +66,25 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
     : "page-fade mx-auto w-full max-w-7xl";
 
   function isCurrent(item) {
-    if (item.to === "/") return location.pathname === "/";
-    if (item.to === "/tickets") return location.pathname === "/tickets";
-    return location.pathname.startsWith(item.to);
+    const current = stripLocale(location.pathname);
+    if (item.to === "/") return current === "/";
+    if (item.to === "/tickets") return current === "/tickets";
+    return current.startsWith(item.to);
   }
+
+  const switchLocaleUrl = switchLocalePath(locale, location.pathname);
 
   return (
     <div className="page-shell">
       <header className="tsinghua-header sticky top-0 z-20 border-b border-white/18">
         <div className={`mx-auto flex max-w-[1910px] items-center px-4 sm:px-6 lg:px-8 ${isAdminArea ? "h-[72px] gap-4" : "h-[84px] gap-6"}`}>
-          <button onClick={() => navigate(user.role === "admin" ? "/admin" : "/")} className="min-w-0 shrink-0 text-left">
+          <button onClick={() => navigate(isAdminLike ? "/admin" : "/")} className="min-w-0 shrink-0 text-left">
             <LogoMark />
           </button>
 
           <nav className="hidden flex-1 items-center justify-center gap-8 lg:flex">
             {navItems.map((item) => (
-              <Link
+              <LocaleLink
                 key={`${item.labelKey}-${item.to}`}
                 to={item.to}
                 className={[
@@ -73,26 +94,18 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
               >
                 {t(item.labelKey)}
                 {isCurrent(item) && <span className="motion-underline absolute bottom-0 left-1/2 h-1 w-9 -translate-x-1/2 rounded-t-full bg-white" />}
-              </Link>
+              </LocaleLink>
             ))}
           </nav>
 
           <div className="ml-auto flex shrink-0 items-center gap-5">
-            <div className="hidden rounded-full bg-white/10 p-1 ring-1 ring-white/20 sm:flex">
-              {["zh", "en"].map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setLanguage(item)}
-                  className={`h-8 rounded-full px-3 text-xs font-semibold transition duration-200 ${
-                    language === item ? "bg-white text-tsinghua-800 shadow-sm" : "text-white/70 hover:text-white"
-                  }`}
-                >
-                  {item === "zh" ? "中" : "EN"}
-                </button>
-              ))}
-            </div>
-            <div className="relative">
+            <a
+              href={switchLocaleUrl}
+              className="hidden rounded-full bg-white/10 px-4 py-2 text-xs font-semibold text-white/80 ring-1 ring-white/20 transition duration-200 hover:bg-white/20 hover:text-white sm:flex"
+            >
+              {otherLocale === "en" ? "EN" : "中"}
+            </a>
+            <div className="relative" ref={userMenuRef}>
               <button
                 onClick={() => setUserMenuOpen((open) => !open)}
                 className="flex items-center gap-3 text-left"
@@ -122,7 +135,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                           navigate("/admin");
                         }}
                         className={`h-9 w-full rounded-lg px-3 text-left text-sm transition duration-200 ${
-                          user.role === "admin" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
+                          user.role !== "user" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
                         }`}
                       >
                         {t("action.adminIdentity")}
@@ -135,7 +148,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                           navigate("/");
                         }}
                         className={`h-9 w-full rounded-lg px-3 text-left text-sm transition duration-200 ${
-                          user.role !== "admin" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
+                          user.role === "user" ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
                         }`}
                       >
                         {t("action.userIdentity")}
@@ -144,20 +157,12 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                   ) : null}
                   <div className="border-b border-ai-border p-1 sm:hidden">
                     <div className="px-2 py-1 text-xs font-semibold text-ai-muted">Language</div>
-                    <div className="flex gap-1">
-                      {["zh", "en"].map((item) => (
-                        <button
-                          key={item}
-                          type="button"
-                          onClick={() => setLanguage(item)}
-                          className={`h-9 flex-1 rounded-lg px-3 text-sm transition duration-200 ${
-                            language === item ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-[#F6F6FA] hover:text-ai-title"
-                          }`}
-                        >
-                          {item === "zh" ? "中文" : "English"}
-                        </button>
-                      ))}
-                    </div>
+                    <a
+                      href={switchLocaleUrl}
+                      className="flex h-9 w-full items-center rounded-lg px-3 text-sm text-ai-body transition duration-200 hover:bg-[#F6F6FA] hover:text-ai-title"
+                    >
+                      {otherLocale === "en" ? "English" : "中文"}
+                    </a>
                   </div>
                   <button
                     onClick={onLogout}
@@ -174,7 +179,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
           {navItems.map((item) => {
             const active = isCurrent(item);
             return (
-              <Link
+              <LocaleLink
                 key={`mobile-${item.labelKey}-${item.to}`}
                 to={item.to}
                 className={`flex h-10 shrink-0 items-center rounded-xl px-4 text-sm font-semibold transition duration-200 ${
@@ -184,7 +189,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                 }`}
               >
                 {t(item.labelKey)}
-              </Link>
+              </LocaleLink>
             );
           })}
         </nav>

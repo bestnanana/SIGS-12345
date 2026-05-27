@@ -1,6 +1,6 @@
 export const fields = ["教务", "人事", "学工", "科研", "后勤", "信息化", "其他", "国际学生学者"];
 
-export const departments = ["信数中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
+export const departments = ["信息中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
 
 export const statusMap = {
   pending: {
@@ -17,9 +17,9 @@ export const statusMap = {
   }
 };
 
-export function formatTime(value) {
+export function formatTime(value, locale = "zh-CN") {
   if (!value) return "-";
-  return new Date(value).toLocaleString("zh-CN", {
+  return new Date(value).toLocaleString(locale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

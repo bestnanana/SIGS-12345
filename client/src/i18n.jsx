@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, { createContext, useContext, useMemo } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { statusMap as baseStatusMap } from "./constants";
 
 const dictionaries = {
@@ -11,6 +12,8 @@ const dictionaries = {
 
     "role.user": "用户",
     "role.admin": "管理员",
+    "role.super_admin": "超级管理员",
+    "role.liaison": "联络员",
     "role.normalUser": "普通用户",
 
     "action.searchTickets": "搜索事项",
@@ -51,6 +54,25 @@ const dictionaries = {
     "userStatus.pending": "待相关部门处理",
     "userStatus.handled": "处理完成",
 
+    "login.title": "SIGS投诉即办",
+    "login.subtitle": "诉求提交、部门流转、办理进度和结果反馈集中在同一个工作台。",
+    "login.badge": "SIGS Prompt Complaint",
+    "login.heading": "登录入口",
+    "login.welcome": "欢迎回来",
+    "login.welcomeDesc": "使用校园账号进入诉求办理平台。",
+    "login.ssoHeading": "统一身份认证登录",
+    "login.ssoDesc": "通过清华大学统一身份认证平台登录系统",
+    "login.ssoButton": "统一身份认证登录",
+    "login.ssoRedirecting": "跳转中...",
+    "login.unionId": "人员编号",
+    "login.password": "密码",
+    "login.loginButton": "登录系统",
+    "login.verifying": "验证中",
+    "login.entering": "进入中",
+    "login.enterWorkspace": "正在进入工作台",
+    "login.ssoFailed": "统一身份认证地址生成失败",
+    "login.failed": "登录失败",
+
     "home.myTickets": "我发起的事项",
     "home.myTicketsDesc": "同步显示“我发起的事项”中的事项数量。",
     "home.enterMyTickets": "进入我发起的事项",
@@ -88,6 +110,7 @@ const dictionaries = {
     "form.phonePlaceholder": "请输入手机号码",
 
     "detail.missing": "事项不存在",
+    "detail.loadFailed": "事项加载失败，请稍后重试",
     "detail.userContent": "用户提交内容",
     "detail.uploadedFiles": "用户上传附件",
     "detail.progress": "办理进度",
@@ -148,6 +171,8 @@ const dictionaries = {
 
     "role.user": "User",
     "role.admin": "Admin",
+    "role.super_admin": "Super Admin",
+    "role.liaison": "Liaison",
     "role.normalUser": "User",
 
     "action.searchTickets": "Search tickets",
@@ -188,6 +213,25 @@ const dictionaries = {
     "userStatus.pending": "Pending Department Handling",
     "userStatus.handled": "Completed",
 
+    "login.title": "SIGS Prompt Complaint",
+    "login.subtitle": "Submit requests, track department processing, and receive results — all in one workspace.",
+    "login.badge": "SIGS Prompt Complaint",
+    "login.heading": "Login",
+    "login.welcome": "Welcome Back",
+    "login.welcomeDesc": "Use your campus account to enter the service platform.",
+    "login.ssoHeading": "SSO Login",
+    "login.ssoDesc": "Log in via Tsinghua University Single Sign-On",
+    "login.ssoButton": "SSO Login",
+    "login.ssoRedirecting": "Redirecting...",
+    "login.unionId": "Union ID",
+    "login.password": "Password",
+    "login.loginButton": "Log in",
+    "login.verifying": "Verifying",
+    "login.entering": "Entering",
+    "login.enterWorkspace": "Entering workspace",
+    "login.ssoFailed": "Failed to generate SSO URL",
+    "login.failed": "Login failed",
+
     "home.myTickets": "My Requests",
     "home.myTicketsDesc": "Shows the total number of requests you initiated.",
     "home.enterMyTickets": "Open My Requests",
@@ -225,6 +269,7 @@ const dictionaries = {
     "form.phonePlaceholder": "Enter phone number",
 
     "detail.missing": "Ticket not found",
+    "detail.loadFailed": "Failed to load ticket, please try again later",
     "detail.userContent": "Submitted Content",
     "detail.uploadedFiles": "Uploaded Files",
     "detail.progress": "Progress",
@@ -278,7 +323,9 @@ const dictionaries = {
   }
 };
 
-const LanguageContext = createContext(null);
+const LOCALE_TO_LANG = { cn: "zh", en: "en" };
+const LANG_TO_LOCALE = { zh: "cn", en: "en" };
+const VALID_LOCALES = ["cn", "en"];
 
 function interpolate(template, params = {}) {
   return Object.entries(params).reduce(
@@ -287,23 +334,17 @@ function interpolate(template, params = {}) {
   );
 }
 
-export function LanguageProvider({ children }) {
-  const [language, setLanguage] = useState(() => localStorage.getItem("language") || "zh");
+const LanguageContext = createContext(null);
 
-  function changeLanguage(nextLanguage) {
-    setLanguage(nextLanguage);
-    localStorage.setItem("language", nextLanguage);
-  }
+export function LanguageProvider({ children }) {
+  const { locale: rawLocale } = useParams();
+  const locale = VALID_LOCALES.includes(rawLocale) ? rawLocale : "cn";
+  const language = LOCALE_TO_LANG[locale] || "zh";
 
   const value = useMemo(() => {
     const t = (key, params) => interpolate(dictionaries[language]?.[key] || dictionaries.zh[key] || key, params);
-    return {
-      language,
-      setLanguage: changeLanguage,
-      toggleLanguage: () => changeLanguage(language === "zh" ? "en" : "zh"),
-      t
-    };
-  }, [language]);
+    return { language, locale, t };
+  }, [language, locale]);
 
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;
 }
@@ -313,6 +354,37 @@ export function useLanguage() {
   if (!context) throw new Error("useLanguage must be used within LanguageProvider");
   return context;
 }
+
+export function useLocale() {
+  const { locale, language } = useLanguage();
+  return { locale, language, otherLocale: locale === "cn" ? "en" : "cn" };
+}
+
+export function useLocaleNavigate() {
+  const { locale } = useLocale();
+  const navigate = useNavigate();
+  return (path, options) => {
+    if (typeof path === "number") return navigate(path);
+    return navigate(`/${locale}${path}`, options);
+  };
+}
+
+export function LocaleLink({ to, ...props }) {
+  const { locale } = useLocale();
+  return <Link to={`/${locale}${to}`} {...props} />;
+}
+
+export function localePath(path, locale) {
+  return `/${locale}${path}`;
+}
+
+export function switchLocalePath(currentLocale, pathname) {
+  const other = currentLocale === "cn" ? "en" : "cn";
+  const stripped = pathname.replace(/^\/(?:cn|en)/, "") || "/";
+  return `/${other}${stripped}`;
+}
+
+export { LOCALE_TO_LANG, LANG_TO_LOCALE, VALID_LOCALES };
 
 export function useStatusMap() {
   const { t } = useLanguage();

@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { ArrowRight, Megaphone, MessageSquareText } from "lucide-react";
-import { Link } from "react-router-dom";
 import { api } from "../api";
 import { formatTime } from "../constants";
-import { useLanguage } from "../i18n";
+import { LocaleLink, useLanguage } from "../i18n";
 
 export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const dateLocale = language === "en" ? "en-US" : "zh-CN";
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -17,8 +17,12 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
     api.get("/public/typical-tickets")
       .then((res) => {
         if (ignore) return;
-        if (Array.isArray(res.data)) {
-          setItems(res.data);
+        const data = res.data;
+        if (data && Array.isArray(data.rows)) {
+          setItems(data.rows);
+          setError("");
+        } else if (Array.isArray(data)) {
+          setItems(data);
           setError("");
         } else {
           setItems([]);
@@ -57,10 +61,10 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
             </div>
           </div>
           {showViewAll && items.length > visibleItems.length ? (
-            <Link to="/typical" className="inline-flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-ai-primary transition duration-200 hover:bg-ai-primary/5">
+            <LocaleLink to="/typical" className="inline-flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-ai-primary transition duration-200 hover:bg-ai-primary/5">
               {t("action.viewAll")}
               <ArrowRight size={16} />
-            </Link>
+            </LocaleLink>
           ) : null}
         </div>
       </div>
@@ -81,7 +85,7 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ai-body">
                     <span>{t("common.field")}：{item.field}</span>
                     <span>{t("common.department")}：{item.department}</span>
-                    <span>{t("common.publishedAt")}：{formatTime(item.published_at)}</span>
+                    <span>{t("common.publishedAt")}：{formatTime(item.published_at, dateLocale)}</span>
                   </div>
                 </div>
                 <span className="ai-chip shrink-0">{t("typical.tag")}</span>
@@ -101,7 +105,7 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
                     {item.reply_content || t("typical.noAnswer")}
                     {item.reply_department ? (
                       <div className="mt-3 text-xs text-ai-muted">
-                        {item.reply_department} · {formatTime(item.reply_time)}
+                        {item.reply_department} · {formatTime(item.reply_time, dateLocale)}
                       </div>
                     ) : null}
                   </div>

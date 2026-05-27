@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ClipboardList, Eye, FileCheck2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, Search, SendHorizontal, Settings2, Star, UsersRound } from "lucide-react";
-import { Link } from "react-router-dom";
+import { BarChart3, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Link2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, SendHorizontal, Settings2, Star } from "lucide-react";
 import { api, uploadConfig } from "../api";
 import { formatTime } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
-import { useLanguage, useStatusMap } from "../i18n";
+import RoleManager from "../components/RoleManager";
+import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
+import { LocaleLink, useLanguage, useStatusMap } from "../i18n";
 
 const adminMenuItems = [
   { key: "tickets", labelKey: "admin.menuTickets", descriptionKey: "admin.menuTicketsDesc", icon: ClipboardList },
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
-  { key: "persons", labelKey: "人员管理", descriptionKey: "Datahub人员基础信息", icon: UsersRound },
   { key: "config", labelKey: "配置管理", descriptionKey: "表单领域和部门配置", icon: Settings2 }
 ];
 const ticketStatusOrder = ["pending", "completed"];
@@ -28,12 +28,13 @@ function formatPercent(value, total) {
   return `${Math.round((value / total) * 100)}%`;
 }
 
-function labelFor(value, fallback = "-") {
+export function labelFor(value, fallback = "-") {
   return value === null || value === undefined || value === "" ? fallback : value;
 }
 
 export default function AdminPage() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const dateLocale = language === "en" ? "en-US" : "zh-CN";
   const fullStatusMap = useStatusMap();
   const statusMap = useMemo(() => ({
     pending: fullStatusMap.pending,
@@ -49,20 +50,23 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [personRows, setPersonRows] = useState([]);
-  const [personTotal, setPersonTotal] = useState(0);
-  const [personPage, setPersonPage] = useState(1);
-  const [personPageSize] = useState(20);
-  const [personKeyword, setPersonKeyword] = useState("");
-  const [personSearch, setPersonSearch] = useState("");
-  const [personsLoading, setPersonsLoading] = useState(false);
-  const [personsError, setPersonsError] = useState("");
+  const [adminPage, setAdminPage] = useState(1);
+  const [adminTotal, setAdminTotal] = useState(0);
+  const [adminStatusFilter, setAdminStatusFilter] = useState("pending");
+  const adminPageSize = 30;
+  const [roleRows, setRoleRows] = useState([]);
+  const [roleLoading, setRoleLoading] = useState(false);
+  const [roleSaving, setRoleSaving] = useState("");
+  const [roleError, setRoleError] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1280);
+  const [copyMsg, setCopyMsg] = useState("");
 
   const selected = useMemo(() => tickets.find((item) => item.id === selectedId), [tickets, selectedId]);
-  const canHandleSelected = selected && user?.department && user.department === (selected.current_department || "党政办");
+  const canHandleSelected = selected && (
+    user?.role === "super_admin" ||
+    (user?.department && user.department === (selected.current_department || "党政办"))
+  );
   const isCompleted = selected?.status === "completed";
-  const canReplySelected = canHandleSelected && !isCompleted;
   const ticketGroups = useMemo(() => {
     return ticketStatusOrder
       .map((status) => ({
@@ -75,7 +79,7 @@ export default function AdminPage() {
       .filter((group) => group.items.length > 0);
   }, [statusMap, tickets]);
   const stats = useMemo(() => {
-    const total = tickets.length;
+    const total = adminTotal || tickets.length;
     const statusCounts = Object.keys(statusMap).reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
     tickets.forEach((ticket) => {
       const status = normalizeTicketStatus(ticket.status);
@@ -110,7 +114,7 @@ export default function AdminPage() {
       satisfactionRate: formatPercent(satisfactionTickets.length, completedCount),
       satisfactionDistribution
     };
-  }, [statusMap, tickets]);
+  }, [statusMap, tickets, adminTotal]);
 
   async function loadMe() {
     const res = await api.get("/auth/me");
@@ -118,14 +122,27 @@ export default function AdminPage() {
     setReply((current) => ({ ...current, department: res.data.department || "党政办" }));
   }
 
-  async function loadTickets() {
+  async function loadTickets(p = adminPage) {
     setLoading(true);
     try {
-      const res = await api.get("/admin/tickets");
-      const nextTickets = Array.isArray(res.data) ? res.data : [];
-      setTickets(nextTickets);
-      setSelectedId((current) => current || nextTickets[0]?.id || null);
-      setError(Array.isArray(res.data) ? "" : "后台事项接口返回异常，请确认后端已重启到最新版本。");
+      const res = await api.get("/admin/tickets", { params: { page: p, pageSize: adminPageSize } });
+      const data = res.data;
+      if (data && Array.isArray(data.rows)) {
+        setTickets(data.rows);
+        setAdminTotal(data.total || 0);
+        setError("");
+      } else if (Array.isArray(data)) {
+        setTickets(data);
+        setAdminTotal(data.length);
+        setError("");
+      } else {
+        setError("后台事项接口返回异常，请确认后端已重启到最新版本。");
+      }
+      setSelectedId((current) => {
+        if (data && Array.isArray(data.rows) && data.rows.length) return current || data.rows[0]?.id || null;
+        if (Array.isArray(data) && data.length) return current || data[0]?.id || null;
+        return current || null;
+      });
     } catch (err) {
       setTickets([]);
       setError(err.response?.data?.message || "后台事项加载失败，请确认后端服务正在运行。");
@@ -134,26 +151,35 @@ export default function AdminPage() {
     }
   }
 
-  async function loadPersons(nextPage = personPage, keyword = personSearch) {
-    setPersonsLoading(true);
-    setPersonsError("");
+  async function loadRoles() {
+    setRoleLoading(true);
+    setRoleError("");
     try {
       const res = await api.get("/datahub/basic-persons/stored", {
-        params: {
-          page: nextPage,
-          pageSize: personPageSize,
-          keyword
-        }
+        params: { page: 1, pageSize: 500 }
       });
-      setPersonRows(Array.isArray(res.data?.rows) ? res.data.rows : []);
-      setPersonTotal(Number(res.data?.total || 0));
-      setPersonPage(Number(res.data?.page || nextPage));
+      setRoleRows(Array.isArray(res.data?.rows) ? res.data.rows : []);
     } catch (err) {
-      setPersonRows([]);
-      setPersonTotal(0);
-      setPersonsError(err.response?.data?.message || "人员数据加载失败");
+      setRoleError(err.response?.data?.message || "角色数据加载失败");
     } finally {
-      setPersonsLoading(false);
+      setRoleLoading(false);
+    }
+  }
+
+  async function saveRole(person) {
+    setRoleSaving(person.id);
+    setRoleError("");
+    try {
+      await api.patch(`/admin/persons/${person.id}`, {
+        role: person.role,
+        department: person.department,
+        can_manage_roles: person.can_manage_roles
+      });
+      setRoleRows((rows) => rows.map((r) => (r.id === person.id ? { ...r, role: person.role, department: person.department, can_manage_roles: person.can_manage_roles } : r)));
+    } catch (err) {
+      setRoleError(err.response?.data?.message || "保存失败");
+    } finally {
+      setRoleSaving("");
     }
   }
 
@@ -171,7 +197,7 @@ export default function AdminPage() {
     setReply((current) => ({
       ...current,
       department: res.data.ticket.current_department || res.data.ticket.department || current.department,
-      content: current.content || res.data.ticket.ai_suggestion || ""
+      content: current.content || ""
     }));
   }
 
@@ -185,16 +211,18 @@ export default function AdminPage() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (activeView === "persons") {
-      loadPersons(personPage, personSearch);
+    if (activeView === "roles") {
+      loadRoles();
     }
-  }, [activeView, personPage, personSearch]);
+  }, [activeView]);
+
+  const canManageRoles = user?.role === "super_admin" || user?.can_manage_roles;
 
   function chooseTicket(ticket) {
     setSelectedId(ticket.id);
     setReply({
       department: user?.department || ticket.current_department || "党政办",
-      content: ticket.ai_suggestion || "",
+      content: "",
       status: "completed"
     });
   }
@@ -207,7 +235,7 @@ export default function AdminPage() {
 
   async function submitReply(e) {
     e.preventDefault();
-    if (!selectedId || !canReplySelected) return;
+    if (!selectedId || !canHandleSelected) return;
     setSubmitting(true);
     try {
       const data = new FormData();
@@ -226,19 +254,25 @@ export default function AdminPage() {
     }
   }
 
-  const summaryCards = [
-    { label: t("admin.visibleTickets"), value: stats.total, note: user?.department ? `${user.department}${t("admin.scope")}` : t("admin.allScope") },
-    { label: t("admin.activeTickets"), value: stats.active, note: t("admin.activeTicketsNote") },
-    { label: t("admin.replyRate"), value: stats.completed, note: t("admin.replyRateNote") },
-    { label: t("admin.completeRate"), value: stats.completeRate, note: t("admin.completeRateNote") }
-  ];
-  const maxStatusCount = Math.max(1, ...Object.values(stats.statusCounts));
-  const maxDepartmentCount = Math.max(1, ...stats.departmentEntries.map(([, count]) => count));
-  const maxFieldCount = Math.max(1, ...stats.fieldEntries.map(([, count]) => count));
-  const personTotalPages = Math.max(1, Math.ceil(personTotal / personPageSize));
-  const personPageStart = personTotal ? (personPage - 1) * personPageSize + 1 : 0;
-  const personPageEnd = Math.min(personTotal, personPage * personPageSize);
   const selectedStatus = selected ? statusMap[normalizeTicketStatus(selected.status)] || statusMap.pending : statusMap.pending;
+
+  const shareUrl = selected?.share_code ? `${window.location.origin}/api/public/ticket/${selected.share_code}` : "";
+
+  function copyShareUrl() {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopyMsg("已复制");
+      setTimeout(() => setCopyMsg(""), 2000);
+    }).catch(() => setCopyMsg("复制失败"));
+  }
+
+  const adminTotalPages = Math.max(1, Math.ceil(adminTotal / adminPageSize));
+
+  function goAdminPage(p) {
+    const target = Math.max(1, Math.min(p, adminTotalPages));
+    setAdminPage(target);
+    loadTickets(target);
+  }
   const currentHandlerText = selected?.current_department || selected?.department || "党政办";
   const sidebarWidthClass = sidebarCollapsed ? "grid-cols-[72px_minmax(0,1fr)]" : "grid-cols-[232px_minmax(0,1fr)]";
   const workflowSteps = selected
@@ -251,7 +285,7 @@ export default function AdminPage() {
         tone: "purple",
         lines: [
           `提交人：${selected.submitter_name || "学生"}`,
-          `提交时间：${formatTime(selected.created_at)}`,
+          `提交时间：${formatTime(selected.created_at, dateLocale)}`,
           `学生通过平台提交事项，等待相关部门处理。`
         ]
       },
@@ -262,7 +296,7 @@ export default function AdminPage() {
         icon: FileCheck2,
         tone: "amber",
         lines: [
-          `申请部门：${selected.department || "未指定"}`,
+          `申请选择部门：${selected.department || "未指定"}`,
           `办理部门：${currentHandlerText}`,
           selected.status === "completed" ? "相关部门已完成处理。" : "事项已提交，等待相关部门处理。"
         ]
@@ -274,7 +308,7 @@ export default function AdminPage() {
         icon: CheckCircle2,
         tone: "slate",
         lines: [
-          `完成时间：${selected.status === "completed" ? formatTime(selected.updated_at) : "—"}`,
+          `完成时间：${selected.status === "completed" ? formatTime(selected.updated_at, dateLocale) : "—"}`,
           selected.status === "completed" ? "事项办理完成，流程结束。" : "办理结果确认后进入最终状态。"
         ]
       }
@@ -330,6 +364,24 @@ export default function AdminPage() {
               </button>
             );
           })}
+          {canManageRoles ? (
+            <button
+              type="button"
+              onClick={() => setActiveView("roles")}
+              title={sidebarCollapsed ? "角色管理" : undefined}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
+                activeView === "roles" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
+              } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
+            >
+              <Settings2 size={18} className="shrink-0" />
+              {!sidebarCollapsed ? (
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold">角色管理</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "roles" ? "text-white/80" : "text-ai-muted"}`}>分配角色与部门联络员</span>
+                </span>
+              ) : null}
+            </button>
+          ) : null}
         </nav>
 
         {!sidebarCollapsed ? (
@@ -367,6 +419,23 @@ export default function AdminPage() {
                 </button>
               </div>
 
+              <div className="flex shrink-0 gap-1 border-b border-ai-border px-2 py-2">
+                {Object.entries(statusMap).map(([value, meta]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setAdminStatusFilter(value)}
+                    className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition duration-200 ${
+                      adminStatusFilter === value
+                        ? "bg-ai-primary/10 text-ai-primary"
+                        : "text-ai-body hover:bg-ai-bg"
+                    }`}
+                  >
+                    {meta.label}
+                  </button>
+                ))}
+              </div>
+
               <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3 scrollbar-thin">
                 {loading ? (
                   <div className="p-8 text-center text-sm text-slate-500">{t("common.loading")}</div>
@@ -376,7 +445,9 @@ export default function AdminPage() {
                   <div className="p-8 text-center text-sm text-slate-500">{t("admin.noTodos")}</div>
                 ) : (
                   <div className="space-y-5">
-                    {ticketGroups.map((group) => (
+                    {ticketGroups
+                      .filter((group) => group.status === adminStatusFilter)
+                      .map((group) => (
                       <section key={group.status} className="space-y-3">
                         <div className="flex items-center justify-between px-1">
                           <div className="flex items-center gap-2">
@@ -403,24 +474,16 @@ export default function AdminPage() {
                                   selectedId === ticket.id ? "border-ai-primary/30 bg-ai-primary/10 shadow-sm" : "border-ai-border bg-white hover:bg-ai-bg"
                                 }`}
                               >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <div className="truncate font-semibold text-ai-title">{ticket.title}</div>
-                                    <div className="mt-1 text-xs text-ai-muted">
-                                      #{String(ticket.id).padStart(6, "0")} · {t("common.submitter")}：{ticket.submitter_name}
+                                <div className="flex items-start gap-2">
+                                  <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${status.dotClassName || "bg-current"}`} />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
+                                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
+                                      <span>{ticket.field}</span>
+                                      <span>{ticket.current_department || "党政办"}</span>
+                                      <span>{ticket.submitter_name}</span>
                                     </div>
                                   </div>
-                                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${status.badgeClassName || status.className}`}>
-                                    <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName || "bg-current"}`} />
-                                    {status.label}
-                                  </span>
-                                </div>
-                                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-ai-body">
-                                  <span>{ticket.field}</span>
-                                  <span>{t("common.department")}：{ticket.department || t("common.notAssigned")}</span>
-                                  <span>{t("common.currentDepartment")}：{ticket.current_department || "党政办"}</span>
-                                  {ticket.satisfaction_score ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 ring-1 ring-amber-200">满意度 {ticket.satisfaction_score} 分</span> : null}
-                                  {ticket.is_published ? <span className="rounded-full bg-teal-50 px-2 py-0.5 text-teal-700 ring-1 ring-teal-200">{t("admin.published")}</span> : null}
                                 </div>
                               </button>
                             );
@@ -428,6 +491,29 @@ export default function AdminPage() {
                         </div>
                       </section>
                     ))}
+                  </div>
+                )}
+
+                {adminTotalPages > 1 && !loading && (
+                  <div className="flex items-center justify-between gap-2 border-t border-ai-border px-3 py-3">
+                    <span className="text-xs text-ai-muted">{adminTotal} 项</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => goAdminPage(adminPage - 1)}
+                        disabled={adminPage <= 1}
+                        className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
+                      >
+                        <ChevronLeft size={14} />
+                      </button>
+                      <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{adminPage}/{adminTotalPages}</span>
+                      <button
+                        onClick={() => goAdminPage(adminPage + 1)}
+                        disabled={adminPage >= adminTotalPages}
+                        className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -441,30 +527,41 @@ export default function AdminPage() {
                   <div className="mesh-hero border-b border-ai-border px-4 py-4 sm:px-5">
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="flex flex-wrap gap-x-5 gap-y-2 text-base font-semibold text-ai-title">
+                        <h2 className="mb-3 text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
+                        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ai-body">
                           <span>事项编号：#{String(selected.id).padStart(6, "0")}</span>
                           <span>提交时间：{formatTime(selected.created_at)}</span>
-                        </div>
-                        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ai-body">
                           <span>提交人：{selected.submitter_name}</span>
                           <span>联系方式：{selected.submitter_phone || "不显示"}</span>
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => togglePublish(selected)}
-                          className={`flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold ring-1 transition duration-200 ${
-                            selected.is_published ? "bg-teal-50 text-teal-700 ring-teal-200" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
-                          }`}
-                        >
-                          <Megaphone size={16} />
-                          {selected.is_published ? t("action.unpublish") : t("action.publish")}
-                        </button>
-                        <Link to={`/tickets/${selected.id}`} className="ghost-button h-11">
+                        {shareUrl ? (
+                          <button
+                            type="button"
+                            onClick={copyShareUrl}
+                            className="flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-sm font-semibold text-ai-primary ring-1 ring-ai-primary/30 transition duration-200 hover:bg-ai-primary/5"
+                          >
+                            <Link2 size={16} />
+                            {copyMsg || "复制分享链接"}
+                          </button>
+                        ) : null}
+                        {selected.status === "completed" ? (
+                          <button
+                            type="button"
+                            onClick={() => togglePublish(selected)}
+                            className={`flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold ring-1 transition duration-200 ${
+                              selected.is_published ? "bg-teal-50 text-teal-700 ring-teal-200" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
+                            }`}
+                          >
+                            <Megaphone size={16} />
+                            {selected.is_published ? t("action.unpublish") : t("action.publish")}
+                          </button>
+                        ) : null}
+                        <LocaleLink to={`/tickets/${selected.id}`} className="ghost-button h-11">
                           <Eye size={16} />
                           {t("admin.detailsPage")}
-                        </Link>
+                        </LocaleLink>
                       </div>
                     </div>
                   </div>
@@ -487,64 +584,58 @@ export default function AdminPage() {
                           </span>
                         </div>
                         <div className="text-xs leading-6 text-ai-body">
-                          最后更新时间：{formatTime(selected.updated_at || selected.created_at)}
+                          最后更新时间：{formatTime(selected.updated_at || selected.created_at, dateLocale)}
                         </div>
                       </section>
 
-                      <form onSubmit={submitReply} className={`rounded-xl border p-4 ${canReplySelected ? "border-ai-border" : "border-ai-border bg-ai-bg"}`}>
-                        <h3 className="mb-4 font-semibold text-ai-title">处理信息</h3>
-                        {!canHandleSelected ? (
-                          <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
-                            该事项当前承办部门为 {currentHandlerText}，只能由该部门管理员回复处理。
+                      {isCompleted && detail?.replies?.[detail.replies.length - 1] ? (
+                        <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
+                          <h3 className="mb-3 font-semibold text-emerald-800">处理结果</h3>
+                          <div className="whitespace-pre-wrap text-sm leading-7 text-emerald-900">
+                            {detail.replies[detail.replies.length - 1].content}
                           </div>
-                        ) : null}
-                        {isCompleted ? (
-                          <div className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm leading-6 text-emerald-800 ring-1 ring-emerald-200">
-                            该事项已完成，不能继续提交回复。
+                          <div className="mt-3 text-xs text-emerald-700">
+                            {detail.replies[detail.replies.length - 1].replier_name || detail.replies[detail.replies.length - 1].department}
+                            {" · "}
+                            {formatTime(detail.replies[detail.replies.length - 1].created_at, dateLocale)}
                           </div>
-                        ) : null}
-                        <label className="mb-3 block">
-                          <span className="mb-1 block text-sm text-ai-body">当前承办部门</span>
-                          <input value={currentHandlerText} readOnly className="soft-input w-full" />
-                        </label>
-                        <label className="mb-3 block">
-                          <span className="mb-1 block text-sm text-ai-body">处理人</span>
-                          <input value={user?.name || "当前管理员"} readOnly className="soft-input w-full" />
-                        </label>
-                        <label className="mb-3 block">
-                          <span className="mb-1 block text-sm text-ai-body">联系方式</span>
-                          <input value={user?.phone || selected.submitter_phone || ""} readOnly className="soft-input w-full" />
-                        </label>
-                        <label className="mb-3 block">
-                          <span className="mb-1 block text-sm text-ai-body">处理说明</span>
+                        </section>
+                      ) : (
+                        <form onSubmit={submitReply} className="rounded-xl border border-ai-border p-4">
+                          <h3 className="mb-4 font-semibold text-ai-title">处理信息</h3>
+                          {!canHandleSelected ? (
+                            <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
+                              该事项当前承办部门为 {currentHandlerText}，只能由该部门管理员处理。
+                            </div>
+                          ) : null}
                           <textarea
                             value={reply.content}
                             onChange={(e) => setReply({ ...reply, content: e.target.value })}
                             className="soft-textarea min-h-28 w-full"
-                            disabled={!canReplySelected}
-                            placeholder="可填写处理进展、原因说明及后续计划。"
+                            disabled={!canHandleSelected}
+                            placeholder="请填写处理结果说明..."
                             required
                           />
-                        </label>
-                        <label className={`mb-5 flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-3 text-sm text-ai-body ${canReplySelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
-                          <Paperclip size={16} />
-                          <span className="truncate">{files.length ? `${files.length} 个附件已选择` : "上传官方附件"}</span>
-                          <input
-                            type="file"
-                            multiple
-                            accept=".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4"
-                            onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                            className="hidden"
-                            disabled={!canReplySelected}
-                          />
-                        </label>
-                        <div>
-                          <button disabled={submitting || !canReplySelected} className="primary-button w-full">
-                            <SendHorizontal size={16} />
-                            {isCompleted ? "处理完成" : submitting ? "提交中..." : "提交处理完成结果"}
-                          </button>
-                        </div>
-                      </form>
+                          <div className="mt-4 flex items-center justify-between gap-3">
+                            <label className={`flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-2 text-sm text-ai-body transition ${canHandleSelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
+                              <Paperclip size={16} />
+                              <span className="truncate">{files.length ? `${files.length} 个附件` : "上传附件"}</span>
+                              <input
+                                type="file"
+                                multiple
+                                accept=".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4"
+                                onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                                className="hidden"
+                                disabled={!canHandleSelected}
+                              />
+                            </label>
+                            <button type="submit" disabled={submitting || !canHandleSelected} className="primary-button">
+                              <SendHorizontal size={16} />
+                              {submitting ? "提交中..." : "提交处理结果"}
+                            </button>
+                          </div>
+                        </form>
+                      )}
 
                     </div>
 
@@ -602,7 +693,7 @@ export default function AdminPage() {
                               {detail.satisfaction.comment || "用户未填写文字评价。"}
                             </div>
                             <div className="text-xs text-ai-muted">
-                              评价人：{detail.satisfaction.user_name || selected.submitter_name} · {formatTime(detail.satisfaction.updated_at || detail.satisfaction.created_at)}
+                              评价人：{detail.satisfaction.user_name || selected.submitter_name} · {formatTime(detail.satisfaction.updated_at || detail.satisfaction.created_at, dateLocale)}
                             </div>
                           </div>
                         ) : (
@@ -618,333 +709,20 @@ export default function AdminPage() {
             </section>
           </div>
         ) : activeView === "analytics" ? (
-          <div className="space-y-6">
-            <section className="app-card mesh-hero p-5">
-              <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <div className="ai-chip mb-4">
-                    <BarChart3 size={14} className="mr-1.5" />
-                    数据统计分析
-                  </div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-ai-title">事项运行概览</h1>
-                  <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">
-                    统计当前管理员权限范围内的事项数量、状态分布、部门流向和事项领域。
-                  </p>
-                </div>
-                <button type="button" onClick={loadTickets} className="ghost-button bg-white/80">
-                  <RefreshCw size={16} />
-                  刷新数据
-                </button>
-              </div>
-            </section>
-
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {summaryCards.map((card) => (
-                <div key={card.label} className="app-card p-4">
-                  <div className="text-sm text-ai-body">{card.label}</div>
-                  <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{card.value}</div>
-                  <div className="mt-2 text-xs text-ai-muted">{card.note}</div>
-                </div>
-              ))}
-            </section>
-
-            <section className="grid gap-4 md:grid-cols-3">
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">满意度平均分</div>
-                <div className="mt-3 flex items-end gap-2">
-                  <span className="text-3xl font-semibold leading-none tracking-tight text-ai-title">{stats.satisfactionAverage}</span>
-                  <span className="text-sm font-semibold text-ai-muted">/ 5</span>
-                </div>
-                <div className="mt-2 text-xs text-ai-muted">已评价 {stats.satisfactionCount} 项</div>
-              </div>
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">满意度覆盖率</div>
-                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{stats.satisfactionRate}</div>
-                <div className="mt-2 text-xs text-ai-muted">已完成事项中的评价占比</div>
-              </div>
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">高满意评价</div>
-                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">
-                  {(stats.satisfactionDistribution[4] || 0) + (stats.satisfactionDistribution[5] || 0)}
-                </div>
-                <div className="mt-2 text-xs text-ai-muted">4-5 分评价数量</div>
-              </div>
-            </section>
-
-            <section className="grid gap-4 xl:grid-cols-2">
-              <div className="app-card">
-                <div className="mb-5 flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl font-semibold text-ai-title">状态分布</h2>
-                    <p className="mt-1 text-sm text-ai-body">按办理状态统计事项数量。</p>
-                  </div>
-                  <span className="rounded-full bg-ai-primary/10 px-3 py-1 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/10">
-                    {stats.total} 项
-                  </span>
-                </div>
-                <div className="space-y-4">
-                  {Object.entries(statusMap).map(([value, meta]) => {
-                    const count = stats.statusCounts[value] || 0;
-                    return (
-                      <div key={value}>
-                        <div className="mb-2 flex items-center justify-between text-sm">
-                          <span className="font-medium text-ai-title">{meta.label}</span>
-                          <span className="text-ai-body">{count} 项</span>
-                        </div>
-                        <div className="h-2.5 overflow-hidden rounded-full bg-ai-bg">
-                          <div
-                            className="h-full rounded-full bg-ai-primary"
-                            style={{ width: `${(count / maxStatusCount) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="app-card">
-                <div className="mb-5">
-                  <h2 className="text-xl font-semibold text-ai-title">承办部门分布</h2>
-                  <p className="mt-1 text-sm text-ai-body">按当前承办部门统计事项流向。</p>
-                </div>
-                {stats.departmentEntries.length ? (
-                  <div className="space-y-4">
-                    {stats.departmentEntries.map(([department, count]) => (
-                      <div key={department}>
-                        <div className="mb-2 flex items-center justify-between text-sm">
-                          <span className="font-medium text-ai-title">{department}</span>
-                          <span className="text-ai-body">{count} 项</span>
-                        </div>
-                        <div className="h-2.5 overflow-hidden rounded-full bg-ai-bg">
-                          <div
-                            className="h-full rounded-full bg-teal-500"
-                            style={{ width: `${(count / maxDepartmentCount) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl bg-ai-bg p-6 text-center text-sm text-ai-body">暂无部门统计数据</div>
-                )}
-              </div>
-            </section>
-
-            <section className="app-card">
-              <div className="mb-5">
-                <h2 className="text-xl font-semibold text-ai-title">满意度评分分布</h2>
-                <p className="mt-1 text-sm text-ai-body">按 1-5 分统计发起人的满意度调查结果。</p>
-              </div>
-              <div className="space-y-4">
-                {[5, 4, 3, 2, 1].map((score) => {
-                  const count = stats.satisfactionDistribution[score] || 0;
-                  const maxScoreCount = Math.max(1, ...Object.values(stats.satisfactionDistribution));
-                  return (
-                    <div key={score}>
-                      <div className="mb-2 flex items-center justify-between text-sm">
-                        <span className="flex items-center gap-2 font-medium text-ai-title">
-                          <Star size={15} className="text-amber-500" fill="currentColor" />
-                          {score} 分
-                        </span>
-                        <span className="text-ai-body">{count} 项</span>
-                      </div>
-                      <div className="h-2.5 overflow-hidden rounded-full bg-ai-bg">
-                        <div
-                          className="h-full rounded-full bg-amber-500"
-                          style={{ width: `${(count / maxScoreCount) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="app-card">
-              <div className="mb-5">
-                <h2 className="text-xl font-semibold text-ai-title">事项领域分布</h2>
-                <p className="mt-1 text-sm text-ai-body">用于识别高频问题领域和后续治理重点。</p>
-              </div>
-              {stats.fieldEntries.length ? (
-                <div className="grid gap-4 md:grid-cols-2">
-                  {stats.fieldEntries.map(([field, count]) => (
-                    <div key={field} className="rounded-2xl border border-ai-border bg-ai-bg p-4">
-                      <div className="mb-3 flex items-center justify-between text-sm">
-                        <span className="font-semibold text-ai-title">{field}</span>
-                        <span className="text-ai-body">{count} 项</span>
-                      </div>
-                      <div className="h-2.5 overflow-hidden rounded-full bg-white">
-                        <div
-                          className="h-full rounded-full bg-amber-500"
-                          style={{ width: `${(count / maxFieldCount) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-2xl bg-ai-bg p-6 text-center text-sm text-ai-body">暂无领域统计数据</div>
-              )}
-            </section>
-          </div>
-        ) : activeView === "persons" ? (
-          <div className="space-y-6">
-            <section className="app-card mesh-hero p-5">
-              <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <div className="ai-chip mb-4">
-                    <UsersRound size={14} className="mr-1.5" />
-                    Datahub人员基础信息
-                  </div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-ai-title">人员管理</h1>
-                  <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">
-                    展示从人员基础信息接口同步到本地数据库的人员数据，可按姓名、人员编号或部门检索。
-                  </p>
-                </div>
-                <button type="button" onClick={() => loadPersons(personPage, personSearch)} className="ghost-button bg-white/80">
-                  <RefreshCw size={16} />
-                  刷新数据
-                </button>
-              </div>
-            </section>
-
-            <section className="grid gap-4 md:grid-cols-3">
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">入库人员</div>
-                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{personTotal}</div>
-                <div className="mt-3 text-xs text-ai-muted">Datahub同步数据</div>
-              </div>
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">当前页</div>
-                <div className="mt-3 text-3xl font-semibold leading-none tracking-tight text-ai-title">{personPage}</div>
-                <div className="mt-3 text-xs text-ai-muted">共 {personTotalPages} 页</div>
-              </div>
-              <div className="app-card p-4">
-                <div className="text-sm text-ai-body">显示范围</div>
-                <div className="mt-3 text-2xl font-semibold leading-none tracking-tight text-ai-title">{personPageStart}-{personPageEnd}</div>
-                <div className="mt-3 text-xs text-ai-muted">每页 {personPageSize} 条</div>
-              </div>
-            </section>
-
-            {personsError ? (
-              <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">
-                {personsError}
-              </div>
-            ) : null}
-
-            <section className="app-card overflow-hidden p-0">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ai-border px-4 py-4 sm:px-5">
-                <div>
-                  <h2 className="text-xl font-semibold text-ai-title">人员数据列表</h2>
-                  <p className="mt-1 text-sm text-ai-body">字段来自 Datahub 人员基础信息接口。</p>
-                </div>
-                <form
-                  className="flex w-full flex-wrap items-center gap-3 lg:w-auto"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    setPersonPage(1);
-                    setPersonSearch(personKeyword.trim());
-                  }}
-                >
-                  <label className="flex h-10 w-full items-center rounded-xl border border-ai-border bg-white px-3 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10 sm:w-80">
-                    <Search size={16} className="text-ai-muted" />
-                    <input
-                      value={personKeyword}
-                      onChange={(e) => setPersonKeyword(e.target.value)}
-                      className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-sm outline-none placeholder:text-ai-muted"
-                      placeholder="搜索姓名、编号或部门"
-                    />
-                  </label>
-                  <button type="submit" className="primary-button h-10 px-4">
-                    <Search size={16} />
-                    搜索
-                  </button>
-                </form>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="soft-table w-full min-w-[980px]">
-                  <thead>
-                    <tr>
-                      <th>姓名</th>
-                      <th>人员编号</th>
-                      <th>类型</th>
-                      <th>人员类别</th>
-                      <th>部门</th>
-                      <th>状态</th>
-                      <th>聘任属性</th>
-                      <th>聘任形式</th>
-                      <th>聘任岗位</th>
-                      <th>更新时间</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {personsLoading ? (
-                      <tr>
-                        <td colSpan="10" className="px-6 py-12 text-center text-ai-body">人员数据加载中...</td>
-                      </tr>
-                    ) : personRows.length === 0 ? (
-                      <tr>
-                        <td colSpan="10" className="px-6 py-12 text-center text-ai-body">暂无人员数据</td>
-                      </tr>
-                    ) : (
-                      personRows.map((person) => (
-                        <tr key={person.id}>
-                          <td>
-                            <div className="font-semibold text-ai-title">{labelFor(person.name)}</div>
-                            <div className="mt-1 max-w-[180px] truncate text-xs text-ai-muted">{person.id}</div>
-                          </td>
-                          <td>{labelFor(person.union_id)}</td>
-                          <td>{labelFor(person.type)}</td>
-                          <td>{labelFor(person.category)}</td>
-                          <td>
-                            <span className="inline-flex max-w-[180px] truncate rounded-full bg-ai-bg px-3 py-1 text-xs font-semibold text-ai-body ring-1 ring-ai-border">
-                              {labelFor(person.department)}
-                            </span>
-                          </td>
-                          <td>{labelFor(person.status)}</td>
-                          <td>{labelFor(person.appoint_attr)}</td>
-                          <td>{labelFor(person.appointment_form)}</td>
-                          <td>{labelFor(person.hire_post)}</td>
-                          <td>{person.write_date ? formatTime(person.write_date) : "-"}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ai-border px-4 py-4 sm:px-5">
-                <div className="text-sm text-ai-body">
-                  共 {personTotal} 条，当前显示 {personPageStart}-{personPageEnd}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setPersonPage((page) => Math.max(1, page - 1))}
-                    disabled={personPage <= 1 || personsLoading}
-                    className="secondary-button h-10 px-4"
-                  >
-                    上一页
-                  </button>
-                  <span className="min-w-20 text-center text-sm font-semibold text-ai-title">
-                    {personPage} / {personTotalPages}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setPersonPage((page) => Math.min(personTotalPages, page + 1))}
-                    disabled={personPage >= personTotalPages || personsLoading}
-                    className="secondary-button h-10 px-4"
-                  >
-                    下一页
-                  </button>
-                </div>
-              </div>
-            </section>
-          </div>
+          <AdminAnalyticsPanel stats={stats} user={user} />
         ) : activeView === "config" ? (
           <FormConfigManager />
+        ) : activeView === "roles" ? (
+          <RoleManager
+            roleRows={roleRows}
+            roleLoading={roleLoading}
+            roleSaving={roleSaving}
+            roleError={roleError}
+            onLoadRoles={loadRoles}
+            onSaveRole={saveRole}
+            setRoleRows={setRoleRows}
+            setRoleError={setRoleError}
+          />
         ) : null}
       </div>
     </div>

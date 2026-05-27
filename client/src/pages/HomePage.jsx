@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ArrowRight, ClipboardList } from "lucide-react";
-import { Link } from "react-router-dom";
 import { api } from "../api";
 import TypicalIssuesPanel from "../components/TypicalIssuesPanel";
 import { formatTime } from "../constants";
-import { toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
+import { LocaleLink, toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
 
 export default function HomePage({ user }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const dateLocale = language === "en" ? "en-US" : "zh-CN";
   const statusMap = useUserStatusMap();
   const [tickets, setTickets] = useState([]);
   const [loadingTickets, setLoadingTickets] = useState(true);
@@ -19,10 +19,12 @@ export default function HomePage({ user }) {
     async function loadTickets() {
       setLoadingTickets(true);
       try {
-        const res = await api.get("/tickets");
+        const res = await api.get("/tickets", { params: { pageSize: 50 } });
         if (ignore) return;
-        setTickets(Array.isArray(res.data) ? res.data : []);
-        setTicketsError(Array.isArray(res.data) ? "" : "事项接口返回异常，请稍后重试。");
+        const data = res.data;
+        const list = data && Array.isArray(data.rows) ? data.rows : Array.isArray(data) ? data : [];
+        setTickets(list);
+        setTicketsError(list.length > 0 || (data && Array.isArray(data.rows)) || Array.isArray(data) ? "" : "事项接口返回异常，请稍后重试。");
       } catch (err) {
         if (ignore) return;
         setTickets([]);
@@ -59,10 +61,10 @@ export default function HomePage({ user }) {
           <div className="mt-8 text-[44px] font-semibold leading-none tracking-tight text-ai-title">
             {loadingTickets ? "--" : tickets.length}
           </div>
-          <Link to="/tickets" className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
+          <LocaleLink to="/tickets" className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
             {t("home.enterMyTickets")}
             <ArrowRight size={16} />
-          </Link>
+          </LocaleLink>
         </div>
 
         <div className="app-card min-w-0">
@@ -91,7 +93,7 @@ export default function HomePage({ user }) {
               {unresolvedTickets.slice(0, 4).map((ticket) => {
                 const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
                 return (
-                  <Link
+                  <LocaleLink
                     key={ticket.id}
                     to={`/tickets/${ticket.id}`}
                     className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-ai-border bg-[#FAFAFC] px-4 py-3 transition duration-200 hover:-translate-y-0.5 hover:border-ai-primary/20 hover:bg-white hover:shadow-[0_12px_28px_rgba(0,0,0,0.05)]"
@@ -99,7 +101,7 @@ export default function HomePage({ user }) {
                     <div className="min-w-0">
                       <div className="max-w-full truncate font-semibold text-ai-title">{ticket.title}</div>
                       <div className="mt-1 text-xs text-ai-muted">
-                        #{String(ticket.id).padStart(6, "0")} · {formatTime(ticket.created_at)}
+                        #{String(ticket.id).padStart(6, "0")} · {formatTime(ticket.created_at, dateLocale)}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-2">
@@ -109,7 +111,7 @@ export default function HomePage({ user }) {
                       </span>
                       <ArrowRight size={16} className="text-ai-primary" />
                     </div>
-                  </Link>
+                  </LocaleLink>
                 );
               })}
             </div>

@@ -1,5 +1,6 @@
 ﻿const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const initSqlJs = require("sql.js");
 const bcrypt = require("bcryptjs");
 const logger = require("./logger");
@@ -13,7 +14,10 @@ const adminDepartments = ["信息中心", "党政办", "学工办", "培养处",
 let db;
 let lockFd = null;
 let lockToken = null;
-let backedUpBeforeWrite = false;
+let persistTimer = null;
+let lastBackupTime = 0;
+const persistDebounceMs = 2000;
+const backupIntervalMs = 60 * 60 * 1000;
 const defaultFormOptionSeeds = {
   fields: ["\u6559\u52a1", "\u4eba\u4e8b", "\u5b66\u5de5", "\u79d1\u7814", "\u540e\u52e4", "\u4fe1\u606f\u5316", "\u5176\u4ed6", "\u56fd\u9645\u5b66\u751f\u5b66\u8005"],
   departments: ["\u4fe1\u6570\u4e2d\u5fc3", "\u515a\u653f\u529e", "\u5b66\u5de5\u529e", "\u57f9\u517b\u5904", "\u8d22\u52a1\u529e", "\u4eba\u4e8b\u529e"]
@@ -89,9 +93,13 @@ function releaseDbLock() {
 }
 
 function installLockCleanup() {
-  process.once("exit", releaseDbLock);
+  process.once("exit", () => {
+    flushPersist();
+    releaseDbLock();
+  });
   ["SIGINT", "SIGTERM", "SIGHUP"].forEach((signal) => {
     process.once(signal, () => {
+      flushPersist();
       releaseDbLock();
       process.exit(signal === "SIGINT" ? 130 : 143);
     });
@@ -103,16 +111,30 @@ function timestampForFile() {
 }
 
 function backupCurrentDb() {
-  if (backedUpBeforeWrite || !fs.existsSync(dbPath)) return;
+  if (!fs.existsSync(dbPath)) return;
+  const now = Date.now();
+  if (now - lastBackupTime < backupIntervalMs) return;
   fs.mkdirSync(backupDir, { recursive: true });
-  const backupPath = path.join(backupDir, `app.${timestampForFile()}.before-write.db`);
+  const backupPath = path.join(backupDir, `app.${timestampForFile()}.db`);
   fs.copyFileSync(dbPath, backupPath);
+  lastBackupTime = now;
   logger.info("db_backup_created", { backup_path: backupPath });
-  backedUpBeforeWrite = true;
 }
 
 function persist() {
   if (lockFd === null) throw new Error("当前进程没有数据库写入锁。");
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    flushPersist();
+  }, persistDebounceMs);
+}
+
+function flushPersist() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
   const data = Buffer.from(db.export());
   if (fs.existsSync(dbPath)) {
     const current = fs.readFileSync(dbPath);
@@ -168,7 +190,7 @@ async function initDb() {
   });
   db = existingDb ? new SQL.Database(fs.readFileSync(dbPath)) : new SQL.Database();
 
-  await run("PRAGMA foreign_keys = OFF", [], { persist: false });
+  await run("PRAGMA foreign_keys = ON", [], { persist: false });
   await ensureSchema();
   await seedDefaultFormOptions();
   await seedDefaultPeople();
@@ -176,6 +198,7 @@ async function initDb() {
 
 async function ensureSchema() {
   await ensureDatahubPersonTables();
+  await ensureAdminUserTables();
   await ensureFormConfigTables();
   await run(`
     CREATE TABLE IF NOT EXISTS tickets (
@@ -193,6 +216,7 @@ async function ensureSchema() {
       published_at DATETIME,
       ai_category TEXT,
       ai_suggestion TEXT,
+      share_code TEXT UNIQUE,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -200,9 +224,9 @@ async function ensureSchema() {
   await run(`
     CREATE TABLE IF NOT EXISTS replies (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
       content TEXT NOT NULL,
-      replier_id TEXT NOT NULL,
+      replier_id TEXT NOT NULL REFERENCES datahub_basic_persons(id),
       department TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -210,8 +234,8 @@ async function ensureSchema() {
   await run(`
     CREATE TABLE IF NOT EXISTS attachments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER,
-      reply_id INTEGER,
+      ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+      reply_id INTEGER REFERENCES replies(id) ON DELETE SET NULL,
       filename TEXT NOT NULL,
       original_name TEXT NOT NULL,
       file_path TEXT NOT NULL,
@@ -223,10 +247,10 @@ async function ensureSchema() {
   await run(`
     CREATE TABLE IF NOT EXISTS transfers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
       from_department TEXT NOT NULL,
       to_department TEXT NOT NULL,
-      operator_id TEXT NOT NULL,
+      operator_id TEXT NOT NULL REFERENCES datahub_basic_persons(id),
       note TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -234,8 +258,8 @@ async function ensureSchema() {
   await run(`
     CREATE TABLE IF NOT EXISTS ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL,
-      user_id TEXT NOT NULL,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES datahub_basic_persons(id),
       type TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(ticket_id, user_id, type)
@@ -244,8 +268,8 @@ async function ensureSchema() {
   await run(`
     CREATE TABLE IF NOT EXISTS satisfaction_surveys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ticket_id INTEGER NOT NULL UNIQUE,
-      user_id TEXT NOT NULL,
+      ticket_id INTEGER NOT NULL UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES datahub_basic_persons(id),
       score INTEGER NOT NULL,
       comment TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -256,6 +280,13 @@ async function ensureSchema() {
   const hasSatisfactionColumn = (name) => satisfactionColumns.some((item) => item.name === name);
   if (!hasSatisfactionColumn("comment")) await run("ALTER TABLE satisfaction_surveys ADD COLUMN comment TEXT");
   if (!hasSatisfactionColumn("updated_at")) await run("ALTER TABLE satisfaction_surveys ADD COLUMN updated_at DATETIME");
+
+  const ticketColumns = await all("PRAGMA table_info(tickets)");
+  if (!ticketColumns.some((item) => item.name === "share_code")) {
+    await run("ALTER TABLE tickets ADD COLUMN share_code TEXT");
+    await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_share_code ON tickets(share_code)");
+  }
+
   await normalizeTicketStatuses();
 }
 
@@ -288,6 +319,7 @@ async function ensureDatahubPersonTables() {
       password_hash TEXT,
       phone TEXT,
       role TEXT DEFAULT 'user',
+      can_manage_roles INTEGER DEFAULT 0,
       raw_json TEXT NOT NULL DEFAULT '{}',
       synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -301,6 +333,7 @@ async function ensureDatahubPersonTables() {
   if (!hasColumn("password_hash")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN password_hash TEXT");
   if (!hasColumn("phone")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN phone TEXT");
   if (!hasColumn("role")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN role TEXT DEFAULT 'user'");
+  if (!hasColumn("can_manage_roles")) await run("ALTER TABLE datahub_basic_persons ADD COLUMN can_manage_roles INTEGER DEFAULT 0");
   await run("UPDATE datahub_basic_persons SET password_hash = password WHERE (password_hash IS NULL OR password_hash = '') AND password IS NOT NULL AND password != ''");
   await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_datahub_basic_persons_username ON datahub_basic_persons(username)");
   await run("CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_union_id ON datahub_basic_persons(union_id)");
@@ -318,6 +351,21 @@ async function ensureDatahubPersonTables() {
       upserted_count INTEGER DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'running',
       error_message TEXT
+    )
+  `);
+}
+
+async function ensureAdminUserTables() {
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      union_id TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      department TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }
@@ -355,34 +403,113 @@ async function seedDefaultFormOptions() {
 }
 
 async function seedDefaultPeople() {
-  const passwordHash = bcrypt.hashSync("123456", 10);
-  const accounts = [
-    ["local_student", "student", "student", "学生用户", "13800000001", null, "user"],
-    ["local_super_admin", "super_admin", "super_admin", "超级管理员", null, "党政办", "admin"],
-    ["local_admin", "admin", "admin", "张明", null, "党政办", "admin"],
-    ["local_admin2", "admin2", "admin2", "李晨", null, "信息中心", "admin"],
-    ["local_admin3", "admin3", "admin3", "管理员", null, "党政办", "admin"],
-    ["local_admin4", "xszx_admin", "xszx_admin", "周宁", null, "信息中心", "admin"],
-    ["local_admin5", "xgb_admin", "xgb_admin", "王芳", null, "学工办", "admin"],
-    ["local_admin6", "pyc_admin", "pyc_admin", "陈静", null, "培养处", "admin"],
-    ["local_admin7", "cwb_admin", "cwb_admin", "赵磊", null, "财务办", "admin"],
-    ["local_admin8", "rsb_admin", "rsb_admin", "刘洋", null, "人事办", "admin"]
-  ];
-  for (const [id, unionId, username, name, phone, department, role] of accounts) {
+  // Seed student user (SSO only, no local password)
+  const studentExisting = await get("SELECT id FROM datahub_basic_persons WHERE username = ?", ["student"]);
+  if (!studentExisting) {
     await run(
-      `INSERT INTO datahub_basic_persons (id, union_id, username, password_hash, name, phone, department, role, raw_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         union_id = excluded.union_id,
-         username = excluded.username,
+      `INSERT INTO datahub_basic_persons (id, union_id, username, name, phone, department, role, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["local_student", "student", "student", "学生用户", "13800000001", null, "user", "{}"]
+    );
+  }
+
+  // Seed admin users into admin_users table
+  const adminAccounts = [
+    ["super_admin", "super_admin", "超级管理员", "super_admin", "党政办"],
+    ["admin", "admin", "张明", "admin", "党政办"],
+    ["admin2", "admin2", "李晨", "admin", "信息中心"],
+    ["admin3", "admin3", "管理员", "admin", "党政办"],
+    ["xszx_admin", "xszx_admin", "周宁", "admin", "信息中心"],
+    ["xgb_admin", "xgb_admin", "王芳", "admin", "学工办"],
+    ["pyc_admin", "pyc_admin", "陈静", "admin", "培养处"],
+    ["cwb_admin", "cwb_admin", "赵磊", "admin", "财务办"],
+    ["rsb_admin", "rsb_admin", "刘洋", "admin", "人事办"],
+    ["xxzx_liaison", "xxzx_liaison", "信息中心联络员", "liaison", "信息中心"],
+    ["dzb_liaison", "dzb_liaison", "党政办联络员", "liaison", "党政办"],
+    ["xgb_liaison", "xgb_liaison", "学工办联络员", "liaison", "学工办"],
+    ["pyc_liaison", "pyc_liaison", "培养处联络员", "liaison", "培养处"],
+    ["cwb_liaison", "cwb_liaison", "财务办联络员", "liaison", "财务办"],
+    ["rsb_liaison", "rsb_liaison", "人事办联络员", "liaison", "人事办"]
+  ];
+
+  // Specific admin accounts with fixed password (union_id matches Datahub)
+  const fixedAccounts = [
+    ["B19712", "陈杨", "admin", "信息与数据服务中心"],
+    ["S07704", "吴志勇", "admin", "数据与信息研究院"],
+    ["X23009", "黄思强", "admin", "党政办"],
+    ["zhaozhuqing", "赵竹青", "admin", "党政办"]
+  ];
+  const fixedHash = await bcrypt.hash("123456", 10);
+  for (const [unionId, name, role, department] of fixedAccounts) {
+    await run(
+      `INSERT INTO admin_users (union_id, password_hash, name, role, department)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(union_id) DO UPDATE SET
          password_hash = excluded.password_hash,
          name = excluded.name,
-         phone = COALESCE(datahub_basic_persons.phone, excluded.phone),
+         role = excluded.role,
+         department = excluded.department,
+         updated_at = CURRENT_TIMESTAMP`,
+      [unionId, fixedHash, name, role, department]
+    );
+    // Update the real Datahub person record with admin role
+    await run(
+      "UPDATE datahub_basic_persons SET role = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE union_id = ?",
+      [role, department, unionId]
+    );
+  }
+  console.log("--- 指定管理员账号 ---");
+  fixedAccounts.forEach(([unionId, name]) => console.log(`  ${unionId} / 123456  (${name})`));
+
+  const seededUsers = [];
+  for (const [unionId, , name, role, department] of adminAccounts) {
+    const existing = await get("SELECT id FROM admin_users WHERE union_id = ?", [unionId]);
+    if (existing) {
+      // Ensure datahub_basic_persons record exists for SSO login
+      await run(
+        `INSERT INTO datahub_basic_persons (id, union_id, username, name, department, role, raw_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           union_id = excluded.union_id,
+           name = excluded.name,
+           department = excluded.department,
+           role = excluded.role,
+           updated_at = CURRENT_TIMESTAMP`,
+        [`local_${unionId}`, unionId, unionId, name, department, role, "{}"]
+      );
+      seededUsers.push({ username: unionId, name, password: "(已设置)", role, department });
+      continue;
+    }
+
+    const rawPassword = crypto.randomBytes(6).toString("base64url").slice(0, 8);
+    const passwordHash = await bcrypt.hash(rawPassword, 10);
+    await run(
+      `INSERT INTO admin_users (union_id, password_hash, name, role, department)
+       VALUES (?, ?, ?, ?, ?)`,
+      [unionId, passwordHash, name, role, department]
+    );
+    // Also ensure datahub_basic_persons record for SSO login and frontend user info
+    await run(
+      `INSERT INTO datahub_basic_persons (id, union_id, username, name, department, role, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         union_id = excluded.union_id,
+         name = excluded.name,
          department = excluded.department,
          role = excluded.role,
          updated_at = CURRENT_TIMESTAMP`,
-      [id, unionId, username, passwordHash, name, phone, department, role, "{}"]
+      [`local_${unionId}`, unionId, unionId, name, department, role, "{}"]
     );
+    seededUsers.push({ username: unionId, name, password: rawPassword, role, department });
+  }
+
+  if (seededUsers.some((u) => u.password !== "(已设置)")) {
+    logger.info("seed_admin_accounts_created", { accounts: seededUsers.map((u) => ({ username: u.username, role: u.role, department: u.department })) });
+    console.log("--- 预置后台管理账号密码（请妥善保存） ---");
+    seededUsers.forEach((u) => {
+      console.log(`  ${u.username} / ${u.password}  (${u.name}, ${u.role}, ${u.department})`);
+    });
+    console.log("------------------------------------------");
   }
 }
 
@@ -518,5 +645,6 @@ module.exports = {
   getFormOptionLabels,
   createFormOption,
   updateFormOption,
-  deleteFormOption
+  deleteFormOption,
+  flushPersist
 };

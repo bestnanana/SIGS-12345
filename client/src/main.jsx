@@ -7,13 +7,15 @@ import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <LanguageProvider>
-      <Router>
-        <Routes>
-          <Route path="/*" element={<App />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Router>
-    </LanguageProvider>
+    <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <Routes>
+        <Route path="/:locale/*" element={
+          <LanguageProvider>
+            <App />
+          </LanguageProvider>
+        } />
+        <Route path="*" element={<Navigate to="/cn/" replace />} />
+      </Routes>
+    </Router>
   </React.StrictMode>
 );

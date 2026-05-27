@@ -1,55 +1,75 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Eye, FilePlus2, RefreshCw } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ChevronLeft, ChevronRight, Eye, FilePlus2, RefreshCw } from "lucide-react";
 import { api } from "../api";
 import { formatTime } from "../constants";
-import { toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
+import { LocaleLink, toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
 
 export default function MyTicketsPage() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const dateLocale = language === "en" ? "en-US" : "zh-CN";
   const statusMap = useUserStatusMap();
-  const [tickets, setTickets] = useState([]);
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeStatus, setActiveStatus] = useState("pending");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 20;
 
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const statusEntries = useMemo(() => Object.entries(statusMap), [statusMap]);
 
   const statusCounts = useMemo(() => {
     const counts = statusEntries.reduce((acc, [status]) => ({ ...acc, [status]: 0 }), {});
-    tickets.forEach((ticket) => {
+    rows.forEach((ticket) => {
       const status = toUserStatusKey(ticket.status);
       counts[status] = (counts[status] || 0) + 1;
     });
     return counts;
-  }, [statusEntries, tickets]);
+  }, [statusEntries, rows]);
 
   const groupedTickets = useMemo(() => {
     return statusEntries
       .map(([status, meta]) => ({
         status,
         meta,
-        items: tickets.filter((ticket) => toUserStatusKey(ticket.status) === status)
+        items: rows.filter((ticket) => toUserStatusKey(ticket.status) === status)
       }))
       .filter((group) => group.status === activeStatus);
-  }, [activeStatus, statusEntries, tickets]);
+  }, [activeStatus, statusEntries, rows]);
 
-  async function load() {
+  async function load(p = page) {
     setLoading(true);
     try {
-      const res = await api.get("/tickets");
-      setTickets(Array.isArray(res.data) ? res.data : []);
-      setError(Array.isArray(res.data) ? "" : "事项接口返回异常，请确认后端已重启到最新版本。");
+      const res = await api.get("/tickets", { params: { page: p, pageSize } });
+      const data = res.data;
+      if (data && Array.isArray(data.rows)) {
+        setRows(data.rows);
+        setTotal(data.total || 0);
+        setError("");
+      } else if (Array.isArray(data)) {
+        setRows(data);
+        setTotal(data.length);
+        setError("");
+      } else {
+        setError("事项接口返回异常，请确认后端已重启到最新版本。");
+      }
     } catch (err) {
-      setTickets([]);
+      setRows([]);
       setError(err.response?.data?.message || "事项加载失败，请确认后端服务正在运行。");
     } finally {
       setLoading(false);
     }
   }
 
+  function goPage(p) {
+    const target = Math.max(1, Math.min(p, totalPages));
+    setPage(target);
+    load(target);
+  }
+
   useEffect(() => {
-    load();
+    load(1);
   }, []);
 
   return (
@@ -60,14 +80,14 @@ export default function MyTicketsPage() {
           <div className="mt-2 text-sm text-ai-body">{t("tickets.desc")}</div>
         </div>
         <div className="flex gap-2">
-          <button onClick={load} className="ghost-button">
+          <button onClick={() => load(page)} className="ghost-button">
             <RefreshCw size={16} />
             {t("action.refresh")}
           </button>
-          <Link to="/new" className="primary-button">
+          <LocaleLink to="/new" className="primary-button">
             <FilePlus2 size={16} />
             {t("nav.new")}
-          </Link>
+          </LocaleLink>
         </div>
       </div>
 
@@ -99,7 +119,7 @@ export default function MyTicketsPage() {
           <div className="rounded-xl bg-ai-bg px-6 py-12 text-center text-sm text-slate-500">{t("common.loading")}</div>
         ) : error ? (
           <div className="rounded-xl bg-amber-50 px-6 py-12 text-center text-sm text-amber-700 ring-1 ring-amber-100">{error}</div>
-        ) : tickets.length === 0 ? (
+        ) : rows.length === 0 ? (
           <div className="rounded-xl bg-ai-bg px-6 py-12 text-center text-sm text-slate-500">{t("tickets.empty")}</div>
         ) : (
           <div className="space-y-6">
@@ -135,17 +155,29 @@ export default function MyTicketsPage() {
                             {ticket.field} · {t("common.department")}：{ticket.department || t("common.notAssigned")}
                           </div>
                         </div>
-                        <div className="text-sm text-ai-body">{formatTime(ticket.created_at)}</div>
-                        <Link to={`/tickets/${ticket.id}`} className="inline-flex items-center gap-1 text-sm font-medium text-ai-primary hover:brightness-110">
+                        <div className="text-sm text-ai-body">{formatTime(ticket.created_at, dateLocale)}</div>
+                        <LocaleLink to={`/tickets/${ticket.id}`} className="inline-flex items-center gap-1 text-sm font-medium text-ai-primary hover:brightness-110">
                           <Eye size={16} />
                           {t("action.viewDetails")}
-                        </Link>
+                        </LocaleLink>
                       </article>
                     ))}
                   </div>
                 )}
               </section>
             ))}
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="mt-6 flex items-center justify-center gap-2">
+            <button onClick={() => goPage(page - 1)} disabled={page <= 1} className="ghost-button disabled:opacity-40">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="text-sm text-ai-muted">{page} / {totalPages}</span>
+            <button onClick={() => goPage(page + 1)} disabled={page >= totalPages} className="ghost-button disabled:opacity-40">
+              <ChevronRight size={16} />
+            </button>
           </div>
         )}
       </div>

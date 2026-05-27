@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -23,14 +24,19 @@ const {
 } = require("./db");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
-const { askMinimax } = require("./minimax");
 const logger = require("./logger");
 
 const app = express();
 const defaultPort = process.env.NODE_ENV === "production" ? 80 : 3001;
 const port = process.env.PORT || defaultPort;
 const host = process.env.HOST || "127.0.0.1";
-const jwtSecret = process.env.JWT_SECRET || "dev-secret";
+const rawJwtSecret = process.env.JWT_SECRET;
+const isProduction = process.env.NODE_ENV === "production";
+const jwtSecret = rawJwtSecret || (isProduction ? null : "dev-secret");
+if (!jwtSecret) {
+  console.error("FATAL: JWT_SECRET 环境变量未设置，生产环境必须配置。");
+  process.exit(1);
+}
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || "8h";
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || "campus.sid";
 const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 8 * 60 * 60 * 1000);
@@ -49,6 +55,22 @@ const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
 const sessions = new Map();
 const oauthStates = new Map();
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "请求过于频繁，请15分钟后再试" }
+});
+
+const ssoLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "请求过于频繁，请15分钟后再试" }
+});
 
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -93,7 +115,7 @@ function parseCookies(req) {
 
 function createSession(res, user, options = {}) {
   const authSource = options.authSource || "local";
-  const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  const sessionId = crypto.randomBytes(32).toString("base64url");
   const expiresAt = Date.now() + sessionMaxAgeMs;
   sessions.set(sessionId, {
     loginUser: publicUser(user),
@@ -209,18 +231,23 @@ async function loadSession(req, res) {
     if (res) clearAuthCookies(res);
     return null;
   }
-  try {
-    await fetchSsoUserInfo(session.accessToken);
-  } catch (error) {
-    sessions.delete(sessionId);
-    if (res) clearAuthCookies(res);
-    logger.warn("sso_session_access_token_invalid", {
-      request_id: req.requestId,
-      sso_ret: error.ssoRet ?? "",
-      message: error.message,
-      sso_response: sanitizeSsoResponse(error.ssoResponse)
-    });
-    return null;
+  const now = Date.now();
+  const recheckInterval = 15 * 60 * 1000;
+  if (!session.lastSsoCheck || now - session.lastSsoCheck > recheckInterval) {
+    try {
+      await fetchSsoUserInfo(session.accessToken);
+      session.lastSsoCheck = now;
+    } catch (error) {
+      sessions.delete(sessionId);
+      if (res) clearAuthCookies(res);
+      logger.warn("sso_session_access_token_invalid", {
+        request_id: req.requestId,
+        sso_ret: error.ssoRet ?? "",
+        message: error.message,
+        sso_response: sanitizeSsoResponse(error.ssoResponse)
+      });
+      return null;
+    }
   }
   session.expiresAt = Date.now() + sessionMaxAgeMs;
   return session;
@@ -235,30 +262,32 @@ function randomState() {
   return value;
 }
 
-function signState(nonce, expiresAt) {
+function signState(nonce, expiresAt, locale) {
   return crypto
     .createHmac("sha256", ssoStateSecret)
-    .update(`${nonce}.${expiresAt}`)
+    .update(`${nonce}.${expiresAt}.${locale}`)
     .digest("base64url");
 }
 
-function createSignedState() {
+function createSignedState(locale = "cn") {
   const nonce = randomState();
   const expiresAt = Date.now() + ssoStateMaxAgeMs;
-  const signature = signState(nonce, expiresAt);
-  return `${nonce}.${expiresAt}.${signature}`;
+  const signature = signState(nonce, expiresAt, locale);
+  return `${nonce}.${expiresAt}.${locale}.${signature}`;
 }
 
 function verifySignedState(state) {
   const parts = String(state || "").split(".");
-  if (parts.length !== 3) return false;
-  const [nonce, expiresAtText, signature] = parts;
+  if (parts.length < 4) return null;
+  const [nonce, expiresAtText, locale, signature] = parts;
   const expiresAt = Number(expiresAtText);
-  if (!nonce || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
-  const expected = signState(nonce, expiresAt);
+  if (!nonce || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  const expected = signState(nonce, expiresAt, locale);
   const expectedBuffer = Buffer.from(expected);
   const actualBuffer = Buffer.from(signature);
-  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+    ? locale
+    : null;
 }
 
 function queryValue(req, names) {
@@ -283,10 +312,10 @@ function parseSsoCallbackParams(req) {
   };
 }
 
-function createOauthState(res) {
-  const state = createSignedState();
+function createOauthState(res, locale = "cn") {
+  const state = createSignedState(locale);
   const expiresAt = Date.now() + ssoStateMaxAgeMs;
-  oauthStates.set(state, { expiresAt });
+  oauthStates.set(state, { expiresAt, locale });
   res.cookie(ssoStateCookieName, state, {
     httpOnly: true,
     sameSite: "lax",
@@ -298,19 +327,21 @@ function createOauthState(res) {
 }
 
 function verifyOauthState(req, state) {
-  if (verifySignedState(state)) {
+  const signedLocale = verifySignedState(state);
+  if (signedLocale) {
     oauthStates.delete(state);
-    return true;
+    return signedLocale;
   }
 
   const storedState = parseCookies(req)[ssoStateCookieName];
   const record = state ? oauthStates.get(state) : null;
   if (!state || !storedState || storedState !== state || !record || record.expiresAt <= Date.now()) {
     if (state) oauthStates.delete(state);
-    return false;
+    return null;
   }
+  const locale = record.locale || "cn";
   oauthStates.delete(state);
-  return true;
+  return locale;
 }
 
 function shouldAllowLegacyState(req, state) {
@@ -322,7 +353,8 @@ function shouldAllowLegacyState(req, state) {
 }
 
 function ssoAuthorizeUrl(req, res) {
-  const state = createOauthState(res);
+  const locale = (req.query?.locale || "").trim() || "cn";
+  const state = createOauthState(res, locale);
   const authorizeUrl = new URL(`${ssoAuthorizeBaseUrl}/sso/oauth/authorize`);
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("client_id", ssoClientId);
@@ -375,6 +407,17 @@ function sanitizeSsoResponse(data) {
   return text.length > 1200 ? `${text.slice(0, 1200)}...` : text;
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function exchangeSsoCodeForToken(code) {
   if (!ssoClientSecret) {
     const error = new Error("统一身份认证client_secret未配置");
@@ -388,7 +431,7 @@ async function exchangeSsoCodeForToken(code) {
   tokenUrl.searchParams.set("code", code);
   tokenUrl.searchParams.set("redirect_uri", ssoRedirectUri);
 
-  const response = await fetch(tokenUrl, { method: "POST" });
+  const response = await fetchWithTimeout(tokenUrl, { method: "POST" });
   const text = await response.text();
   let data;
   try {
@@ -421,7 +464,7 @@ async function fetchSsoUserInfo(accessToken) {
   const userInfoUrl = new URL(`${ssoApiBaseUrl}/sso/oauth/userInfo`);
   userInfoUrl.searchParams.set("access_token", accessToken);
 
-  const response = await fetch(userInfoUrl, { method: "POST" });
+  const response = await fetchWithTimeout(userInfoUrl, { method: "POST" });
   const text = await response.text();
   let data;
   try {
@@ -468,7 +511,8 @@ async function handleSsoCallback(req, res) {
   if (!code || !state) {
     return res.status(400).type("html").send(renderSsoErrorPage("认证回调缺少 code 或 state，请重新登录。"));
   }
-  if (!verifyOauthState(req, state) && !shouldAllowLegacyState(req, state)) {
+  const stateLocale = verifyOauthState(req, state);
+  if (!stateLocale && !shouldAllowLegacyState(req, state)) {
     logger.warn("sso_callback_state_check_failed", {
       request_id: req.requestId,
       code_prefix: code.slice(0, 8),
@@ -476,10 +520,11 @@ async function handleSsoCallback(req, res) {
       query_keys: rawKeys,
       cookie_state_present: Boolean(parseCookies(req)[ssoStateCookieName]),
       memory_state_present: Boolean(oauthStates.get(state)),
-      signed_state_valid: verifySignedState(state)
+      signed_state_valid: Boolean(verifySignedState(state))
     });
     return res.status(400).type("html").send(renderSsoErrorPage("state 校验失败，请重新发起统一身份认证登录。"));
   }
+  const locale = stateLocale || "cn";
   try {
     const { tokenData, user } = await completeSsoLogin(code);
     createSession(res, user, { authSource: "sso", tokenData });
@@ -494,7 +539,7 @@ async function handleSsoCallback(req, res) {
     return res.type("html").set("Cache-Control", "no-store").send(renderSsoLoginPage({
       token: signUser(user),
       user: publicUser(user),
-      redirect: "/"
+      redirect: `/${locale}/`
     }));
   } catch (error) {
     const ssoCodeMessages = {
@@ -523,7 +568,7 @@ async function handleSsoCallback(req, res) {
 function isLocalLoginWhitelist(req) {
   const pathname = req.path;
   return (
-    (req.method === "GET" && pathname === "/local/login") ||
+    (req.method === "GET" && /^\/(?:cn|en)\/local\/login$/.test(pathname)) ||
     (req.method === "POST" && pathname === "/local/doLogin") ||
     (req.method === "GET" && pathname === "/sso/authorize-url") ||
     (req.method === "GET" && pathname === "/oauth2") ||
@@ -539,7 +584,7 @@ app.get("/", (req, res, next) => {
   if (req.query?.code || req.query?.state) {
     return handleSsoCallback(req, res);
   }
-  return next();
+  return res.redirect(302, "/cn/");
 });
 
 function isPublicRoute(req) {
@@ -561,7 +606,21 @@ async function globalLoginInterceptor(req, res, next) {
     req.session = session;
     return next();
   }
-  return res.redirect(302, ssoAuthorizeUrl(req, res));
+  const token = tokenFromRequest(req);
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, jwtSecret);
+      const user = await loadPerson(decoded.id);
+      if (user) {
+        req.session = createSession(res, user, { authSource: "local" });
+        return next();
+      }
+    } catch (error) {
+      // Token invalid or user not found, fall through to redirect.
+    }
+  }
+  const locale = (req.path.match(/^\/(cn|en)\//) || [])[1] || "cn";
+  return res.redirect(302, `/${locale}/local/login`);
 }
 
 app.use(globalLoginInterceptor);
@@ -575,7 +634,8 @@ function publicUser(user) {
     name: user.name,
     phone: user.phone,
     role: user.role || "user",
-    department: user.department
+    department: user.department,
+    can_manage_roles: Boolean(user.can_manage_roles)
   };
 }
 
@@ -623,6 +683,11 @@ async function auth(req, res, next) {
   }
 }
 
+function isAdminLike(user) {
+  if (!user) return false;
+  return ["admin", "super_admin", "liaison"].includes(user.role);
+}
+
 async function loadPerson(id) {
   return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
 }
@@ -656,9 +721,23 @@ async function loadOrCreateSsoPerson(ssoUser) {
 async function adminOnly(req, res, next) {
   try {
     const user = await loadPerson(req.user.id);
-    if (user?.role !== "admin") return res.status(403).json({ message: "需要管理员权限" });
-    req.user.role = "admin";
+    if (!["admin", "super_admin", "liaison"].includes(user?.role)) {
+      return res.status(403).json({ message: "需要管理员权限" });
+    }
+    req.user.role = user.role;
     req.user.department = user.department;
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function canManageRoles(req, res, next) {
+  try {
+    const user = await loadPerson(req.user.id);
+    if (user?.role !== "super_admin" && !user?.can_manage_roles) {
+      return res.status(403).json({ message: "需要角色管理权限" });
+    }
     next();
   } catch (error) {
     next(error);
@@ -692,8 +771,8 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   if (!ticket) return null;
-  if (viewer.role !== "admin" && ticket.submitter_id !== viewer.id) return null;
-  if (viewer.role === "admin" && ticket.is_anonymous) {
+  if (!isAdminLike(viewer) && ticket.submitter_id !== viewer.id) return null;
+  if (isAdminLike(viewer) && ticket.is_anonymous) {
     ticket.submitter_name = "匿名";
     ticket.submitter_phone = "";
   }
@@ -726,7 +805,7 @@ async function ticketDetails(id, viewer) {
   const currentHandler = await get(
     `SELECT id, name, department
      FROM datahub_basic_persons
-     WHERE role = 'admin' AND department = ?
+     WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
      ORDER BY id ASC
      LIMIT 1`,
     [ticket.current_department || ticket.department || "党政办"]
@@ -738,7 +817,7 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN datahub_basic_persons target_admin ON target_admin.id = (
        SELECT id
        FROM datahub_basic_persons
-       WHERE role = 'admin' AND department = tr.to_department
+       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = tr.to_department
        ORDER BY id ASC
        LIMIT 1
      )
@@ -763,20 +842,29 @@ app.post("/api/auth/login", async (req, res) => {
   return res.status(404).json({ message: "本地登录入口已迁移至 /local/login" });
 });
 
-app.post("/local/doLogin", async (req, res) => {
+app.post("/local/doLogin", authLimiter, async (req, res) => {
   const unionId = String(req.body.union_id || req.body.username || "").trim();
   const { password } = req.body;
+  const adminUser = await get(
+    "SELECT * FROM admin_users WHERE union_id = ? LIMIT 1",
+    [unionId]
+  );
+  if (!adminUser || !await bcrypt.compare(password, adminUser.password_hash)) {
+    logger.warn("auth_login_failed", { request_id: req.requestId, union_id: unionId, reason: "invalid_credentials" });
+    return res.status(401).json({ message: "账号或密码错误，或该账号无后台管理权限" });
+  }
+
   const user = await get(
-    `SELECT *
-     FROM datahub_basic_persons
-     WHERE union_id = ? OR username = ?
-     LIMIT 1`,
+    "SELECT * FROM datahub_basic_persons WHERE username = ? OR union_id = ? LIMIT 1",
     [unionId, unionId]
   );
-  if (!user || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
-    logger.warn("auth_login_failed", { request_id: req.requestId, union_id: unionId, reason: "invalid_credentials" });
-    return res.status(401).json({ message: "账号或密码错误" });
+  if (!user) {
+    return res.status(500).json({ message: "管理员账号未同步到人员表，请联系超级管理员" });
   }
+
+  await run("UPDATE datahub_basic_persons SET role = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [adminUser.role, adminUser.department, user.id]);
+
   logger.info("auth_login_success", {
     request_id: req.requestId,
     user_id: user.id,
@@ -792,7 +880,7 @@ app.post("/local/doLogin", async (req, res) => {
   });
 });
 
-app.get("/sso/authorize-url", (req, res) => {
+app.get("/sso/authorize-url", ssoLimiter, (req, res) => {
   res.json({
     authorize_url: ssoAuthorizeUrl(req, res),
     response_type: "code",
@@ -814,7 +902,7 @@ app.post("/sso/manual-code", async (req, res) => {
       state,
       cookie_state_present: Boolean(parseCookies(req)[ssoStateCookieName]),
       memory_state_present: Boolean(oauthStates.get(state)),
-      signed_state_valid: verifySignedState(state)
+      signed_state_valid: Boolean(verifySignedState(state))
     });
     return res.status(400).json({ message: "state校验失败，请重新发起统一身份认证登录" });
   }
@@ -938,16 +1026,22 @@ app.get("/api/datahub/basic-persons/stored", auth, async (req, res) => {
   const page = Math.max(Number(req.query.page || 1), 1);
   const offset = (page - 1) * pageSize;
   const keyword = String(req.query.keyword || "").trim();
+  const department = String(req.query.department || "").trim();
   const params = [];
-  let where = "";
+  const clauses = [];
   if (keyword) {
-    where = "WHERE name LIKE ? OR union_id LIKE ? OR department LIKE ?";
+    clauses.push("(name LIKE ? OR union_id LIKE ? OR department LIKE ?)");
     params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
   }
+  if (department) {
+    clauses.push("department = ?");
+    params.push(department);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const total = await get(`SELECT COUNT(*) AS count FROM datahub_basic_persons ${where}`, params);
   const rows = await all(
     `SELECT id, union_id, name, type, category, department, status,
-            appoint_attr, appointment_form, hire_post, write_date, synced_at, role
+            appoint_attr, appointment_form, hire_post, write_date, synced_at, role, can_manage_roles
      FROM datahub_basic_persons
      ${where}
      ORDER BY write_date DESC, id ASC
@@ -957,17 +1051,55 @@ app.get("/api/datahub/basic-persons/stored", auth, async (req, res) => {
   res.json({ page, pageSize, total: total?.count || 0, rows });
 });
 
+app.patch("/api/admin/persons/:id", auth, adminOnly, canManageRoles, async (req, res) => {
+  const { role, department, can_manage_roles } = req.body || {};
+  const updates = [];
+  const params = [];
+  if (role !== undefined) {
+    if (!["user", "admin", "super_admin", "liaison"].includes(role)) {
+      return res.status(400).json({ message: "无效角色" });
+    }
+    updates.push("role = ?");
+    params.push(role);
+  }
+  if (department !== undefined) {
+    updates.push("department = ?");
+    params.push(String(department).trim());
+  }
+  if (can_manage_roles !== undefined) {
+    updates.push("can_manage_roles = ?");
+    params.push(can_manage_roles ? 1 : 0);
+  }
+  if (!updates.length) return res.status(400).json({ message: "没有需要更新的字段" });
+  updates.push("updated_at = CURRENT_TIMESTAMP");
+  params.push(req.params.id);
+  const result = await run(
+    `UPDATE datahub_basic_persons SET ${updates.join(", ")} WHERE id = ?`,
+    params
+  );
+  if (!result.changes) return res.status(404).json({ message: "人员不存在" });
+  res.json({ ok: true });
+});
+
 app.get("/api/tickets", auth, async (req, res) => {
+  const pageSize = Math.min(Number(req.query.pageSize || 50), 100);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const total = await get(
+    "SELECT COUNT(*) AS count FROM tickets WHERE submitter_id = ?",
+    [req.user.id]
+  );
   const rows = await all(
     `SELECT t.*, COUNT(a.id) AS attachment_count
      FROM tickets t
      LEFT JOIN attachments a ON a.ticket_id = t.id
      WHERE t.submitter_id = ?
      GROUP BY t.id
-     ORDER BY t.created_at DESC`,
-    [req.user.id]
+     ORDER BY t.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [req.user.id, pageSize, offset]
   );
-  res.json(rows.map(mapTicket));
+  res.json({ page, pageSize, total: total?.count || 0, rows: rows.map(mapTicket) });
 });
 
 app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) => {
@@ -976,20 +1108,14 @@ app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) 
   if (!adminDepartments.includes(department)) return res.status(400).json({ message: "请选择有效部门" });
   if (phone) await run("UPDATE datahub_basic_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
 
+  const shareCode = crypto.randomBytes(12).toString("base64url");
   const result = await run(
-    `INSERT INTO tickets (title, field, unit_type, department, current_department, content, is_anonymous, submitter_id, status)
-     VALUES (?, ?, '', ?, '党政办', ?, ?, ?, 'pending')`,
-    [title, field, department, content, is_anonymous === "true" ? 1 : 0, req.user.id]
+    `INSERT INTO tickets (title, field, unit_type, department, current_department, content, is_anonymous, submitter_id, status, share_code)
+     VALUES (?, ?, '', ?, '党政办', ?, ?, ?, 'pending', ?)`,
+    [title, field, department, content, is_anonymous === "true" ? 1 : 0, req.user.id, shareCode]
   );
   await saveFiles(req.files, result.lastID, null);
-
-  const ai = await askMinimax({ title, field, department, content });
-  await run("UPDATE tickets SET ai_category = ?, ai_suggestion = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
-    ai.category,
-    ai.suggestion,
-    result.lastID
-  ]);
-  res.status(201).json({ id: result.lastID, ai });
+  res.status(201).json({ id: result.lastID, share_code: shareCode });
 });
 
 app.get("/api/tickets/:id", auth, async (req, res) => {
@@ -1030,12 +1156,24 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
 
 app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   const user = await loadPerson(req.user.id);
+  const pageSize = Math.min(Number(req.query.pageSize || 30), 100);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
   const params = [];
+  const isGlobalAdmin = user?.role === "super_admin" || (user?.role === "admin" && user?.department === "党政办");
   let scope = "";
-  if (user?.department && user.department !== "党政办") {
-    scope = "WHERE t.current_department = ?";
+  if (!isGlobalAdmin && user?.department) {
+    scope = "WHERE t.department = ?";
     params.push(user.department);
   }
+
+  const countRow = await get(
+    `SELECT COUNT(*) AS count FROM tickets t
+     JOIN datahub_basic_persons p ON p.id = t.submitter_id
+     ${scope}`,
+    params
+  );
+
   const rows = await all(
     `SELECT t.*,
             CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE p.name END AS submitter_name,
@@ -1050,10 +1188,11 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
      LEFT JOIN satisfaction_surveys s ON s.ticket_id = t.id
      ${scope}
      GROUP BY t.id
-     ORDER BY t.updated_at DESC, t.created_at DESC`,
-    params
+     ORDER BY t.updated_at DESC, t.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
   );
-  res.json(rows.map(mapTicket));
+  res.json({ page, pageSize, total: countRow?.count || 0, rows: rows.map(mapTicket) });
 });
 
 app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attachments", 8), async (req, res) => {
@@ -1117,7 +1256,35 @@ app.patch("/api/admin/tickets/:id/publish", auth, adminOnly, async (req, res) =>
   res.json({ ok: true });
 });
 
+app.delete("/api/admin/tickets/:id", auth, adminOnly, async (req, res) => {
+  const files = await all("SELECT file_path FROM attachments WHERE ticket_id = ?", [req.params.id]);
+  await run("DELETE FROM tickets WHERE id = ?", [req.params.id]);
+  for (const file of files) {
+    try { fs.unlinkSync(path.join(uploadDir, path.basename(file.file_path))); } catch (e) { /* ignore */ }
+  }
+  res.json({ ok: true });
+});
+
+setInterval(async () => {
+  try {
+    const orphaned = await all(
+      `SELECT a.file_path FROM attachments a
+       LEFT JOIN tickets t ON t.id = a.ticket_id
+       LEFT JOIN replies r ON r.id = a.reply_id
+       WHERE t.id IS NULL AND r.id IS NULL`
+    );
+    for (const row of orphaned) {
+      try { fs.unlinkSync(path.join(uploadDir, path.basename(row.file_path))); } catch (e) { /* ignore */ }
+      await run("DELETE FROM attachments WHERE file_path = ?", [row.file_path]);
+    }
+  } catch (e) { /* ignore cleanup errors */ }
+}, 60 * 60 * 1000);
+
 app.get("/api/public/typical-tickets", async (req, res) => {
+  const pageSize = Math.min(Number(req.query.pageSize || 50), 100);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const total = await get("SELECT COUNT(*) AS count FROM tickets WHERE is_published = 1");
   const rows = await all(
     `SELECT t.id, t.title, t.field, t.department, t.content, t.created_at, t.published_at,
             r.content AS reply_content, r.department AS reply_department, r.created_at AS reply_time
@@ -1126,13 +1293,55 @@ app.get("/api/public/typical-tickets", async (req, res) => {
        SELECT id FROM replies WHERE ticket_id = t.id ORDER BY created_at DESC LIMIT 1
      )
      WHERE t.is_published = 1
-     ORDER BY t.published_at DESC`
+     ORDER BY t.published_at DESC
+     LIMIT ? OFFSET ?`,
+    [pageSize, offset]
   );
-  res.json(rows);
+  res.json({ page, pageSize, total: total?.count || 0, rows });
+});
+
+app.get("/api/public/ticket/:shareCode", async (req, res) => {
+  const ticket = await get(
+    `SELECT t.*, p.name AS submitter_name, p.phone AS submitter_phone
+     FROM tickets t
+     JOIN datahub_basic_persons p ON p.id = t.submitter_id
+     WHERE t.share_code = ?`,
+    [req.params.shareCode]
+  );
+  if (!ticket) return res.status(404).json({ message: "事项不存在或链接已失效" });
+
+  if (ticket.is_anonymous) {
+    ticket.submitter_name = "匿名";
+    ticket.submitter_phone = "";
+  }
+
+  const replies = await all(
+    `SELECT r.*, p.name AS replier_name
+     FROM replies r
+     JOIN datahub_basic_persons p ON p.id = r.replier_id
+     WHERE r.ticket_id = ?
+     ORDER BY r.created_at ASC`,
+    [ticket.id]
+  );
+  const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [ticket.id]);
+  const transfers = await all(
+    `SELECT tr.*, operator.name AS operator_name
+     FROM transfers tr
+     JOIN datahub_basic_persons operator ON operator.id = tr.operator_id
+     WHERE tr.ticket_id = ?
+     ORDER BY tr.created_at ASC`,
+    [ticket.id]
+  );
+
+  res.json({ ticket: mapTicket(ticket), replies, attachments, transfers });
+});
+
+app.get("/:locale/local/login", (req, res) => {
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 app.get("/local/login", (req, res) => {
-  res.sendFile(path.join(distPath, "index.html"));
+  res.redirect(302, "/cn/local/login");
 });
 
 app.use((err, req, res, next) => {
@@ -1154,17 +1363,32 @@ app.use("/api", (req, res) => {
   res.status(404).json({ message: "接口不存在" });
 });
 
-app.get("*", (req, res) => {
-  res.sendFile(path.join(distPath, "index.html"));
+app.get("*", (req, res, next) => {
+  if (/^\/(?:cn|en)\//.test(req.path)) {
+    return res.sendFile(path.join(distPath, "index.html"));
+  }
+  return res.redirect(302, "/cn/");
 });
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, session] of sessions) {
+    if (session.expiresAt <= now) sessions.delete(key);
+  }
+  for (const [key, state] of oauthStates) {
+    if (state.expiresAt <= now) oauthStates.delete(key);
+  }
+}, 5 * 60 * 1000);
 
 initDb()
   .then(() => {
-    app.listen(port, host, () => {
+    const server = app.listen(port, host, () => {
       logger.info("server_started", { host, port });
       console.log(`API server running at http://${host}:${port}`);
       console.log("Seed accounts: student/123456, admin/123456");
     });
+    server.keepAliveTimeout = 65 * 1000;
+    server.headersTimeout = 70 * 1000;
   })
   .catch((error) => {
     logger.error("server_start_failed", { error });
