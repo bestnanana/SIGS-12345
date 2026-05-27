@@ -715,10 +715,13 @@ async function loadOrCreateSsoPerson(ssoUser) {
   }
 
   const id = ssoUser.personId || `sso_${ssoUser.uid}`;
+  const adminRow = await get("SELECT role, department FROM admin_users WHERE union_id = ?", [ssoUser.uid]);
+  const role = adminRow?.role || "user";
+  const dept = adminRow?.department || null;
   await run(
-    `INSERT INTO datahub_basic_persons (id, union_id, username, name, type, role, raw_json, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'user', ?, CURRENT_TIMESTAMP)`,
-    [id, ssoUser.uid, ssoUser.uid, ssoUser.name, ssoUser.personType, JSON.stringify({ sso_person_id: ssoUser.personId })]
+    `INSERT INTO datahub_basic_persons (id, union_id, username, name, type, role, department, raw_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [id, ssoUser.uid, ssoUser.uid, ssoUser.name, ssoUser.personType, role, dept, JSON.stringify({ sso_person_id: ssoUser.personId })]
   );
   return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
 }
