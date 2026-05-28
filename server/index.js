@@ -146,7 +146,9 @@ function clearAuthCookies(res) {
 
 function buildSsoLogoutUrl() {
   const logoutUrl = new URL(ssoLogoutUrl);
-  logoutUrl.searchParams.set("redirectUrl", ssoLogoutRedirectUrl);
+  if (ssoLogoutRedirectUrl) {
+    logoutUrl.searchParams.set("redirectUrl", ssoLogoutRedirectUrl);
+  }
   return logoutUrl.toString();
 }
 
@@ -352,8 +354,8 @@ function shouldAllowLegacyState(req, state) {
   return !storedState && !record;
 }
 
-function ssoAuthorizeUrl(req, res) {
-  const locale = (req.query?.locale || "").trim() || "cn";
+function ssoAuthorizeUrl(req, res, explicitLocale) {
+  const locale = explicitLocale || (req.query?.locale || "").trim() || "cn";
   const state = createOauthState(res, locale);
   const authorizeUrl = new URL(`${ssoAuthorizeBaseUrl}/sso/oauth/authorize`);
   authorizeUrl.searchParams.set("response_type", "code");
@@ -569,6 +571,7 @@ function isLocalLoginWhitelist(req) {
   const pathname = req.path;
   return (
     (req.method === "GET" && /^\/(?:cn|en)\/local\/login$/.test(pathname)) ||
+    (req.method === "GET" && pathname === "/local/login") ||
     (req.method === "POST" && pathname === "/local/doLogin") ||
     (req.method === "GET" && pathname === "/sso/authorize-url") ||
     (req.method === "GET" && pathname === "/oauth2") ||
@@ -620,7 +623,8 @@ async function globalLoginInterceptor(req, res, next) {
     }
   }
   const locale = (req.path.match(/^\/(cn|en)\//) || [])[1] || "cn";
-  return res.redirect(302, `/${locale}/local/login`);
+  const authorizeUrl = ssoAuthorizeUrl(req, res, locale);
+  return res.redirect(302, authorizeUrl);
 }
 
 app.use(globalLoginInterceptor);
@@ -966,7 +970,10 @@ app.get("/sso/logout", (req, res) => {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (sessionId) sessions.delete(sessionId);
   clearAuthCookies(res);
-  res.redirect(302, buildSsoLogoutUrl());
+  const ssoLoginUrl = ssoAuthorizeUrl(req, res, "cn");
+  const logoutUrl = new URL(ssoLogoutUrl);
+  logoutUrl.searchParams.set("redirectUrl", ssoLoginUrl);
+  res.redirect(302, logoutUrl.toString());
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
