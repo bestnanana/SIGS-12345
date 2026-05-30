@@ -1,43 +1,31 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Plus, Save, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../api";
 
-const categoryMeta = {
-  fields: {
-    title: "事项领域",
-    placeholder: "新增事项领域"
-  },
-  departments: {
-    title: "部门",
-    placeholder: "新增部门"
-  }
-};
+const departmentTypes = ["职能处室", "教学科研机构"];
 
-function cloneGroups(groups) {
-  return {
-    fields: Array.isArray(groups?.fields) ? groups.fields : [],
-    departments: Array.isArray(groups?.departments) ? groups.departments : []
-  };
-}
-
-export default function FormConfigManager() {
-  const [groups, setGroups] = useState({ fields: [], departments: [] });
-  const [drafts, setDrafts] = useState({
-    fields: { label: "", sort_order: 0 },
-    departments: { label: "", sort_order: 0 }
-  });
+export default function FormConfigManager({ view } = {}) {
+  const [fields, setFields] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [fieldLabel, setFieldLabel] = useState("");
+  const [deptDraft, setDeptDraft] = useState({ name: "", type: departmentTypes[0] });
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState("");
   const [error, setError] = useState("");
-
-  const flatCount = useMemo(() => groups.fields.length + groups.departments.length, [groups]);
+  const [fieldPage, setFieldPage] = useState(1);
+  const [deptPage, setDeptPage] = useState(1);
+  const pageSize = 15;
 
   async function load() {
     setLoading(true);
     setError("");
     try {
-      const res = await api.get("/admin/form-options");
-      setGroups(cloneGroups(res.data));
+      const [fieldRes, deptRes] = await Promise.all([
+        api.get("/admin/form-options"),
+        api.get("/admin/departments", { params: { includeInactive: "1" } })
+      ]);
+      setFields(Array.isArray(fieldRes.data?.fields) ? fieldRes.data.fields : []);
+      setDepartments(Array.isArray(deptRes.data) ? deptRes.data : []);
     } catch (err) {
       setError(err.response?.data?.message || "配置加载失败");
     } finally {
@@ -45,33 +33,20 @@ export default function FormConfigManager() {
     }
   }
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  function updateItem(category, id, patch) {
-    setGroups((current) => ({
-      ...current,
-      [category]: current[category].map((item) => (item.id === id ? { ...item, ...patch } : item))
-    }));
+  // --- Field operations ---
+  function updateField(id, patch) {
+    setFields((cur) => cur.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
-  async function addItem(category) {
-    const draft = drafts[category];
-    if (!draft.label.trim()) return;
-    const key = `${category}:new`;
-    setSavingKey(key);
+  async function addField() {
+    if (!fieldLabel.trim()) return;
+    setSavingKey("field:new");
     setError("");
     try {
-      await api.post("/admin/form-options", {
-        category,
-        label: draft.label.trim(),
-        sort_order: Number(draft.sort_order) || 0
-      });
-      setDrafts((current) => ({
-        ...current,
-        [category]: { label: "", sort_order: 0 }
-      }));
+      await api.post("/admin/form-options", { category: "fields", label: fieldLabel.trim() });
+      setFieldLabel("");
       await load();
     } catch (err) {
       setError(err.response?.data?.message || "新增失败");
@@ -80,13 +55,12 @@ export default function FormConfigManager() {
     }
   }
 
-  async function saveItem(category, item) {
-    setSavingKey(`${category}:${item.id}`);
+  async function saveField(item) {
+    setSavingKey(`field:${item.id}`);
     setError("");
     try {
       await api.patch(`/admin/form-options/${item.id}`, {
         label: item.label.trim(),
-        sort_order: Number(item.sort_order) || 0,
         is_active: Boolean(item.is_active)
       });
       await load();
@@ -97,8 +71,8 @@ export default function FormConfigManager() {
     }
   }
 
-  async function removeItem(category, id) {
-    setSavingKey(`${category}:${id}`);
+  async function removeField(id) {
+    setSavingKey(`field:${id}`);
     setError("");
     try {
       await api.delete(`/admin/form-options/${id}`);
@@ -110,130 +84,194 @@ export default function FormConfigManager() {
     }
   }
 
+  // --- Department operations ---
+  function updateDept(id, patch) {
+    setDepartments((cur) => cur.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
+  async function addDept() {
+    if (!deptDraft.name.trim()) return;
+    setSavingKey("dept:new");
+    setError("");
+    try {
+      await api.post("/admin/departments", { name: deptDraft.name.trim(), type: deptDraft.type });
+      setDeptDraft({ name: "", type: departmentTypes[0] });
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.message || "新增失败");
+    } finally {
+      setSavingKey("");
+    }
+  }
+
+  async function saveDept(item) {
+    setSavingKey(`dept:${item.id}`);
+    setError("");
+    try {
+      await api.patch(`/admin/departments/${item.id}`, {
+        name: item.name.trim(),
+        type: item.type,
+        is_active: Boolean(item.is_active)
+      });
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.message || "保存失败");
+    } finally {
+      setSavingKey("");
+    }
+  }
+
+  async function removeDept(id) {
+    setSavingKey(`dept:${id}`);
+    setError("");
+    try {
+      await api.delete(`/admin/departments/${id}`);
+      await load();
+    } catch (err) {
+      setError(err.response?.data?.message || "删除失败");
+    } finally {
+      setSavingKey("");
+    }
+  }
+
+  const totalCount = fields.length + departments.length;
+
+  const showFields = !view || view === "fields";
+  const showDepts = !view || view === "departments";
+
   return (
     <div className="space-y-6">
-      <section className="app-card mesh-hero p-5">
-        <div className="relative z-10 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="ai-chip mb-4">后台配置</div>
-            <h1 className="text-2xl font-semibold tracking-tight text-ai-title">事项领域与部门</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-ai-body">这里维护表单里可选的事项领域和部门，新增后会直接出现在提诉表单里。</p>
-          </div>
-          <button type="button" onClick={load} className="ghost-button bg-white/80">
-            <RefreshCw size={16} />
-            刷新
-          </button>
-        </div>
-      </section>
-
       {error ? (
         <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">{error}</div>
       ) : null}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        {Object.entries(categoryMeta).map(([category, meta]) => (
-          <section key={category} className="app-card overflow-hidden p-0">
-            <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-              <h2 className="text-xl font-semibold text-ai-title">{meta.title}</h2>
-              <p className="mt-1 text-sm text-ai-body">{category === "fields" ? "用于表单里的事项领域单选项。" : "用于表单里的部门单选项。"}</p>
+      <div className={`grid gap-4 ${showFields && showDepts ? "xl:grid-cols-2" : ""}`}>
+        {showFields ? (
+        <section className="app-card overflow-hidden p-0">
+          <div className="border-b border-ai-border px-4 py-4 sm:px-5">
+            <h2 className="text-xl font-semibold text-ai-title">事项领域</h2>
+            <p className="mt-1 text-sm text-ai-body">用于表单里的事项领域单选项。</p>
+          </div>
+          <div className="border-b border-ai-border px-4 py-4 sm:px-5">
+            <div className="flex items-center gap-3">
+              <input
+                value={fieldLabel}
+                onChange={(e) => setFieldLabel(e.target.value)}
+                placeholder="新增事项领域"
+                className="soft-input h-10 flex-1"
+              />
+              <button type="button" onClick={addField} disabled={savingKey === "field:new"} className="primary-button h-10 px-4">
+                <Plus size={16} />
+                添加
+              </button>
             </div>
-
-            <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-              <div className="flex flex-wrap items-center gap-3">
-                <input
-                  value={drafts[category].label}
-                  onChange={(e) =>
-                    setDrafts((current) => ({
-                      ...current,
-                      [category]: { ...current[category], label: e.target.value }
-                    }))
-                  }
-                  placeholder={meta.placeholder}
-                  className="soft-input h-10 flex-1 min-w-[220px]"
-                />
-                <input
-                  type="number"
-                  value={drafts[category].sort_order}
-                  onChange={(e) =>
-                    setDrafts((current) => ({
-                      ...current,
-                      [category]: { ...current[category], sort_order: e.target.value }
-                    }))
-                  }
-                  className="soft-input h-10 w-24"
-                  placeholder="顺序"
-                />
-                <button
-                  type="button"
-                  onClick={() => addItem(category)}
-                  disabled={savingKey === `${category}:new`}
-                  className="primary-button h-10 px-4"
-                >
-                  <Plus size={16} />
-                  添加
-                </button>
+          </div>
+          <div className="divide-y divide-ai-border">
+            {loading ? (
+              <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
+            ) : fields.length ? (
+              fields.slice((fieldPage - 1) * pageSize, fieldPage * pageSize).map((item) => (
+                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_80px_92px] lg:items-center">
+                  <input value={item.label} onChange={(e) => updateField(item.id, { label: e.target.value })} className="soft-input h-10" />
+                  <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
+                    <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateField(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />
+                    启用
+                  </label>
+                  <div className="flex items-center justify-end gap-2">
+                    <button type="button" onClick={() => saveField(item)} disabled={savingKey === `field:${item.id}`} className="secondary-button h-10 w-10 px-0" title="保存"><Save size={16} /></button>
+                    <button type="button" onClick={() => removeField(item.id)} disabled={savingKey === `field:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title="删除"><Trash2 size={16} /></button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="px-6 py-8 text-sm text-ai-body">暂无配置</div>
+            )}
+          </div>
+          {fields.length > pageSize ? (
+            <div className="flex items-center justify-between border-t border-ai-border px-4 py-3 text-sm text-ai-body">
+              <span className="text-xs text-ai-muted">共 {fields.length} 项</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setFieldPage(p => p - 1)} disabled={fieldPage <= 1} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronLeft size={14} /></button>
+                <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{fieldPage}/{Math.ceil(fields.length / pageSize)}</span>
+                <button onClick={() => setFieldPage(p => p + 1)} disabled={fieldPage >= Math.ceil(fields.length / pageSize)} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronRight size={14} /></button>
               </div>
             </div>
+          ) : null}
+        </section>
+        ) : null}
 
-            <div className="divide-y divide-ai-border">
-              {loading ? (
-                <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
-              ) : groups[category].length ? (
-                groups[category].map((item) => (
-                  <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_96px_80px_92px] lg:items-center">
-                    <input
-                      value={item.label}
-                      onChange={(e) => updateItem(category, item.id, { label: e.target.value })}
-                      className="soft-input h-10"
-                    />
-                    <input
-                      type="number"
-                      value={item.sort_order}
-                      onChange={(e) => updateItem(category, item.id, { sort_order: e.target.value })}
-                      className="soft-input h-10"
-                    />
-                    <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(item.is_active)}
-                        onChange={(e) => updateItem(category, item.id, { is_active: e.target.checked })}
-                        className="h-4 w-4 accent-ai-primary"
-                      />
-                      启用
-                    </label>
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => saveItem(category, item)}
-                        disabled={savingKey === `${category}:${item.id}`}
-                        className="secondary-button h-10 w-10 px-0"
-                        title="保存"
-                        aria-label="保存"
-                      >
-                        <Save size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => removeItem(category, item.id)}
-                        disabled={savingKey === `${category}:${item.id}`}
-                        className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50"
-                        title="删除"
-                        aria-label="删除"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="px-6 py-8 text-sm text-ai-body">暂无配置</div>
-              )}
+        {showDepts ? (
+        <section className="app-card overflow-hidden p-0">
+          <div className="border-b border-ai-border px-4 py-4 sm:px-5">
+            <h2 className="text-xl font-semibold text-ai-title">部门</h2>
+            <p className="mt-1 text-sm text-ai-body">用于表单里的部门选择，分为职能处室和教学科研机构。</p>
+          </div>
+          <div className="border-b border-ai-border px-4 py-4 sm:px-5">
+            <div className="flex items-center gap-3">
+              <input
+                value={deptDraft.name}
+                onChange={(e) => setDeptDraft((d) => ({ ...d, name: e.target.value }))}
+                placeholder="新增部门"
+                className="soft-input h-10 flex-1"
+              />
+              <select
+                value={deptDraft.type}
+                onChange={(e) => setDeptDraft((d) => ({ ...d, type: e.target.value }))}
+                className="soft-input h-10 w-36"
+              >
+                {departmentTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <button type="button" onClick={addDept} disabled={savingKey === "dept:new"} className="primary-button h-10 px-4">
+                <Plus size={16} />
+                添加
+              </button>
             </div>
-          </section>
-        ))}
+          </div>
+          <div className="divide-y divide-ai-border">
+            {loading ? (
+              <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
+            ) : departments.length ? (
+              departments.slice((deptPage - 1) * pageSize, deptPage * pageSize).map((item) => (
+                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_120px_80px_92px] lg:items-center">
+                  <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" />
+                  <select value={item.type} onChange={(e) => updateDept(item.id, { type: e.target.value })} className="soft-input h-10">
+                    {departmentTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
+                    <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateDept(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />
+                    启用
+                  </label>
+                  <div className="flex items-center justify-end gap-2">
+                    <button type="button" onClick={() => saveDept(item)} disabled={savingKey === `dept:${item.id}`} className="secondary-button h-10 w-10 px-0" title="保存"><Save size={16} /></button>
+                    <button type="button" onClick={() => removeDept(item.id)} disabled={savingKey === `dept:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title="删除"><Trash2 size={16} /></button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="px-6 py-8 text-sm text-ai-body">暂无配置</div>
+            )}
+          </div>
+          {departments.length > pageSize ? (
+            <div className="flex items-center justify-between border-t border-ai-border px-4 py-3 text-sm text-ai-body">
+              <span className="text-xs text-ai-muted">共 {departments.length} 项</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setDeptPage(p => p - 1)} disabled={deptPage <= 1} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronLeft size={14} /></button>
+                <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{deptPage}/{Math.ceil(departments.length / pageSize)}</span>
+                <button onClick={() => setDeptPage(p => p + 1)} disabled={deptPage >= Math.ceil(departments.length / pageSize)} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          ) : null}
+        </section>
+        ) : null}
       </div>
 
-      <div className="text-sm text-ai-muted">当前共 {flatCount} 项配置。</div>
+      {showFields && showDepts ? (
+        <div className="text-sm text-ai-muted">当前共 {totalCount} 项配置（{fields.length} 个领域，{departments.length} 个部门）。</div>
+      ) : showFields ? (
+        <div className="text-sm text-ai-muted">当前共 {fields.length} 个事项领域。</div>
+      ) : (
+        <div className="text-sm text-ai-muted">当前共 {departments.length} 个部门。</div>
+      )}
     </div>
   );
 }

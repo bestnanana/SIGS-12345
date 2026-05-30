@@ -1,5 +1,5 @@
 const { fetchBasicPersons } = require("./datahub");
-const { ensureDatahubPersonTables, run, upsertDatahubBasicPersons } = require("./db");
+const { ensureDatahubPersonTables, run, upsertDatahubBasicPersons, disableAdminsForInactivePersons } = require("./db_mysql");
 const logger = require("./logger");
 
 async function syncBasicPersons(options = {}) {
@@ -30,7 +30,7 @@ async function syncBasicPersons(options = {}) {
       pageCount += 1;
 
       logger.info("datahub_basic_persons_sync_page", {
-        sync_run_id: syncRun.lastID,
+        sync_run_id: syncRun.insertId,
         offset,
         page_size: pageSize,
         row_count: rows.length
@@ -47,11 +47,27 @@ async function syncBasicPersons(options = {}) {
            upserted_count = ?,
            status = 'success'
        WHERE id = ?`,
-      [fetchedCount, upsertedCount, syncRun.lastID]
+      [fetchedCount, upsertedCount, syncRun.insertId]
     );
 
+    // 离职人员自动禁用管理员权限
+    try {
+      const disabledCount = await disableAdminsForInactivePersons();
+      if (disabledCount > 0) {
+        logger.info("datahub_auto_disable_admins", {
+          sync_run_id: syncRun.insertId,
+          disabled_count: disabledCount
+        });
+      }
+    } catch (err) {
+      logger.error("datahub_auto_disable_admins_failed", {
+        sync_run_id: syncRun.insertId,
+        error: err.message
+      });
+    }
+
     return {
-      sync_run_id: syncRun.lastID,
+      sync_run_id: syncRun.insertId,
       start_date: startDate,
       page_size: pageSize,
       fetched_count: fetchedCount,
@@ -67,7 +83,7 @@ async function syncBasicPersons(options = {}) {
            status = 'failed',
            error_message = ?
        WHERE id = ?`,
-      [fetchedCount, upsertedCount, error.message, syncRun.lastID]
+      [fetchedCount, upsertedCount, error.message, syncRun.insertId]
     );
     throw error;
   }

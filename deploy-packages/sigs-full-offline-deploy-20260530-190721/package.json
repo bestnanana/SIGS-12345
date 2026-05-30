@@ -1,0 +1,42 @@
+{
+  "name": "campus-service-platform",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "node node_modules/vite/bin/vite.js --configLoader native --host 127.0.0.1 --port 5173",
+    "dev:server": "nodemon server/index.js",
+    "serve:static": "node scripts/static-server.js",
+    "start:system": "node scripts/start-system.js",
+    "start": "node server/index.js",
+    "build": "node node_modules/vite/bin/vite.js build --configLoader native",
+    "preview": "node node_modules/vite/bin/vite.js preview --configLoader native --host 127.0.0.1 --port 4173"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "axios": "^1.7.9",
+    "bcryptjs": "^2.4.3",
+    "concurrently": "^9.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.468.0",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.22.4",
+    "nodemon": "^3.1.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "vite": "^6.0.1"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "*"
+  }
+}

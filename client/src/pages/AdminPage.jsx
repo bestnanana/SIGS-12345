@@ -1,18 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Link2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, SendHorizontal, Settings2, Star } from "lucide-react";
+import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Link2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
 import { api, uploadConfig } from "../api";
 import { formatTime } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
-import RoleManager from "../components/RoleManager";
+import PermissionManager from "../components/PermissionManager";
 import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
 import { LocaleLink, useLanguage, useStatusMap } from "../i18n";
 
 const adminMenuItems = [
-  { key: "tickets", labelKey: "admin.menuTickets", descriptionKey: "admin.menuTicketsDesc", icon: ClipboardList },
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
-  { key: "config", labelKey: "配置管理", descriptionKey: "表单领域和部门配置", icon: Settings2 }
 ];
-const ticketStatusOrder = ["pending", "completed"];
 const normalizeTicketStatus = (status) => (status === "completed" ? "completed" : "pending");
 
 function countBy(items, getKey) {
@@ -26,10 +23,6 @@ function countBy(items, getKey) {
 function formatPercent(value, total) {
   if (!total) return "0%";
   return `${Math.round((value / total) * 100)}%`;
-}
-
-export function labelFor(value, fallback = "-") {
-  return value === null || value === undefined || value === "" ? fallback : value;
 }
 
 export default function AdminPage() {
@@ -52,32 +45,31 @@ export default function AdminPage() {
   const [error, setError] = useState("");
   const [adminPage, setAdminPage] = useState(1);
   const [adminTotal, setAdminTotal] = useState(0);
+  const [serverStats, setServerStats] = useState(null);
   const [adminStatusFilter, setAdminStatusFilter] = useState("pending");
   const adminPageSize = 30;
-  const [roleRows, setRoleRows] = useState([]);
-  const [roleLoading, setRoleLoading] = useState(false);
-  const [roleSaving, setRoleSaving] = useState("");
-  const [roleError, setRoleError] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1280);
   const [copyMsg, setCopyMsg] = useState("");
+  const [expandedMenu, setExpandedMenu] = useState("tickets");
+  const [showTicketModal, setShowTicketModal] = useState(false);
+  const [transferDept, setTransferDept] = useState("");
+  const [transferNote, setTransferNote] = useState("");
+  const [transferring, setTransferring] = useState(false);
+  const [departments, setDepartments] = useState([]);
+  const [activeConfigView, setActiveConfigView] = useState("fields");
 
   const selected = useMemo(() => tickets.find((item) => item.id === selectedId), [tickets, selectedId]);
   const canHandleSelected = selected && (
     user?.role === "super_admin" ||
-    (user?.department && user.department === (selected.current_department || "党政办"))
+    detail?.permission === 'handle' ||
+    selected?.permission === 'handle'
   );
   const isCompleted = selected?.status === "completed";
-  const ticketGroups = useMemo(() => {
-    return ticketStatusOrder
-      .map((status) => ({
-        status,
-        meta: statusMap[status],
-        items: tickets
-          .filter((ticket) => normalizeTicketStatus(ticket.status) === status)
-          .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))
-      }))
-      .filter((group) => group.items.length > 0);
-  }, [statusMap, tickets]);
+  const filteredTickets = useMemo(() => {
+    return tickets
+      .filter((ticket) => normalizeTicketStatus(ticket.status) === adminStatusFilter)
+      .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
+  }, [tickets, adminStatusFilter]);
   const stats = useMemo(() => {
     const total = adminTotal || tickets.length;
     const statusCounts = Object.keys(statusMap).reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
@@ -122,6 +114,15 @@ export default function AdminPage() {
     setReply((current) => ({ ...current, department: res.data.department || "党政办" }));
   }
 
+  async function loadAnalytics() {
+    try {
+      const res = await api.get("/admin/analytics");
+      setServerStats(res.data);
+    } catch {
+      /* analytics fetch failed, fall back to client-side stats */
+    }
+  }
+
   async function loadTickets(p = adminPage) {
     setLoading(true);
     try {
@@ -151,38 +152,6 @@ export default function AdminPage() {
     }
   }
 
-  async function loadRoles() {
-    setRoleLoading(true);
-    setRoleError("");
-    try {
-      const res = await api.get("/datahub/basic-persons/stored", {
-        params: { page: 1, pageSize: 500 }
-      });
-      setRoleRows(Array.isArray(res.data?.rows) ? res.data.rows : []);
-    } catch (err) {
-      setRoleError(err.response?.data?.message || "角色数据加载失败");
-    } finally {
-      setRoleLoading(false);
-    }
-  }
-
-  async function saveRole(person) {
-    setRoleSaving(person.id);
-    setRoleError("");
-    try {
-      await api.patch(`/admin/persons/${person.id}`, {
-        role: person.role,
-        department: person.department,
-        can_manage_roles: person.can_manage_roles
-      });
-      setRoleRows((rows) => rows.map((r) => (r.id === person.id ? { ...r, role: person.role, department: person.department, can_manage_roles: person.can_manage_roles } : r)));
-    } catch (err) {
-      setRoleError(err.response?.data?.message || "保存失败");
-    } finally {
-      setRoleSaving("");
-    }
-  }
-
   async function loadDetail(id) {
     if (!id) {
       setDetail(null);
@@ -202,8 +171,39 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
+    // Support deep-link: ?ticketId=xxx&nid=xxx
+    const params = new URLSearchParams(window.location.search);
+    const ticketIdParam = params.get("ticketId");
+    const nidParam = params.get("nid");
+    if (ticketIdParam) {
+      const id = Number(ticketIdParam);
+      if (Number.isFinite(id)) {
+        setSelectedId(id);
+        setShowTicketModal(true);
+        // Remove params from URL without reloading
+        const url = new URL(window.location.href);
+        url.searchParams.delete("ticketId");
+        url.searchParams.delete("nid");
+        window.history.replaceState({}, "", url.toString());
+      }
+    }
+    // Mark notification as read
+    if (nidParam) {
+      api.patch(`/notifications/${nidParam}/read`, {}, { skipAuthExpiredHandler: true }).catch(() => {});
+    }
     loadMe();
     loadTickets();
+    // Load departments for transfer
+    api.get("/departments", { skipAuthExpiredHandler: true })
+      .then(res => {
+        const groups = res.data || {};
+        const allDepts = [];
+        for (const depts of Object.values(groups)) {
+          if (Array.isArray(depts)) depts.forEach(d => allDepts.push(d.name));
+        }
+        setDepartments(allDepts);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -211,12 +211,10 @@ export default function AdminPage() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (activeView === "roles") {
-      loadRoles();
+    if (activeView === "analytics") {
+      loadAnalytics();
     }
   }, [activeView]);
-
-  const canManageRoles = user?.role === "super_admin" || user?.can_manage_roles;
 
   function chooseTicket(ticket) {
     setSelectedId(ticket.id);
@@ -225,6 +223,30 @@ export default function AdminPage() {
       content: "",
       status: "completed"
     });
+    setShowTicketModal(true);
+    setTransferDept("");
+    setTransferNote("");
+  }
+
+  function closeTicketModal() {
+    setShowTicketModal(false);
+  }
+
+  async function handleTransfer(e) {
+    e.preventDefault();
+    if (!selectedId || !transferDept) return;
+    setTransferring(true);
+    try {
+      await api.post(`/admin/tickets/${selectedId}/transfer`, { to_department: transferDept, note: transferNote });
+      setTransferDept("");
+      setTransferNote("");
+      await loadTickets();
+      await loadDetail(selectedId);
+    } catch (err) {
+      setError(err.response?.data?.message || "转办失败");
+    } finally {
+      setTransferring(false);
+    }
   }
 
   async function togglePublish(ticket) {
@@ -340,6 +362,66 @@ export default function AdminPage() {
         </div>
 
         <nav className="mt-3 space-y-2">
+          {/* 事项处理 - expandable */}
+          <div>
+            <button
+              type="button"
+              onClick={() => {
+                setExpandedMenu(expandedMenu === "tickets" ? "" : "tickets");
+                setActiveView("tickets");
+              }}
+              title={sidebarCollapsed ? "事项处理" : undefined}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
+                activeView === "tickets" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
+              } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
+            >
+              <ClipboardList size={18} className="shrink-0" />
+              {!sidebarCollapsed ? (
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">{t("admin.menuTickets")}</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "tickets" ? "text-white/80" : "text-ai-muted"}`}>{t("admin.menuTicketsDesc")}</span>
+                </span>
+              ) : null}
+              {!sidebarCollapsed ? (
+                <ChevronDown size={14} className={`shrink-0 transition-transform duration-200 ${expandedMenu === "tickets" ? "rotate-0" : "-rotate-90"}`} />
+              ) : null}
+            </button>
+            {expandedMenu === "tickets" && !sidebarCollapsed ? (
+              <div className="ml-4 mt-1 space-y-1 border-l-2 border-ai-border pl-3">
+                <button
+                  type="button"
+                  onClick={() => { setActiveView("tickets"); setAdminStatusFilter("pending"); }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                    activeView === "tickets" && adminStatusFilter === "pending"
+                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                      : "text-ai-body hover:bg-ai-bg"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "pending" ? "bg-amber-500" : "bg-slate-300"}`} />
+                  待相关部门处理
+                  {stats.statusCounts?.pending > 0 ? (
+                    <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">{stats.statusCounts.pending}</span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setActiveView("tickets"); setAdminStatusFilter("completed"); }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                    activeView === "tickets" && adminStatusFilter === "completed"
+                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                      : "text-ai-body hover:bg-ai-bg"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "completed" ? "bg-emerald-500" : "bg-slate-300"}`} />
+                  处理完成
+                  {stats.statusCounts?.completed > 0 ? (
+                    <span className="ml-auto rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">{stats.statusCounts.completed}</span>
+                  ) : null}
+                </button>
+              </div>
+            ) : null}
+          </div>
+
           {adminMenuItems.map((item) => {
             const Icon = item.icon;
             const active = activeView === item.key;
@@ -364,20 +446,75 @@ export default function AdminPage() {
               </button>
             );
           })}
-          {canManageRoles ? (
+
+          {/* 配置管理 - expandable */}
+          <div>
             <button
               type="button"
-              onClick={() => setActiveView("roles")}
-              title={sidebarCollapsed ? "角色管理" : undefined}
+              onClick={() => {
+                setExpandedMenu(expandedMenu === "config" ? "" : "config");
+                setActiveView("config");
+              }}
+              title={sidebarCollapsed ? "配置管理" : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
-                activeView === "roles" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
+                activeView === "config" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
               } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
             >
               <Settings2 size={18} className="shrink-0" />
               {!sidebarCollapsed ? (
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">配置管理</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "config" ? "text-white/80" : "text-ai-muted"}`}>表单领域和部门配置</span>
+                </span>
+              ) : null}
+              {!sidebarCollapsed ? (
+                <ChevronDown size={14} className={`shrink-0 transition-transform duration-200 ${expandedMenu === "config" ? "rotate-0" : "-rotate-90"}`} />
+              ) : null}
+            </button>
+            {expandedMenu === "config" && !sidebarCollapsed ? (
+              <div className="ml-4 mt-1 space-y-1 border-l-2 border-ai-border pl-3">
+                <button
+                  type="button"
+                  onClick={() => { setActiveView("config"); setActiveConfigView("fields"); }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                    activeView === "config" && activeConfigView === "fields"
+                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                      : "text-ai-body hover:bg-ai-bg"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "config" && activeConfigView === "fields" ? "bg-ai-primary" : "bg-slate-300"}`} />
+                  事项领域
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setActiveView("config"); setActiveConfigView("departments"); }}
+                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                    activeView === "config" && activeConfigView === "departments"
+                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                      : "text-ai-body hover:bg-ai-bg"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "config" && activeConfigView === "departments" ? "bg-ai-primary" : "bg-slate-300"}`} />
+                  部门配置
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          {user?.role === "super_admin" ? (
+            <button
+              type="button"
+              onClick={() => setActiveView("permissions")}
+              title={sidebarCollapsed ? "授权管理" : undefined}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
+                activeView === "permissions" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
+              } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
+            >
+              <Shield size={18} className="shrink-0" />
+              {!sidebarCollapsed ? (
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold">角色管理</span>
-                  <span className={`mt-1 block text-xs leading-5 ${activeView === "roles" ? "text-white/80" : "text-ai-muted"}`}>分配角色与部门联络员</span>
+                  <span className="block truncate text-sm font-semibold">授权管理</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "permissions" ? "text-white/80" : "text-ai-muted"}`}>部门管理员权限配置</span>
                 </span>
               ) : null}
             </button>
@@ -400,332 +537,369 @@ export default function AdminPage() {
 
       <div className="min-w-0">
         {activeView === "tickets" ? (
-          <div className={`grid items-start gap-4 ${sidebarCollapsed ? "xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)]" : "2xl:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]"}`}>
-            <section className="app-card flex max-h-none flex-col overflow-hidden p-0 xl:max-h-[calc(100vh-11rem)] xl:min-h-[calc(100vh-11rem)] 2xl:max-h-[calc(100vh-104px)] 2xl:min-h-[calc(100vh-104px)]">
-              <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-4 py-3.5 sm:px-5">
-                <div>
-                  <div className="text-xl font-semibold tracking-tight text-ai-title">{t("admin.ticketProcessing")}</div>
-                  <div className="mt-1 text-sm text-ai-body">
-                    {user?.department ? `${user.department}${t("admin.ticketQueue")}` : t("admin.viewAndReply")}
-                  </div>
+          <section className="app-card flex max-h-none flex-col overflow-hidden p-0 xl:max-h-[calc(100vh-11rem)] xl:min-h-[calc(100vh-11rem)] 2xl:max-h-[calc(100vh-104px)] 2xl:min-h-[calc(100vh-104px)]">
+            <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-4 py-3.5 sm:px-5">
+              <div>
+                <div className="text-xl font-semibold tracking-tight text-ai-title">
+                  {adminStatusFilter === "pending" ? "待相关部门处理" : "处理完成"}
                 </div>
-                <button
-                  type="button"
-                  onClick={loadTickets}
-                  className="flex h-11 w-11 items-center justify-center rounded-2xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg"
-                  title={t("action.refresh")}
-                >
-                  <RefreshCw size={16} />
-                </button>
+                <div className="mt-1 text-sm text-ai-body">
+                  {user?.department ? `${user.department}${t("admin.ticketQueue")}` : t("admin.viewAndReply")}
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={loadTickets}
+                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg"
+                title={t("action.refresh")}
+              >
+                <RefreshCw size={16} />
+              </button>
+            </div>
 
-              <div className="flex shrink-0 gap-1 border-b border-ai-border px-2 py-2">
-                {Object.entries(statusMap).map(([value, meta]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setAdminStatusFilter(value)}
-                    className={`flex-1 rounded-lg px-3 py-2 text-xs font-semibold transition duration-200 ${
-                      adminStatusFilter === value
-                        ? "bg-ai-primary/10 text-ai-primary"
-                        : "text-ai-body hover:bg-ai-bg"
-                    }`}
-                  >
-                    {meta.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3 scrollbar-thin">
-                {loading ? (
-                  <div className="p-8 text-center text-sm text-slate-500">{t("common.loading")}</div>
-                ) : error ? (
-                  <div className="p-8 text-center text-sm text-amber-700">{error}</div>
-                ) : tickets.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-slate-500">{t("admin.noTodos")}</div>
-                ) : (
-                  <div className="space-y-5">
-                    {ticketGroups
-                      .filter((group) => group.status === adminStatusFilter)
-                      .map((group) => (
-                      <section key={group.status} className="space-y-3">
-                        <div className="flex items-center justify-between px-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${group.meta.badgeClassName || group.meta.className}`}>
-                              <span className={`h-1.5 w-1.5 rounded-full ${group.meta.dotClassName || "bg-current"}`} />
-                              {group.meta.label}
-                            </span>
-                            {group.status === "pending" ? (
-                              <span className="text-xs font-medium text-amber-700">{t("admin.priority")}</span>
-                            ) : null}
-                          </div>
-                          <span className="text-xs text-ai-muted">{t("common.items", { count: group.items.length })}</span>
-                        </div>
-
-                        <div className="space-y-3">
-                          {group.items.map((ticket) => {
-                            const status = statusMap[normalizeTicketStatus(ticket.status)] || statusMap.pending;
-                            return (
-                              <button
-                                key={ticket.id}
-                                type="button"
-                                onClick={() => chooseTicket(ticket)}
-                                className={`w-full rounded-xl border p-3 text-left transition duration-200 ease-out hover:-translate-y-0.5 ${
-                                  selectedId === ticket.id ? "border-ai-primary/30 bg-ai-primary/10 shadow-sm" : "border-ai-border bg-white hover:bg-ai-bg"
-                                }`}
-                              >
-                                <div className="flex items-start gap-2">
-                                  <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${status.dotClassName || "bg-current"}`} />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
-                                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
-                                      <span>{ticket.field}</span>
-                                      <span>{ticket.current_department || "党政办"}</span>
-                                      <span>{ticket.submitter_name}</span>
-                                    </div>
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </section>
-                    ))}
-                  </div>
-                )}
-
-                {adminTotalPages > 1 && !loading && (
-                  <div className="flex items-center justify-between gap-2 border-t border-ai-border px-3 py-3">
-                    <span className="text-xs text-ai-muted">{adminTotal} 项</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => goAdminPage(adminPage - 1)}
-                        disabled={adminPage <= 1}
-                        className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
-                      >
-                        <ChevronLeft size={14} />
-                      </button>
-                      <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{adminPage}/{adminTotalPages}</span>
-                      <button
-                        onClick={() => goAdminPage(adminPage + 1)}
-                        disabled={adminPage >= adminTotalPages}
-                        className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
-                      >
-                        <ChevronRight size={14} />
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="app-card min-w-0 overflow-hidden p-0">
-              {!selected ? (
-                <div className="p-12 text-center text-ai-body">{t("admin.selectTicket")}</div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3 scrollbar-thin">
+              {loading ? (
+                <div className="p-8 text-center text-sm text-slate-500">{t("common.loading")}</div>
+              ) : error ? (
+                <div className="p-8 text-center text-sm text-amber-700">{error}</div>
+              ) : filteredTickets.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-500">{t("admin.noTodos")}</div>
               ) : (
-                <>
-                  <div className="mesh-hero border-b border-ai-border px-4 py-4 sm:px-5">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <h2 className="mb-3 text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
-                        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-ai-body">
-                          <span>事项编号：#{String(selected.id).padStart(6, "0")}</span>
-                          <span>提交时间：{formatTime(selected.created_at)}</span>
-                          <span>提交人：{selected.submitter_name}</span>
-                          <span>联系方式：{selected.submitter_phone || "不显示"}</span>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {shareUrl ? (
-                          <button
-                            type="button"
-                            onClick={copyShareUrl}
-                            className="flex h-11 items-center gap-2 rounded-xl bg-white px-4 text-sm font-semibold text-ai-primary ring-1 ring-ai-primary/30 transition duration-200 hover:bg-ai-primary/5"
-                          >
-                            <Link2 size={16} />
-                            {copyMsg || "复制分享链接"}
-                          </button>
-                        ) : null}
-                        {selected.status === "completed" ? (
-                          <button
-                            type="button"
-                            onClick={() => togglePublish(selected)}
-                            className={`flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold ring-1 transition duration-200 ${
-                              selected.is_published ? "bg-teal-50 text-teal-700 ring-teal-200" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
-                            }`}
-                          >
-                            <Megaphone size={16} />
-                            {selected.is_published ? t("action.unpublish") : t("action.publish")}
-                          </button>
-                        ) : null}
-                        <LocaleLink to={`/tickets/${selected.id}`} className="ghost-button h-11">
-                          <Eye size={16} />
-                          {t("admin.detailsPage")}
-                        </LocaleLink>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 p-4 2xl:grid-cols-[minmax(0,1fr)_330px] 2xl:p-5">
-                    <div className="space-y-4">
-                      <section>
-                        <h3 className="mb-3 font-semibold text-ai-title">{t("admin.ticketContent")}</h3>
-                        <div className="whitespace-pre-wrap rounded-xl border border-ai-border bg-white p-4 text-sm leading-7 text-ai-body">
-                          {selected.content}
-                        </div>
-                      </section>
-
-                      <section className="rounded-xl border border-ai-border p-4">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                          <h3 className="font-semibold text-ai-title">{t("admin.currentStatus")}</h3>
-                          <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${selectedStatus.badgeClassName || selectedStatus.className}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${selectedStatus.dotClassName || "bg-current"}`} />
-                            {selectedStatus.label}
-                          </span>
-                        </div>
-                        <div className="text-xs leading-6 text-ai-body">
-                          最后更新时间：{formatTime(selected.updated_at || selected.created_at, dateLocale)}
-                        </div>
-                      </section>
-
-                      {isCompleted && detail?.replies?.[detail.replies.length - 1] ? (
-                        <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
-                          <h3 className="mb-3 font-semibold text-emerald-800">处理结果</h3>
-                          <div className="whitespace-pre-wrap text-sm leading-7 text-emerald-900">
-                            {detail.replies[detail.replies.length - 1].content}
-                          </div>
-                          <div className="mt-3 text-xs text-emerald-700">
-                            {detail.replies[detail.replies.length - 1].replier_name || detail.replies[detail.replies.length - 1].department}
-                            {" · "}
-                            {formatTime(detail.replies[detail.replies.length - 1].created_at, dateLocale)}
-                          </div>
-                        </section>
-                      ) : (
-                        <form onSubmit={submitReply} className="rounded-xl border border-ai-border p-4">
-                          <h3 className="mb-4 font-semibold text-ai-title">处理信息</h3>
-                          {!canHandleSelected ? (
-                            <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
-                              该事项当前承办部门为 {currentHandlerText}，只能由该部门管理员处理。
-                            </div>
-                          ) : null}
-                          <textarea
-                            value={reply.content}
-                            onChange={(e) => setReply({ ...reply, content: e.target.value })}
-                            className="soft-textarea min-h-28 w-full"
-                            disabled={!canHandleSelected}
-                            placeholder="请填写处理结果说明..."
-                            required
-                          />
-                          <div className="mt-4 flex items-center justify-between gap-3">
-                            <label className={`flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-2 text-sm text-ai-body transition ${canHandleSelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
-                              <Paperclip size={16} />
-                              <span className="truncate">{files.length ? `${files.length} 个附件` : "上传附件"}</span>
-                              <input
-                                type="file"
-                                multiple
-                                accept=".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4"
-                                onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                                className="hidden"
-                                disabled={!canHandleSelected}
-                              />
-                            </label>
-                            <button type="submit" disabled={submitting || !canHandleSelected} className="primary-button">
-                              <SendHorizontal size={16} />
-                              {submitting ? "提交中..." : "提交处理结果"}
-                            </button>
-                          </div>
-                        </form>
-                      )}
-
-                    </div>
-
-                    <aside className="space-y-5">
-                      <section className="rounded-xl border border-ai-border p-4">
-                        <h3 className="mb-4 font-semibold text-ai-title">事项流转流程</h3>
-                        <div className="relative">
-                          {workflowSteps.map((step, index) => {
-                            const StepIcon = step.icon;
-                            const isLast = index === workflowSteps.length - 1;
-                            const toneClass = step.status === "done"
-                              ? "bg-ai-primary text-white"
-                              : step.status === "current"
-                                ? step.tone === "amber"
-                                  ? "bg-amber-500 text-white"
-                                  : "bg-blue-500 text-white"
-                                : "bg-slate-300 text-white";
-                            const cardClass = step.status === "current"
-                              ? "border-ai-primary/30 bg-white shadow-[0_12px_32px_rgba(108,76,241,0.08)]"
-                              : "border-ai-border bg-white";
-                            return (
-                              <article key={step.key} className="relative grid grid-cols-[42px_minmax(0,1fr)] gap-3 pb-4 last:pb-0">
-                                {!isLast ? <div className="absolute left-[20px] top-11 h-[calc(100%-18px)] w-px bg-ai-border" /> : null}
-                                <div className={`relative z-10 flex h-10 w-10 items-center justify-center rounded-full ${toneClass} shadow-sm`}>
-                                  <StepIcon size={17} />
-                                </div>
-                                <div className={`rounded-[16px] border px-4 py-3 ${cardClass}`}>
-                                  <div className={`text-sm font-semibold ${step.status === "current" ? "text-ai-primary" : "text-ai-title"}`}>
-                                    {step.title}
-                                  </div>
-                                  <div className="mt-2 space-y-1.5 text-xs leading-6 text-ai-body">
-                                    {step.lines.map((line) => (
-                                      <div key={line}>{line}</div>
-                                    ))}
-                                  </div>
-                                </div>
-                              </article>
-                            );
-                          })}
-                        </div>
-                      </section>
-
-                      <section className="rounded-xl border border-ai-border p-4">
-                        <h3 className="mb-4 font-semibold text-ai-title">满意度调查</h3>
-                        {detail?.satisfaction ? (
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-3 text-amber-800 ring-1 ring-amber-100">
-                              <span className="text-sm font-semibold">评分</span>
-                              <span className="flex items-center gap-1 text-sm font-semibold">
-                                <Star size={16} fill="currentColor" />
-                                {detail.satisfaction.score} / 5
+                <div className="space-y-3">
+                  {filteredTickets.map((ticket) => {
+                    const status = statusMap[normalizeTicketStatus(ticket.status)] || statusMap.pending;
+                    return (
+                      <button
+                        key={ticket.id}
+                        type="button"
+                        onClick={() => chooseTicket(ticket)}
+                        className="w-full rounded-xl border border-ai-border bg-white p-4 text-left transition duration-200 hover:-translate-y-0.5 hover:bg-ai-bg hover:shadow-sm"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${status.dotClassName || "bg-current"}`} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
+                              <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${status.badgeClassName || status.className}`}>
+                                {status.label}
                               </span>
                             </div>
-                            <div className="rounded-xl bg-ai-bg px-3 py-3 text-sm leading-6 text-ai-body">
-                              {detail.satisfaction.comment || "用户未填写文字评价。"}
-                            </div>
-                            <div className="text-xs text-ai-muted">
-                              评价人：{detail.satisfaction.user_name || selected.submitter_name} · {formatTime(detail.satisfaction.updated_at || detail.satisfaction.created_at, dateLocale)}
+                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
+                              <span>#{String(ticket.id).padStart(6, "0")}</span>
+                              <span>{ticket.field}</span>
+                              <span>{ticket.current_department || "党政办"}</span>
+                              <span>{ticket.submitter_name}</span>
+                              <span>{formatTime(ticket.created_at, dateLocale)}</span>
                             </div>
                           </div>
-                        ) : (
-                          <div className="rounded-xl bg-ai-bg px-3 py-4 text-sm text-ai-body">
-                            {selected.status === "completed" ? "事项已完成，等待发起人提交满意度评价。" : "事项完成后将开放满意度评价。"}
-                          </div>
-                        )}
-                      </section>
-                    </aside>
-                  </div>
-                </>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               )}
-            </section>
-          </div>
+
+              {adminTotalPages > 1 && !loading && (
+                <div className="flex items-center justify-between gap-2 border-t border-ai-border px-3 py-3">
+                  <span className="text-xs text-ai-muted">{adminTotal} 项</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => goAdminPage(adminPage - 1)}
+                      disabled={adminPage <= 1}
+                      className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{adminPage}/{adminTotalPages}</span>
+                    <button
+                      onClick={() => goAdminPage(adminPage + 1)}
+                      disabled={adminPage >= adminTotalPages}
+                      className="rounded-lg p-1.5 text-ai-body transition hover:bg-ai-bg disabled:opacity-30"
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
         ) : activeView === "analytics" ? (
-          <AdminAnalyticsPanel stats={stats} user={user} />
+          <AdminAnalyticsPanel stats={serverStats || stats} user={user} />
         ) : activeView === "config" ? (
-          <FormConfigManager />
-        ) : activeView === "roles" ? (
-          <RoleManager
-            roleRows={roleRows}
-            roleLoading={roleLoading}
-            roleSaving={roleSaving}
-            roleError={roleError}
-            onLoadRoles={loadRoles}
-            onSaveRole={saveRole}
-            setRoleRows={setRoleRows}
-            setRoleError={setRoleError}
-          />
+          <FormConfigManager view={activeConfigView} />
+        ) : activeView === "permissions" ? (
+          <PermissionManager />
         ) : null}
       </div>
     </div>
+
+    {/* Ticket Detail Modal */}
+    {showTicketModal && selected ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={closeTicketModal}>
+        <div className="motion-popover w-full max-w-[900px] max-h-[90vh] overflow-y-auto rounded-[24px] border border-white/80 bg-white/95 shadow-[0_28px_80px_rgba(17,17,17,0.16)] backdrop-blur-2xl" onClick={e => e.stopPropagation()}>
+          {/* Modal Header */}
+          <div className="mesh-hero sticky top-0 z-10 border-b border-ai-border px-6 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ai-body">
+                  <span>#{String(selected.id).padStart(6, "0")}</span>
+                  <span>提交时间：{formatTime(selected.created_at, dateLocale)}</span>
+                  <span>提交人：{selected.submitter_name}</span>
+                  {selected.submitter_phone ? <span>联系方式：{selected.submitter_phone}</span> : null}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {shareUrl ? (
+                  <button type="button" onClick={copyShareUrl} className="ghost-button h-9 gap-1.5 text-xs">
+                    <Link2 size={14} />
+                    {copyMsg || "复制链接"}
+                  </button>
+                ) : null}
+                <button onClick={closeTicketModal} className="flex h-9 w-9 items-center justify-center rounded-xl text-ai-muted hover:bg-ai-bg hover:text-ai-title">
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+            {/* Left: Content + Actions */}
+            <div className="space-y-4 min-w-0">
+              {/* Ticket Content */}
+              <section>
+                <h3 className="mb-2 text-sm font-semibold text-ai-title">{t("admin.ticketContent")}</h3>
+                <div className="whitespace-pre-wrap rounded-xl border border-ai-border bg-white p-4 text-sm leading-7 text-ai-body">
+                  {selected.content}
+                </div>
+              </section>
+
+              {/* Attachments */}
+              {detail?.attachments?.length > 0 ? (
+                <section>
+                  <h3 className="mb-2 text-sm font-semibold text-ai-title">附件</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {detail.attachments.map(att => (
+                      <a key={att.id} href={`/api/attachments/${att.id}/download`} className="flex items-center gap-1.5 rounded-lg border border-ai-border bg-white px-3 py-2 text-xs text-ai-body transition hover:bg-ai-bg">
+                        <Paperclip size={12} />
+                        <span className="truncate max-w-[160px]">{att.original_name}</span>
+                      </a>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {/* Current Status */}
+              <section className="rounded-xl border border-ai-border p-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-ai-title">{t("admin.currentStatus")}</h3>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 ${selectedStatus.badgeClassName || selectedStatus.className}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${selectedStatus.dotClassName || "bg-current"}`} />
+                    {selectedStatus.label}
+                  </span>
+                </div>
+              </section>
+
+              {/* Reply History */}
+              {detail?.replies?.length > 0 ? (
+                <section>
+                  <h3 className="mb-2 text-sm font-semibold text-ai-title">处理记录</h3>
+                  <div className="space-y-3">
+                    {detail.replies.map((r, idx) => (
+                      <div key={r.id || idx} className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
+                        <div className="whitespace-pre-wrap text-sm leading-7 text-emerald-900">{r.content}</div>
+                        <div className="mt-2 text-xs text-emerald-700">
+                          {r.replier_name || r.department} · {formatTime(r.created_at, dateLocale)}
+                        </div>
+                        {detail.replyAttachments?.filter(a => a.reply_id === r.id)?.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {detail.replyAttachments.filter(a => a.reply_id === r.id).map(att => (
+                              <a key={att.id} href={`/api/attachments/${att.id}/download`} className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs text-emerald-700 ring-1 ring-emerald-200">
+                                <Paperclip size={10} />{att.original_name}
+                              </a>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {/* Reply Form (pending tickets only) */}
+              {!isCompleted ? (
+                <form onSubmit={submitReply} className="rounded-xl border border-ai-border p-4">
+                  <h3 className="mb-3 text-sm font-semibold text-ai-title">处理信息</h3>
+                  {!canHandleSelected ? (
+                    <div className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
+                      该事项当前承办部门为 {currentHandlerText}，只能由该部门管理员处理。
+                    </div>
+                  ) : null}
+                  <textarea
+                    value={reply.content}
+                    onChange={(e) => setReply({ ...reply, content: e.target.value })}
+                    className="soft-textarea min-h-24 w-full"
+                    disabled={!canHandleSelected}
+                    placeholder="请填写处理结果说明..."
+                    required
+                  />
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <label className={`flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-2 text-sm text-ai-body transition ${canHandleSelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
+                      <Paperclip size={16} />
+                      <span className="truncate">{files.length ? `${files.length} 个附件` : "上传附件"}</span>
+                      <input
+                        type="file"
+                        multiple
+                        accept=".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4"
+                        onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                        className="hidden"
+                        disabled={!canHandleSelected}
+                      />
+                    </label>
+                    <button type="submit" disabled={submitting || !canHandleSelected} className="primary-button">
+                      <SendHorizontal size={16} />
+                      {submitting ? "提交中..." : "提交处理结果"}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
+              {/* Transfer Section (pending tickets only, for handlers) */}
+              {!isCompleted && canHandleSelected ? (
+                <section className="rounded-xl border border-ai-border p-4">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ai-title">
+                    <ArrowRightLeft size={16} />
+                    转办事项
+                  </h3>
+                  <form onSubmit={handleTransfer} className="space-y-3">
+                    <select
+                      value={transferDept}
+                      onChange={e => setTransferDept(e.target.value)}
+                      className="soft-input h-10 w-full text-sm"
+                      required
+                    >
+                      <option value="">选择转办目标部门...</option>
+                      {departments.filter(d => d !== (selected.current_department || selected.department)).map(d => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      value={transferNote}
+                      onChange={e => setTransferNote(e.target.value)}
+                      className="soft-textarea min-h-16 w-full"
+                      placeholder="转办说明（选填）..."
+                    />
+                    <button type="submit" disabled={transferring || !transferDept} className="ghost-button h-10 w-full justify-center gap-2 border-amber-200 text-amber-700 hover:bg-amber-50">
+                      <ArrowRightLeft size={14} />
+                      {transferring ? "转办中..." : "确认转办"}
+                    </button>
+                  </form>
+                </section>
+              ) : null}
+            </div>
+
+            {/* Right: Workflow + Satisfaction */}
+            <aside className="space-y-4">
+              {/* Workflow */}
+              <section className="rounded-xl border border-ai-border p-4">
+                <h3 className="mb-3 text-sm font-semibold text-ai-title">事项流转流程</h3>
+                <div className="relative">
+                  {workflowSteps.map((step, index) => {
+                    const StepIcon = step.icon;
+                    const isLast = index === workflowSteps.length - 1;
+                    const toneClass = step.status === "done"
+                      ? "bg-ai-primary text-white"
+                      : step.status === "current"
+                        ? step.tone === "amber"
+                          ? "bg-amber-500 text-white"
+                          : "bg-blue-500 text-white"
+                        : "bg-slate-300 text-white";
+                    const cardClass = step.status === "current"
+                      ? "border-ai-primary/30 bg-white shadow-[0_8px_20px_rgba(108,76,241,0.06)]"
+                      : "border-ai-border bg-white";
+                    return (
+                      <article key={step.key} className="relative grid grid-cols-[36px_minmax(0,1fr)] gap-2.5 pb-3 last:pb-0">
+                        {!isLast ? <div className="absolute left-[17px] top-9 h-[calc(100%-14px)] w-px bg-ai-border" /> : null}
+                        <div className={`relative z-10 flex h-9 w-9 items-center justify-center rounded-full ${toneClass} shadow-sm`}>
+                          <StepIcon size={15} />
+                        </div>
+                        <div className={`rounded-[14px] border px-3 py-2.5 ${cardClass}`}>
+                          <div className={`text-xs font-semibold ${step.status === "current" ? "text-ai-primary" : "text-ai-title"}`}>
+                            {step.title}
+                          </div>
+                          <div className="mt-1.5 space-y-1 text-[11px] leading-5 text-ai-body">
+                            {step.lines.map((line) => (
+                              <div key={line}>{line}</div>
+                            ))}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* Transfer History */}
+              {detail?.transfers?.length > 0 ? (
+                <section className="rounded-xl border border-ai-border p-4">
+                  <h3 className="mb-3 text-sm font-semibold text-ai-title">转办记录</h3>
+                  <div className="space-y-2">
+                    {detail.transfers.map((tr, idx) => (
+                      <div key={idx} className="flex items-start gap-2 text-xs">
+                        <ArrowRightLeft size={12} className="mt-0.5 shrink-0 text-ai-muted" />
+                        <div>
+                          <span className="font-medium text-ai-title">{tr.from_department}</span>
+                          <span className="text-ai-muted"> → </span>
+                          <span className="font-medium text-ai-title">{tr.to_department}</span>
+                          {tr.note ? <div className="mt-0.5 text-ai-muted">{tr.note}</div> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {/* Satisfaction */}
+              <section className="rounded-xl border border-ai-border p-4">
+                <h3 className="mb-3 text-sm font-semibold text-ai-title">满意度调查</h3>
+                {detail?.satisfaction ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2.5 text-amber-800 ring-1 ring-amber-100">
+                      <span className="text-xs font-semibold">评分</span>
+                      <span className="flex items-center gap-1 text-sm font-semibold">
+                        <Star size={14} fill="currentColor" />
+                        {detail.satisfaction.score} / 5
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-ai-bg px-3 py-2.5 text-xs leading-6 text-ai-body">
+                      {detail.satisfaction.comment || "用户未填写文字评价。"}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-ai-bg px-3 py-3 text-xs text-ai-body">
+                    {selected.status === "completed" ? "等待发起人提交满意度评价。" : "事项完成后将开放评价。"}
+                  </div>
+                )}
+              </section>
+
+              {/* Publish toggle for completed */}
+              {selected.status === "completed" ? (
+                <button
+                  type="button"
+                  onClick={() => togglePublish(selected)}
+                  className={`flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold ring-1 transition duration-200 ${
+                    selected.is_published ? "bg-teal-50 text-teal-700 ring-teal-200" : "bg-white text-slate-700 ring-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  <Megaphone size={16} />
+                  {selected.is_published ? t("action.unpublish") : t("action.publish")}
+                </button>
+              ) : null}
+            </aside>
+          </div>
+        </div>
+      </div>
+    ) : null}
     </>
   );
 }

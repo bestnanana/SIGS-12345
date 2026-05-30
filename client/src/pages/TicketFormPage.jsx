@@ -14,11 +14,11 @@ export default function TicketFormPage({ user }) {
   const [error, setError] = useState("");
   const [files, setFiles] = useState([]);
   const [fieldOptions, setFieldOptions] = useState(defaultFields);
-  const [departmentOptions, setDepartmentOptions] = useState(defaultDepartments);
+  const [departmentOptions, setDepartmentOptions] = useState({});
   const [form, setForm] = useState({
     title: '',
     field: defaultFields[0] || '',
-    department: defaultDepartments[0] || '',
+    department: '',
     content: '',
     phone: user.phone || '',
     is_anonymous: false
@@ -30,19 +30,25 @@ export default function TicketFormPage({ user }) {
       try {
         const res = await api.get('/form-options', { skipAuthExpiredHandler: true });
         const nextFields = Array.isArray(res.data?.fields) ? res.data.fields.map((item) => item.label).filter(Boolean) : [];
-        const nextDepartments = Array.isArray(res.data?.departments) ? res.data.departments.map((item) => item.label).filter(Boolean) : [];
         if (cancelled) return;
         setFieldOptions(nextFields.length ? nextFields : defaultFields);
-        setDepartmentOptions(nextDepartments.length ? nextDepartments : defaultDepartments);
         setForm((current) => ({
           ...current,
           field: nextFields.includes(current.field) ? current.field : (nextFields[0] || current.field),
-          department: nextDepartments.includes(current.department) ? current.department : (nextDepartments[0] || current.department)
+        }));
+        const deptRes = await api.get('/departments', { skipAuthExpiredHandler: true });
+        if (cancelled) return;
+        const grouped = deptRes.data || {};
+        setDepartmentOptions(grouped);
+        const allDepts = Object.values(grouped).flat().map((d) => d.name);
+        setForm((current) => ({
+          ...current,
+          department: allDepts.includes(current.department) || current.department === '' ? current.department : '',
         }));
       } catch (err) {
         if (!cancelled) {
           setFieldOptions(defaultFields);
-          setDepartmentOptions(defaultDepartments);
+          setDepartmentOptions({});
         }
       }
     }
@@ -161,19 +167,23 @@ export default function TicketFormPage({ user }) {
           </div>
 
           <div className="form-label pt-1 text-sm font-semibold text-ai-title">{t("common.department")}</div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {departmentOptions.map((dept) => (
-              <label key={dept} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition duration-200 ${form.department === dept ? "border-ai-primary/30 bg-ai-primary/10 text-ai-primary" : "border-ai-border text-ai-body hover:bg-ai-bg"}`}>
-                <input
-                  type="radio"
-                  name="department"
-                  checked={form.department === dept}
-                  onChange={() => setForm({ ...form, department: dept })}
-                  className="h-4 w-4 accent-ai-primary"
-                />
-                {dept}
-              </label>
-            ))}
+          <div className="relative">
+            <select
+              value={form.department}
+              onChange={(e) => setForm({ ...form, department: e.target.value })}
+              className="soft-input w-full appearance-none pr-10 cursor-pointer"
+              required
+            >
+              <option value="">{t("form.unknownDept")}</option>
+              {Object.entries(departmentOptions).map(([type, depts]) => (
+                <optgroup key={type} label={type}>
+                  {depts.map((d) => (
+                    <option key={d.id} value={d.name}>{d.name}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ai-muted" />
           </div>
 
           <label className="form-label pt-2 text-sm font-semibold text-ai-title">{t("form.content")}</label>

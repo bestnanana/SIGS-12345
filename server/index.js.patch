@@ -1,0 +1,47 @@
+--- a/server/index.js
++++ b/server/index.js
+@@ -857,27 +857,23 @@ app.post("/api/auth/login", async (req, res) => {
+ });
+ 
+ app.post("/local/doLogin", authLimiter, async (req, res) => {
+-  const unionId = String(req.body.union_id || req.body.username || "").trim();
++  const username = String(req.body.username || req.body.union_id || "").trim();
+   const { password } = req.body;
+-  const adminUser = await get(
+-    "SELECT * FROM admin_users WHERE union_id = ? LIMIT 1",
+-    [unionId]
+-  );
+-  if (!adminUser || !await bcrypt.compare(password, adminUser.password_hash)) {
+-    logger.warn("auth_login_failed", { request_id: req.requestId, union_id: unionId, reason: "invalid_credentials" });
+-    return res.status(401).json({ message: "账号或密码错误，或该账号无后台管理权限" });
+-  }
+-
+-  const user = await get(
+-    "SELECT * FROM datahub_basic_persons WHERE username = ? OR union_id = ? LIMIT 1",
+-    [unionId, unionId]
+-  );
+-  if (!user) {
+-    return res.status(500).json({ message: "管理员账号未同步到人员表，请联系超级管理员" });
++  if (!username || !password) {
++    return res.status(400).json({ message: "请填写用户名和密码" });
+   }
+ 
+-  await run("UPDATE datahub_basic_persons SET role = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+-    [adminUser.role, adminUser.department, user.id]);
++  const user = await get(
++    "SELECT * FROM users WHERE username = ? LIMIT 1",
++    [username]
++  );
++  if (!user || !await bcrypt.compare(password, user.password)) {
++    logger.warn("auth_login_failed", { request_id: req.requestId, username, reason: "invalid_credentials" });
++    return res.status(401).json({ message: "账号或密码错误" });
++  }
+ 
+   logger.info("auth_login_success", {
+     request_id: req.requestId,
+     user_id: user.id,
+-    union_id: user.union_id,
++    union_id: user.username,
+     role: user.role,
+     department: user.department
+   });

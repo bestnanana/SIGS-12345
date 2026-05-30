@@ -13,6 +13,7 @@ export function clearAuthStorage() {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
   localStorage.removeItem("viewRole");
+  localStorage.removeItem("authSource");
 }
 
 function notifyAuthExpired(message) {

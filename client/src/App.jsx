@@ -83,6 +83,7 @@ function App() {
   function handleLogin(payload) {
     localStorage.setItem("token", payload.token);
     localStorage.setItem("user", JSON.stringify(payload.user));
+    if (payload.authSource) localStorage.setItem("authSource", payload.authSource);
     localStorage.removeItem("viewRole");
     setUser(payload.user);
     setViewRole("");
@@ -96,11 +97,16 @@ function App() {
   }
 
   function handleLogout() {
+    const authSource = localStorage.getItem("authSource");
     clearAuthStorage();
     setUser(null);
     setViewRole("");
     setAuthMessage("");
-    window.location.href = `/sso/logout?locale=${locale}`;
+    if (authSource === "sso") {
+      window.location.href = `/sso/logout?locale=${locale}`;
+    } else {
+      window.location.href = `/${locale}/local/login`;
+    }
   }
 
   function handleViewRoleChange(nextRole) {

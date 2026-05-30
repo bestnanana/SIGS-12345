@@ -68,6 +68,11 @@ export default function TicketDetailPage() {
   useEffect(() => {
     let ignore = false;
     if (!ignore) load();
+    // Mark notification as read from deep-link
+    const nid = new URLSearchParams(window.location.search).get("nid");
+    if (nid) {
+      api.patch(`/notifications/${nid}/read`, {}, { skipAuthExpiredHandler: true }).catch(() => {});
+    }
     return () => { ignore = true; };
   }, [id]);
 

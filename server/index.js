@@ -14,16 +14,22 @@ const {
   run,
   get,
   all,
-  adminDepartments,
-  ensureDatahubPersonTables,
-  listFormOptionsGrouped,
+  isValidDepartment,
+  ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped,
+  listFormOptionsGrouped, listFormOptions,
   getFormOptionLabels,
   createFormOption,
   updateFormOption,
-  deleteFormOption
-} = require("./db");
+  deleteFormOption,
+  listDepartmentsAll,
+  createDepartment,
+  updateDepartment,
+  deleteDepartment,
+  disableAdminsForInactivePersons
+} = require("./db_mysql");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
+const { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl } = require("./portal-todo");
 const logger = require("./logger");
 
 const app = express();
@@ -176,6 +182,7 @@ function renderSsoLoginPage(payload) {
     const payload = ${safePayload};
     localStorage.setItem("token", payload.token);
     localStorage.setItem("user", JSON.stringify(payload.user));
+    if (payload.authSource) localStorage.setItem("authSource", payload.authSource);
     localStorage.removeItem("viewRole");
     window.location.replace(payload.redirect || "/");
   </script>
@@ -541,7 +548,8 @@ async function handleSsoCallback(req, res) {
     return res.type("html").set("Cache-Control", "no-store").send(renderSsoLoginPage({
       token: signUser(user),
       user: publicUser(user),
-      redirect: `/${locale}/`
+      redirect: `/${locale}/`,
+      authSource: "sso"
     }));
   } catch (error) {
     const ssoCodeMessages = {
@@ -692,19 +700,106 @@ function isAdminLike(user) {
   return ["admin", "super_admin", "liaison"].includes(user.role);
 }
 
+/**
+ * 返回用户对某工单的操作权限
+ * 'handle' — 可处理（回复、转办、改状态）
+ * 'view'   — 仅查看
+ * null     — 无权限
+ */
+async function getTicketPermission(ticketId, viewer) {
+  const ticket = await get(
+    'SELECT id, original_department, current_department, department, submitter_id FROM tickets WHERE id = ?',
+    [ticketId]
+  );
+  if (!ticket) return null;
+
+  // 提交者本人可查看
+  if (String(ticket.submitter_id) === String(viewer.id)) return 'view';
+
+  // 超级管理员可处理
+  if (viewer.role === 'super_admin') return 'handle';
+
+  // 普通用户（非管理员、非提交者）
+  if (!isAdminLike(viewer)) return null;
+
+  // 优先检查 department_admins 多部门授权
+  const deptAdmin = await get(
+    'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+    [viewer.id]
+  );
+
+  if (deptAdmin) {
+    const managedDepts = await all(
+      'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+      [deptAdmin.id]
+    );
+    const managedNames = managedDepts.map(d => d.department_name);
+
+    if (managedNames.includes(ticket.current_department)) {
+      return deptAdmin.role_type === 'observer' ? 'view' : 'handle';
+    }
+    if (managedNames.includes(ticket.original_department)) return 'view';
+
+    const inTransferChain = await get(
+      `SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department IN (${managedNames.map(() => '?').join(',')}) OR to_department IN (${managedNames.map(() => '?').join(',')})) LIMIT 1`,
+      [ticketId, ...managedNames, ...managedNames]
+    );
+    if (inTransferChain) return 'view';
+    return null;
+  }
+
+  // 回退：原有单部门逻辑
+  const dept = viewer.department;
+  if (!dept) return null;
+
+  if (dept === ticket.current_department) return 'handle';
+  if (dept === ticket.original_department) return 'view';
+
+  const inTransferChain = await get(
+    'SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department = ? OR to_department = ?) LIMIT 1',
+    [ticketId, dept, dept]
+  );
+  if (inTransferChain) return 'view';
+
+  return null;
+}
+
 async function loadPerson(id) {
-  return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
+  const person = await get("SELECT * FROM datahub_basic_persons WHERE id = ?", [String(id)]);
+  if (person) return person;
+  // Fallback: check users table for local accounts
+  const user = await get("SELECT * FROM users WHERE id = ?", [id]);
+  if (user) {
+    return {
+      id: String(user.id),
+      union_id: null,
+      name: user.name,
+      type: null,
+      category: null,
+      department: user.department,
+      status: null,
+      username: user.username,
+      phone: user.phone,
+      role: user.role,
+      can_manage_roles: 0,
+      raw_json: null,
+      synced_at: null,
+      created_at: user.created_at,
+      updated_at: user.created_at
+    };
+  }
+  return null;
 }
 
 async function loadOrCreateSsoPerson(ssoUser) {
-  await ensureDatahubPersonTables();
+  await ensureDatahubPersonTables(); await ensureFormConfigTables(); await seedDefaultFormOptions(); await seedDepartments();
   const existing = await get(
     "SELECT * FROM datahub_basic_persons WHERE union_id = ? OR id = ? LIMIT 1",
     [ssoUser.uid, ssoUser.personId || ssoUser.uid]
   );
   if (existing) {
-    // Sync role from admin_users if this person is a registered admin
-    const adminRow = await get("SELECT role, department FROM admin_users WHERE union_id = ?", [ssoUser.uid]);
+    // Sync role from users if this person is a registered local admin
+    const adminRow = await get("SELECT role, department FROM users WHERE union_id = ?", [ssoUser.uid]);
     const role = adminRow?.role || existing.role || "user";
     const dept = adminRow?.department || existing.department;
     await run(
@@ -719,7 +814,7 @@ async function loadOrCreateSsoPerson(ssoUser) {
   }
 
   const id = ssoUser.personId || `sso_${ssoUser.uid}`;
-  const adminRow = await get("SELECT role, department FROM admin_users WHERE union_id = ?", [ssoUser.uid]);
+  const adminRow = await get("SELECT role, department FROM users WHERE union_id = ?", [ssoUser.uid]);
   const role = adminRow?.role || "user";
   const dept = adminRow?.department || null;
   await run(
@@ -733,8 +828,33 @@ async function loadOrCreateSsoPerson(ssoUser) {
 async function adminOnly(req, res, next) {
   try {
     const user = await loadPerson(req.user.id);
-    if (!["admin", "super_admin", "liaison"].includes(user?.role)) {
-      return res.status(403).json({ message: "需要管理员权限" });
+    if (["admin", "super_admin", "liaison"].includes(user?.role)) {
+      req.user.role = user.role;
+      req.user.department = user.department;
+      return next();
+    }
+    // 检查 department_admins 授权表
+    const deptAdmin = await get(
+      'SELECT role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+      [req.user.id]
+    );
+    if (deptAdmin) {
+      req.user.role = user?.role || 'admin';
+      req.user.department = user?.department;
+      req.user.dept_admin_role = deptAdmin.role_type;
+      return next();
+    }
+    return res.status(403).json({ message: "需要管理员权限" });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function superAdminOnly(req, res, next) {
+  try {
+    const user = await loadPerson(req.user.id);
+    if (user?.role !== 'super_admin') {
+      return res.status(403).json({ message: '需要超级管理员权限' });
     }
     req.user.role = user.role;
     req.user.department = user.department;
@@ -776,23 +896,37 @@ async function saveFiles(files, ticketId = null, replyId = null) {
 
 async function ticketDetails(id, viewer) {
   const ticket = await get(
-    `SELECT t.*, p.name AS submitter_name, p.phone AS submitter_phone
+    `SELECT t.*,
+            COALESCE(dp.name, u.name) AS submitter_name,
+            COALESCE(dp.phone, u.phone) AS submitter_phone
      FROM tickets t
-     JOIN datahub_basic_persons p ON p.id = t.submitter_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
+     LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.id = ?`,
     [id]
   );
   if (!ticket) return null;
-  if (!isAdminLike(viewer) && ticket.submitter_id !== viewer.id) return null;
+  if (!isAdminLike(viewer) && String(ticket.submitter_id) !== String(viewer.id)) return null;
+
+  // 权限判断：当前承办部门可处理，原始/历史经手部门仅查看，其余无权限
+  let permission = 'view';
+  if (isAdminLike(viewer) && viewer.role !== "super_admin") {
+    permission = await getTicketPermission(id, viewer);
+    if (!permission) return null;
+  } else if (isAdminLike(viewer)) {
+    permission = 'handle';
+  }
+
   if (isAdminLike(viewer) && ticket.is_anonymous) {
     ticket.submitter_name = "匿名";
     ticket.submitter_phone = "";
   }
 
   const replies = await all(
-    `SELECT r.*, p.name AS replier_name
+    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
      FROM replies r
-     JOIN datahub_basic_persons p ON p.id = r.replier_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
+     LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
      ORDER BY r.created_at ASC`,
     [id]
@@ -806,32 +940,48 @@ async function ticketDetails(id, viewer) {
      ORDER BY a.uploaded_at ASC`,
     [id]
   );
-  const ratings = await all("SELECT type, COUNT(*) AS count FROM ratings WHERE ticket_id = ? GROUP BY type", [id]);
   const satisfaction = await get(
-    `SELECT s.*, p.name AS user_name
+    `SELECT s.*, COALESCE(dp.name, u.name) AS user_name
      FROM satisfaction_surveys s
-     JOIN datahub_basic_persons p ON p.id = s.user_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = s.user_id
+     LEFT JOIN users u ON u.id = s.user_id
      WHERE s.ticket_id = ?`,
     [id]
   );
+  const deptName = ticket.current_department || ticket.department || "党政办";
   const currentHandler = await get(
-    `SELECT id, name, department
-     FROM datahub_basic_persons
-     WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
-     ORDER BY id ASC
-     LIMIT 1`,
-    [ticket.current_department || ticket.department || "党政办"]
+    `SELECT id, name, department FROM (
+       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
+       FROM datahub_basic_persons p
+       WHERE p.role IN ('admin', 'super_admin', 'liaison') AND p.department = ?
+       UNION
+       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
+       FROM datahub_basic_persons p
+       JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
+       JOIN department_admin_departments dad ON dad.admin_id = da.id
+       WHERE dad.department_name = ?
+       UNION ALL
+       SELECT CAST(id AS CHAR) AS id, name, department FROM users
+       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
+     ) AS handlers ORDER BY id ASC LIMIT 1`,
+    [deptName, deptName, deptName]
   );
   const transfers = await all(
-    `SELECT tr.*, operator.name AS operator_name, target_admin.name AS target_operator_name
+    `SELECT tr.*,
+            COALESCE(dp_op.name, u_op.name) AS operator_name,
+            COALESCE(dp_tgt.name, u_tgt.name) AS target_operator_name
      FROM transfers tr
-     JOIN datahub_basic_persons operator ON operator.id = tr.operator_id
-     LEFT JOIN datahub_basic_persons target_admin ON target_admin.id = (
-       SELECT id
-       FROM datahub_basic_persons
+     LEFT JOIN datahub_basic_persons dp_op ON dp_op.id = tr.operator_id
+     LEFT JOIN users u_op ON u_op.id = tr.operator_id
+     LEFT JOIN datahub_basic_persons dp_tgt ON dp_tgt.id = (
+       SELECT id FROM datahub_basic_persons
        WHERE role IN ('admin', 'super_admin', 'liaison') AND department = tr.to_department
-       ORDER BY id ASC
-       LIMIT 1
+       ORDER BY id ASC LIMIT 1
+     )
+     LEFT JOIN users u_tgt ON u_tgt.id = (
+       SELECT id FROM users
+       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = tr.to_department
+       ORDER BY id ASC LIMIT 1
      )
      WHERE tr.ticket_id = ?
      ORDER BY tr.created_at ASC`,
@@ -845,8 +995,8 @@ async function ticketDetails(id, viewer) {
     replyAttachments,
     transfers,
     currentHandler: publicHandler(currentHandler),
-    ratings: ratings.reduce((acc, item) => ({ ...acc, [item.type]: item.count }), {}),
-    satisfaction: satisfaction || null
+    satisfaction: satisfaction || null,
+    permission
   };
 }
 
@@ -855,32 +1005,23 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/local/doLogin", authLimiter, async (req, res) => {
-  const unionId = String(req.body.union_id || req.body.username || "").trim();
+  const username = String(req.body.username || req.body.union_id || "").trim();
   const { password } = req.body;
-  const adminUser = await get(
-    "SELECT * FROM admin_users WHERE union_id = ? LIMIT 1",
-    [unionId]
-  );
-  if (!adminUser || !await bcrypt.compare(password, adminUser.password_hash)) {
-    logger.warn("auth_login_failed", { request_id: req.requestId, union_id: unionId, reason: "invalid_credentials" });
-    return res.status(401).json({ message: "账号或密码错误，或该账号无后台管理权限" });
-  }
-
   const user = await get(
-    "SELECT * FROM datahub_basic_persons WHERE username = ? OR union_id = ? LIMIT 1",
-    [unionId, unionId]
+    "SELECT * FROM users WHERE username = ? LIMIT 1",
+    [username]
   );
-  if (!user) {
-    return res.status(500).json({ message: "管理员账号未同步到人员表，请联系超级管理员" });
+  if (!user || !await bcrypt.compare(password, user.password)) {
+    logger.warn("auth_login_failed", { request_id: req.requestId, username, reason: "invalid_credentials" });
+    return res.status(401).json({ message: "账号或密码错误" });
   }
 
-  await run("UPDATE datahub_basic_persons SET role = ?, department = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    [adminUser.role, adminUser.department, user.id]);
+  
 
   logger.info("auth_login_success", {
     request_id: req.requestId,
     user_id: user.id,
-    union_id: user.union_id,
+    union_id: user.username,
     role: user.role,
     department: user.department
   });
@@ -888,7 +1029,8 @@ app.post("/local/doLogin", authLimiter, async (req, res) => {
   res.json({
     token: signUser(user),
     expires_in: jwtExpiresIn,
-    user: publicUser(user)
+    user: publicUser(user),
+    authSource: "local"
   });
 });
 
@@ -984,7 +1126,7 @@ app.get("/api/auth/me", auth, async (req, res) => {
 });
 
 app.get("/api/departments", auth, async (req, res) => {
-  res.json(adminDepartments);
+  res.json(await listDepartmentsGrouped());
 });
 
 app.get("/api/form-options", auth, async (req, res) => {
@@ -1004,8 +1146,8 @@ app.post("/api/admin/form-options", auth, adminOnly, async (req, res) => {
   }
   if (!label) return res.status(400).json({ message: "请填写配置名称" });
   try {
-    const result = await createFormOption(category, label, req.body.sort_order, req.body.is_active !== false);
-    res.status(201).json({ id: result.lastID });
+    const result = await createFormOption(category, label, req.body.is_active !== false);
+    res.status(201).json({ id: result.insertId });
   } catch (error) {
     if (/unique/i.test(error.message || "")) {
       return res.status(409).json({ message: "该配置已存在" });
@@ -1016,13 +1158,49 @@ app.post("/api/admin/form-options", auth, adminOnly, async (req, res) => {
 
 app.patch("/api/admin/form-options/:id", auth, adminOnly, async (req, res) => {
   const result = await updateFormOption(req.params.id, req.body || {});
-  if (!result.changes) return res.status(404).json({ message: "配置不存在或没有变化" });
+  if (!result.affectedRows) return res.status(404).json({ message: "配置不存在或没有变化" });
   res.json({ ok: true });
 });
 
 app.delete("/api/admin/form-options/:id", auth, adminOnly, async (req, res) => {
   const result = await deleteFormOption(req.params.id);
-  if (!result.changes) return res.status(404).json({ message: "配置不存在" });
+  if (!result.affectedRows) return res.status(404).json({ message: "配置不存在" });
+  res.json({ ok: true });
+});
+
+// --- Department CRUD (admin) ---
+app.get("/api/admin/departments", auth, adminOnly, async (req, res) => {
+  const includeInactive = req.query.includeInactive !== "0";
+  res.json(await listDepartmentsAll(includeInactive));
+});
+
+app.post("/api/admin/departments", auth, adminOnly, async (req, res) => {
+  const name = String(req.body.name || "").trim();
+  const type = String(req.body.type || "").trim();
+  if (!name) return res.status(400).json({ message: "请填写部门名称" });
+  if (!["职能处室", "教学科研机构"].includes(type)) {
+    return res.status(400).json({ message: "请选择有效的部门类型" });
+  }
+  try {
+    const result = await createDepartment(name, type, req.body.is_active !== false);
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    if (/unique/i.test(error.message || "")) {
+      return res.status(409).json({ message: "该部门已存在" });
+    }
+    throw error;
+  }
+});
+
+app.patch("/api/admin/departments/:id", auth, adminOnly, async (req, res) => {
+  const result = await updateDepartment(req.params.id, req.body || {});
+  if (!result.affectedRows) return res.status(404).json({ message: "部门不存在或没有变化" });
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/departments/:id", auth, adminOnly, async (req, res) => {
+  const result = await deleteDepartment(req.params.id);
+  if (!result.affectedRows) return res.status(404).json({ message: "部门不存在" });
   res.json({ ok: true });
 });
 
@@ -1036,7 +1214,7 @@ app.post("/api/datahub/basic-persons/sync", auth, adminOnly, async (req, res) =>
 });
 
 app.get("/api/datahub/basic-persons/stored", auth, async (req, res) => {
-  await ensureDatahubPersonTables();
+  await ensureDatahubPersonTables(); await ensureFormConfigTables(); await seedDefaultFormOptions(); await seedDepartments();
   const pageSize = Math.min(Number(req.query.pageSize || 50), 500);
   const page = Math.max(Number(req.query.page || 1), 1);
   const offset = (page - 1) * pageSize;
@@ -1092,7 +1270,7 @@ app.patch("/api/admin/persons/:id", auth, adminOnly, canManageRoles, async (req,
     `UPDATE datahub_basic_persons SET ${updates.join(", ")} WHERE id = ?`,
     params
   );
-  if (!result.changes) return res.status(404).json({ message: "人员不存在" });
+  if (!result.affectedRows) return res.status(404).json({ message: "人员不存在" });
   res.json({ ok: true });
 });
 
@@ -1119,18 +1297,71 @@ app.get("/api/tickets", auth, async (req, res) => {
 
 app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) => {
   const { title, field, department, content, is_anonymous, phone } = req.body;
-  if (!title || !field || !department || !content) return res.status(400).json({ message: "请填写标题、事项领域、部门和内容" });
-  if (!adminDepartments.includes(department)) return res.status(400).json({ message: "请选择有效部门" });
+  if (!title || !field || !content) return res.status(400).json({ message: "请填写标题、事项领域和内容" });
+
+  // "我不知道属于哪个部门" → route to 党政办公室
+  const DEFAULT_DEPT = "党政办公室";
+  const isUnknownDept = !department || department === "";
+  const targetDept = isUnknownDept ? DEFAULT_DEPT : department;
+
+  if (!isUnknownDept && !(await isValidDepartment(targetDept))) return res.status(400).json({ message: "请选择有效部门" });
   if (phone) await run("UPDATE datahub_basic_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
 
   const shareCode = crypto.randomBytes(12).toString("base64url");
   const result = await run(
-    `INSERT INTO tickets (title, field, unit_type, department, current_department, content, is_anonymous, submitter_id, status, share_code)
-     VALUES (?, ?, '', ?, '党政办', ?, ?, ?, 'pending', ?)`,
-    [title, field, department, content, is_anonymous === "true" ? 1 : 0, req.user.id, shareCode]
+    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, status, share_code)
+     VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, shareCode]
   );
-  await saveFiles(req.files, result.lastID, null);
-  res.status(201).json({ id: result.lastID, share_code: shareCode });
+  await saveFiles(req.files, result.insertId, null);
+
+  // Notify admins in the target department + all super_admins + department_admins
+  const admins = await all(
+    `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
+     FROM datahub_basic_persons p
+     LEFT JOIN users u ON u.union_id = p.union_id
+     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
+     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
+     WHERE p.role = 'super_admin'
+        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
+        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+    [targetDept, targetDept]
+  );
+  const displayDept = isUnknownDept ? DEFAULT_DEPT : department;
+  for (const admin of admins) {
+    const notifResult = await run(
+      `INSERT INTO notifications (user_id, ticket_id, type, message)
+       VALUES (?, ?, 'new_ticket', ?)`,
+      [admin.notify_user_id, result.insertId, `新事项【${title}】已提交至${displayDept}，请及时处理。`]
+    );
+    const targetUrl = `/cn/admin?ticketId=${result.insertId}&nid=${notifResult.insertId}`;
+    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+    // Portal todo (fire-and-forget)
+    if (admin.admin_person_id) {
+      pushPortalTodo({
+        id: buildTodoId(result.insertId, 'admin', admin.admin_person_id),
+        name: `【${title}】-待您处理`,
+        url: buildSiteUrl(`/cn/admin?ticketId=${result.insertId}`),
+        principalPersonId: admin.admin_person_id
+      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message }));
+    }
+  }
+
+  // Portal todo for submitter
+  const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [req.user.id, req.user.id]);
+  const submitterDatahub = submitterPerson?.union_id
+    ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
+    : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [req.user.id]);
+  if (submitterDatahub?.id) {
+    pushPortalTodo({
+      id: buildTodoId(result.insertId, 'submitter'),
+      name: `【${title}】-待您处理`,
+      url: buildSiteUrl(`/cn/tickets/${result.insertId}`),
+      principalPersonId: submitterDatahub.id
+    }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, type: 'submitter', message: err.message }));
+  }
+
+  res.status(201).json({ id: result.insertId, share_code: shareCode });
 });
 
 app.get("/api/tickets/:id", auth, async (req, res) => {
@@ -1139,14 +1370,6 @@ app.get("/api/tickets/:id", auth, async (req, res) => {
   res.json(details);
 });
 
-app.post("/api/tickets/:id/ratings", auth, async (req, res) => {
-  const { type } = req.body;
-  if (!["like", "dislike", "favorite"].includes(type)) return res.status(400).json({ message: "无效评价类型" });
-  const exists = await get("SELECT id FROM tickets WHERE id = ?", [req.params.id]);
-  if (!exists) return res.status(404).json({ message: "事项不存在" });
-  await run("INSERT OR IGNORE INTO ratings (ticket_id, user_id, type) VALUES (?, ?, ?)", [req.params.id, req.user.id, type]);
-  res.json({ ok: true });
-});
 
 app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
   const score = Number(req.body?.score);
@@ -1169,43 +1392,189 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
+  const user = await loadPerson(req.user.id);
+  const params = [];
+  const isGlobalAdmin = user?.role === "super_admin";
+  let scope = "";
+
+  if (!isGlobalAdmin) {
+    const deptAdmin = await get(
+      'SELECT id FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+      [user.id]
+    );
+    if (deptAdmin) {
+      const managedDepts = await all(
+        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+        [deptAdmin.id]
+      );
+      const deptNames = managedDepts.map(d => d.department_name);
+      if (deptNames.length > 0) {
+        const ph = deptNames.map(() => '?').join(',');
+        scope = `WHERE t.current_department IN (${ph})`;
+        params.push(...deptNames);
+      }
+    } else if (user?.department) {
+      scope = "WHERE t.current_department = ?";
+      params.push(user.department);
+    }
+  }
+
+  const totalRow = await get(`SELECT COUNT(*) AS count FROM tickets t ${scope}`, params);
+  const total = Number(totalRow?.count || 0);
+
+  const publishedParams = [...params];
+  const publishedScope = scope ? `${scope} AND t.is_published = 1` : "WHERE t.is_published = 1";
+  const publishedRow = await get(`SELECT COUNT(*) AS count FROM tickets t ${publishedScope}`, publishedParams);
+  const published = Number(publishedRow?.count || 0);
+
+  const statusRows = await all(
+    `SELECT t.status, COUNT(*) AS count FROM tickets t ${scope} GROUP BY t.status`,
+    params
+  );
+  const statusCounts = {};
+  for (const r of statusRows) statusCounts[r.status] = Number(r.count);
+
+  const fieldRows = await all(
+    `SELECT t.field, COUNT(*) AS count FROM tickets t ${scope} GROUP BY t.field ORDER BY count DESC`,
+    params
+  );
+
+  const deptRows = await all(
+    `SELECT t.current_department AS department, COUNT(*) AS count FROM tickets t ${scope} GROUP BY t.current_department ORDER BY count DESC`,
+    params
+  );
+
+  const satRows = await all(
+    `SELECT s.score, COUNT(*) AS count
+     FROM satisfaction_surveys s
+     JOIN tickets t ON t.id = s.ticket_id
+     ${scope}
+     GROUP BY s.score`,
+    params
+  );
+  const satisfactionDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  let satisfactionTotal = 0;
+  let satisfactionCount = 0;
+  for (const r of satRows) {
+    satisfactionDistribution[r.score] = Number(r.count);
+    satisfactionTotal += r.score * Number(r.count);
+    satisfactionCount += Number(r.count);
+  }
+  const completedCount = statusCounts["completed"] || 0;
+
+  res.json({
+    total,
+    active: total - completedCount,
+    completed: completedCount,
+    published,
+    statusCounts,
+    fieldEntries: fieldRows.map((r) => [r.field, Number(r.count)]),
+    departmentEntries: deptRows.map((r) => [r.department || "未指定", Number(r.count)]),
+    replyRate: total > 0 ? ((completedCount / total) * 100).toFixed(1) + "%" : "0%",
+    completeRate: total > 0 ? ((completedCount / total) * 100).toFixed(1) + "%" : "0%",
+    satisfactionCount,
+    satisfactionAverage: satisfactionCount > 0 ? (satisfactionTotal / satisfactionCount).toFixed(1) : "-",
+    satisfactionRate: completedCount > 0 ? ((satisfactionCount / completedCount) * 100).toFixed(1) + "%" : "0%",
+    satisfactionDistribution
+  });
+});
+
 app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   const user = await loadPerson(req.user.id);
   const pageSize = Math.min(Number(req.query.pageSize || 30), 100);
   const page = Math.max(Number(req.query.page || 1), 1);
   const offset = (page - 1) * pageSize;
-  const params = [];
-  const isGlobalAdmin = user?.role === "super_admin" || (user?.role === "admin" && user?.department === "党政办");
+  const isGlobalAdmin = user?.role === "super_admin";
+
   let scope = "";
-  if (!isGlobalAdmin && user?.department) {
-    scope = "WHERE t.department = ?";
-    params.push(user.department);
+  const params = [];
+  let permissionExpr = "'handle'"; // default for super_admin
+  let isObserver = false;
+
+  if (!isGlobalAdmin) {
+    // 优先检查 department_admins 多部门授权
+    const deptAdmin = await get(
+      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+      [user.id]
+    );
+
+    if (deptAdmin) {
+      isObserver = deptAdmin.role_type === 'observer';
+      const managedDepts = await all(
+        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+        [deptAdmin.id]
+      );
+      const deptNames = managedDepts.map(d => d.department_name);
+      if (deptNames.length === 0) {
+        return res.json({ page, pageSize, total: 0, rows: [] });
+      }
+      const ph = deptNames.map(() => '?').join(',');
+      scope = `WHERE (
+        t.current_department IN (${ph})
+        OR t.original_department IN (${ph})
+        OR t.id IN (SELECT ticket_id FROM transfers WHERE from_department IN (${ph}) OR to_department IN (${ph}))
+      )`;
+      params.push(...deptNames, ...deptNames, ...deptNames, ...deptNames);
+      if (isObserver) {
+        permissionExpr = "'view'";
+      } else {
+        permissionExpr = `CASE WHEN t.current_department IN (${deptNames.map(() => '?').join(',')}) THEN 'handle' ELSE 'view' END`;
+      }
+    } else if (user?.department) {
+      // 回退：原有单部门逻辑
+      scope = `WHERE (
+        t.current_department = ?
+        OR t.original_department = ?
+        OR t.id IN (SELECT ticket_id FROM transfers WHERE from_department = ? OR to_department = ?)
+      )`;
+      params.push(user.department, user.department, user.department, user.department);
+      permissionExpr = "CASE WHEN t.current_department = ? THEN 'handle' ELSE 'view' END";
+    }
   }
 
   const countRow = await get(
-    `SELECT COUNT(*) AS count FROM tickets t
-     JOIN datahub_basic_persons p ON p.id = t.submitter_id
-     ${scope}`,
+    `SELECT COUNT(*) AS count FROM tickets t ${scope}`,
     params
   );
 
+  // 构建 permission 参数
+  const permParams = [];
+  if (!isGlobalAdmin) {
+    const deptAdmin2 = await get(
+      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+      [user.id]
+    );
+    if (deptAdmin2 && deptAdmin2.role_type !== 'observer') {
+      const managedDepts2 = await all(
+        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+        [deptAdmin2.id]
+      );
+      permParams.push(...managedDepts2.map(d => d.department_name));
+    } else if (!deptAdmin2 && user?.department) {
+      permParams.push(user.department);
+    }
+  }
+
   const rows = await all(
     `SELECT t.*,
-            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE p.name END AS submitter_name,
-            CASE WHEN t.is_anonymous = 1 THEN '' ELSE p.phone END AS submitter_phone,
+            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(dp.name, u.name) END AS submitter_name,
+            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(dp.phone, u.phone) END AS submitter_phone,
             s.score AS satisfaction_score,
             s.comment AS satisfaction_comment,
             s.updated_at AS satisfaction_updated_at,
-            COUNT(a.id) AS attachment_count
+            COUNT(a.id) AS attachment_count,
+            ${permissionExpr} AS permission
      FROM tickets t
-     JOIN datahub_basic_persons p ON p.id = t.submitter_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
+     LEFT JOIN users u ON u.id = t.submitter_id
      LEFT JOIN attachments a ON a.ticket_id = t.id
      LEFT JOIN satisfaction_surveys s ON s.ticket_id = t.id
      ${scope}
      GROUP BY t.id
      ORDER BY t.updated_at DESC, t.created_at DESC
      LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset]
+    [...permParams, ...params, pageSize, offset]
   );
   res.json({ page, pageSize, total: countRow?.count || 0, rows: rows.map(mapTicket) });
 });
@@ -1214,19 +1583,56 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
   const { content, status } = req.body;
   if (!content) return res.status(400).json({ message: "请填写回复内容" });
   const user = await loadPerson(req.user.id);
-  const ticket = await get("SELECT id, current_department FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT id, title, submitter_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  if (!user?.department || user.department !== ticket.current_department) {
-    return res.status(403).json({ message: "只有当前承办部门管理员可以回复处理" });
+  const permission = await getTicketPermission(req.params.id, user);
+  if (permission !== 'handle') {
+    return res.status(403).json({ message: "您所在的部门当前不是承办部门，无法处理此事项" });
   }
   if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
   const result = await run(
     "INSERT INTO replies (ticket_id, content, replier_id, department) VALUES (?, ?, ?, ?)",
     [req.params.id, content, req.user.id, user.department]
   );
-  await saveFiles(req.files, null, result.lastID);
+  await saveFiles(req.files, null, result.insertId);
   await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "completed", req.params.id]);
-  res.status(201).json({ id: result.lastID });
+
+  // Notify the ticket submitter
+  if (ticket.submitter_id) {
+    const notifResult = await run(
+      `INSERT INTO notifications (user_id, ticket_id, type, message)
+       VALUES (?, ?, 'replied', ?)`,
+      [ticket.submitter_id, req.params.id, `您的事项【${ticket.title}】已有新的处理回复。`]
+    );
+    const targetUrl = `/cn/tickets/${req.params.id}?nid=${notifResult.insertId}`;
+    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+  }
+
+  // Complete portal todos
+  const ticketId = req.params.id;
+
+  // Always complete submitter's todo when admin replies
+  const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [ticket.submitter_id, ticket.submitter_id]);
+  const submitterDatahub = submitterPerson?.union_id
+    ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
+    : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [ticket.submitter_id]);
+  if (submitterDatahub?.id) {
+    completePortalTodo(buildTodoId(ticketId, 'submitter'), submitterDatahub.id)
+      .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'submitter', message: err.message }));
+  }
+
+  // Complete the replying admin's own todo
+  if (user.union_id || user.id) {
+    const adminPersonId = user.union_id
+      ? (await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [user.union_id]))?.id
+      : user.id;
+    if (adminPersonId) {
+      completePortalTodo(buildTodoId(ticketId, 'admin', adminPersonId), adminPersonId)
+        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'admin_replier', message: err.message }));
+    }
+  }
+
+  res.status(201).json({ id: result.insertId });
 });
 
 app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => {
@@ -1235,7 +1641,8 @@ app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => 
   const user = await loadPerson(req.user.id);
   const ticket = await get("SELECT current_department FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  if (!user?.department || user.department !== ticket.current_department) {
+  const permission = await getTicketPermission(req.params.id, user);
+  if (permission !== 'handle') {
     return res.status(403).json({ message: "只有当前承办部门管理员可以更新状态" });
   }
   await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status, req.params.id]);
@@ -1244,20 +1651,512 @@ app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => 
 
 app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) => {
   const { to_department, note } = req.body;
-  if (!adminDepartments.includes(to_department)) return res.status(400).json({ message: "请选择有效转办部门" });
+  if (!(await isValidDepartment(to_department))) return res.status(400).json({ message: "请选择有效转办部门" });
   const user = await loadPerson(req.user.id);
-  const ticket = await get("SELECT id, current_department FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT id, title, current_department FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  if (!user?.department || user.department !== ticket.current_department) {
+  const permission = await getTicketPermission(req.params.id, user);
+  if (permission !== 'handle') {
     return res.status(403).json({ message: "只能由当前承办部门转办事项" });
   }
+
+  // 检查转办目标限制
+  const deptAdmin = await get(
+    'SELECT allowed_transfer_targets FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+    [req.user.id]
+  );
+  if (deptAdmin?.allowed_transfer_targets) {
+    const allowed = JSON.parse(deptAdmin.allowed_transfer_targets);
+    if (!allowed.includes(to_department)) {
+      return res.status(403).json({ message: '您没有权限转办至该部门' });
+    }
+  }
+
   if (to_department === ticket.current_department) return res.status(400).json({ message: "不能转办给当前承办部门" });
+  const fromDept = ticket.current_department || user.department;
+
+  // 将上一条转办记录标记为 superseded
   await run(
-    "INSERT INTO transfers (ticket_id, from_department, to_department, operator_id, note) VALUES (?, ?, ?, ?, ?)",
-    [req.params.id, ticket.current_department || "党政办", to_department, req.user.id, note || ""]
+    "UPDATE transfers SET status = 'superseded' WHERE ticket_id = ? AND status = 'active'",
+    [req.params.id]
+  );
+
+  await run(
+    "INSERT INTO transfers (ticket_id, from_department, to_department, operator_id, note, status) VALUES (?, ?, ?, ?, ?, 'active')",
+    [req.params.id, fromDept, to_department, req.user.id, note || ""]
   );
   await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
+
+  // Notify admins in the target department + all super_admins + department_admins
+  const admins = await all(
+    `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
+     FROM datahub_basic_persons p
+     LEFT JOIN users u ON u.union_id = p.union_id
+     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
+     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
+     WHERE p.role = 'super_admin'
+        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
+        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+    [to_department, to_department]
+  );
+  for (const admin of admins) {
+    const notifResult = await run(
+      `INSERT INTO notifications (user_id, ticket_id, type, message)
+       VALUES (?, ?, 'transferred_in', ?)`,
+      [admin.notify_user_id, req.params.id, `事项【${ticket.title}】已从${fromDept}转办至${to_department}，请及时处理。`]
+    );
+    const targetUrl = `/cn/admin?ticketId=${req.params.id}&nid=${notifResult.insertId}`;
+    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+    if (admin.admin_person_id) {
+      pushPortalTodo({
+        id: buildTodoId(req.params.id, 'admin', admin.admin_person_id),
+        name: `【${ticket.title}】-待您处理`,
+        url: buildSiteUrl(`/cn/admin?ticketId=${req.params.id}`),
+        principalPersonId: admin.admin_person_id
+      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: req.params.id, person_id: admin.admin_person_id, message: err.message }));
+    }
+  }
+
+  // Complete portal todos for admins in the old department
+  const oldDeptAdmins = await all(
+    `SELECT DISTINCT p.id AS admin_person_id
+     FROM datahub_basic_persons p
+     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
+     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
+     WHERE p.role = 'super_admin'
+        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
+        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+    [fromDept, fromDept]
+  );
+  for (const admin of oldDeptAdmins) {
+    if (admin.admin_person_id) {
+      completePortalTodo(buildTodoId(req.params.id, 'admin', admin.admin_person_id), admin.admin_person_id)
+        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: req.params.id, person_id: admin.admin_person_id, message: err.message }));
+    }
+  }
+
   res.json({ ok: true });
+});
+
+// -- Attachment download with permission check --
+
+app.get("/api/attachments/:id/download", auth, async (req, res) => {
+  const attachment = await get("SELECT * FROM attachments WHERE id = ?", [req.params.id]);
+  if (!attachment) return res.status(404).json({ message: "附件不存在" });
+
+  // 通过关联的 ticket 检查权限
+  let ticketId = attachment.ticket_id;
+  if (!ticketId && attachment.reply_id) {
+    const reply = await get("SELECT ticket_id FROM replies WHERE id = ?", [attachment.reply_id]);
+    if (reply) ticketId = reply.ticket_id;
+  }
+  if (!ticketId) return res.status(400).json({ message: "附件未关联工单" });
+
+  const permission = await getTicketPermission(ticketId, req.user);
+  if (!permission) return res.status(403).json({ message: "无权访问此附件" });
+
+  const filePath = path.join(__dirname, attachment.file_path);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ message: "文件不存在" });
+
+  res.setHeader('Content-Type', attachment.file_type);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(attachment.original_name)}"`);
+  res.sendFile(filePath);
+});
+
+// -- Department Admin Permission Management --
+
+// 搜索可授权的人员（同时搜索 datahub_basic_persons 和 users 表）
+app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+
+  const like = keyword ? `%${keyword}%` : '%';
+  const notInAuth = "NOT IN (SELECT person_id FROM department_admins)";
+
+  // 只查 datahub_basic_persons，限院外人员和教职员
+  let where = `WHERE p.type IN ('院外人员', '教职员') AND (p.status IS NULL OR p.status != '0') AND p.id ${notInAuth}`;
+  const params = [];
+  if (keyword) {
+    where += " AND (p.union_id LIKE ? OR p.name LIKE ?)";
+    params.push(like, like);
+  }
+
+  const countRow = await get(`SELECT COUNT(*) AS count FROM datahub_basic_persons p ${where}`, params);
+  const total = Number(countRow?.count || 0);
+
+  const rows = await all(
+    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status, p.role
+     FROM datahub_basic_persons p ${where}
+     ORDER BY p.name ASC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+
+  res.json({ page, pageSize, total, rows });
+});
+
+// 获取当前用户的管理部门
+app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
+  const person = await loadPerson(req.user.id);
+  if (person?.role === 'super_admin') {
+    return res.json({ departments: [], role_type: null, is_super_admin: true });
+  }
+
+  const deptAdmin = await get(
+    'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+    [req.user.id]
+  );
+  if (!deptAdmin) {
+    return res.json({ departments: [], role_type: null, is_super_admin: false });
+  }
+
+  const depts = await all(
+    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+    [deptAdmin.id]
+  );
+
+  res.json({
+    departments: depts.map(d => d.department_name),
+    role_type: deptAdmin.role_type,
+    is_super_admin: false
+  });
+});
+
+// 创建授权
+app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) => {
+  const { person_id, role_type, managed_departments, allowed_transfer_targets } = req.body;
+
+  if (!person_id || !role_type || !Array.isArray(managed_departments) || managed_departments.length === 0) {
+    return res.status(400).json({ message: '请填写完整授权信息' });
+  }
+  if (!['admin', 'observer'].includes(role_type)) {
+    return res.status(400).json({ message: '角色类型无效' });
+  }
+
+  // 检查人员是否存在（仅 datahub_basic_persons，限院外人员/教职员）
+  const person = await get(
+    "SELECT id, union_id, name, department, type FROM datahub_basic_persons WHERE id = ? AND type IN ('院外人员', '教职员')",
+    [person_id]
+  );
+  if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限院外人员、教职员）' });
+
+  // 检查是否已授权
+  const existing = await get('SELECT id FROM department_admins WHERE person_id = ?', [person_id]);
+  if (existing) return res.status(409).json({ message: '该人员已有授权记录' });
+
+  // 验证部门有效性
+  for (const dept of managed_departments) {
+    if (!(await isValidDepartment(dept))) {
+      return res.status(400).json({ message: `部门「${dept}」无效` });
+    }
+  }
+
+  const result = await run(
+    'INSERT INTO department_admins (person_id, role_type, is_enabled, allowed_transfer_targets) VALUES (?, ?, 1, ?)',
+    [person_id, role_type, allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : null]
+  );
+
+  for (const dept of managed_departments) {
+    await run(
+      'INSERT INTO department_admin_departments (admin_id, department_name) VALUES (?, ?)',
+      [result.insertId, dept]
+    );
+  }
+
+  // 自动在 users 表创建登录账号（username=工号，密码=123456）
+  if (person.union_id) {
+    const existingUser = await get('SELECT id FROM users WHERE username = ?', [person.union_id]);
+    if (!existingUser) {
+      const hash = await bcrypt.hash('123456', 10);
+      await run(
+        'INSERT INTO users (username, password, name, phone, department, role, union_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [person.union_id, hash, person.name, null, person.department, 'user', person.union_id]
+      );
+    }
+  }
+
+  const afterState = { person_id, role_type, managed_departments, allowed_transfer_targets: allowed_transfer_targets || null };
+  await run(
+    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+     VALUES (?, ?, 'create', NULL, ?)`,
+    [req.user.id, person_id, JSON.stringify(afterState)]
+  );
+
+  res.status(201).json({ ok: true, id: result.insertId });
+});
+
+// 授权列表
+app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  const roleType = String(req.query.role_type || '').trim();
+  const isEnabled = req.query.is_enabled;
+  const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+
+  let scope = '';
+  const params = [];
+
+  const conditions = [];
+  if (keyword) {
+    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.department LIKE ? OR u.name LIKE ? OR u.department LIKE ? OR CAST(u.id AS CHAR) LIKE ?)");
+    const like = `%${keyword}%`;
+    params.push(like, like, like, like, like, like);
+  }
+  if (roleType && ['admin', 'observer'].includes(roleType)) {
+    conditions.push("da.role_type = ?");
+    params.push(roleType);
+  }
+  if (isEnabled === '1' || isEnabled === '0') {
+    conditions.push("da.is_enabled = ?");
+    params.push(Number(isEnabled));
+  }
+  if (conditions.length) {
+    scope = 'WHERE ' + conditions.join(' AND ');
+  }
+
+  const countRow = await get(
+    `SELECT COUNT(*) AS count FROM department_admins da
+     LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     ${scope}`,
+    params
+  );
+
+  const rows = await all(
+    `SELECT da.id, da.person_id, da.role_type, da.is_enabled, da.allowed_transfer_targets,
+            da.created_at, da.updated_at,
+            COALESCE(p.name, u.name) AS person_name,
+            COALESCE(p.department, u.department) AS person_department,
+            COALESCE(p.role, u.role) AS person_role,
+            p.union_id AS person_union_id
+     FROM department_admins da
+     LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     ${scope}
+     ORDER BY da.updated_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+
+  // 批量获取管辖部门
+  for (const row of rows) {
+    const depts = await all(
+      'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+      [row.id]
+    );
+    row.managed_departments = depts.map(d => d.department_name);
+    row.allowed_transfer_targets = row.allowed_transfer_targets ? JSON.parse(row.allowed_transfer_targets) : null;
+  }
+
+  res.json({ page, pageSize, total: countRow?.count || 0, rows });
+});
+
+// 单条授权详情
+app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
+  const row = await get(
+    `SELECT da.*,
+            COALESCE(p.name, u.name) AS person_name,
+            COALESCE(p.department, u.department) AS person_department,
+            COALESCE(p.role, u.role) AS person_role,
+            p.union_id AS person_union_id
+     FROM department_admins da
+     LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     WHERE da.id = ?`,
+    [req.params.id]
+  );
+  if (!row) return res.status(404).json({ message: '授权记录不存在' });
+
+  const depts = await all(
+    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+    [row.id]
+  );
+  row.managed_departments = depts.map(d => d.department_name);
+  row.allowed_transfer_targets = row.allowed_transfer_targets ? JSON.parse(row.allowed_transfer_targets) : null;
+
+  res.json(row);
+});
+
+// 编辑授权
+app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
+  const { role_type, managed_departments, allowed_transfer_targets, is_enabled } = req.body;
+
+  const current = await get(
+    `SELECT da.*, p.name AS person_name
+     FROM department_admins da
+     LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
+     WHERE da.id = ?`,
+    [req.params.id]
+  );
+  if (!current) return res.status(404).json({ message: '授权记录不存在' });
+
+  const currentDepts = await all(
+    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+    [current.id]
+  );
+  const beforeState = {
+    person_id: current.person_id,
+    role_type: current.role_type,
+    is_enabled: current.is_enabled,
+    managed_departments: currentDepts.map(d => d.department_name),
+    allowed_transfer_targets: current.allowed_transfer_targets ? JSON.parse(current.allowed_transfer_targets) : null
+  };
+
+  // 更新 department_admins 主表
+  const updates = [];
+  const params = [];
+  if (role_type && ['admin', 'observer'].includes(role_type)) {
+    updates.push('role_type = ?');
+    params.push(role_type);
+  }
+  if (is_enabled !== undefined) {
+    updates.push('is_enabled = ?');
+    params.push(is_enabled ? 1 : 0);
+  }
+  if (allowed_transfer_targets !== undefined) {
+    updates.push('allowed_transfer_targets = ?');
+    params.push(allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : null);
+  }
+  if (updates.length) {
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(req.params.id);
+    await run(`UPDATE department_admins SET ${updates.join(', ')} WHERE id = ?`, params);
+  }
+
+  // 更新管辖部门
+  if (Array.isArray(managed_departments)) {
+    for (const dept of managed_departments) {
+      if (!(await isValidDepartment(dept))) {
+        return res.status(400).json({ message: `部门「${dept}」无效` });
+      }
+    }
+    await run('DELETE FROM department_admin_departments WHERE admin_id = ?', [current.id]);
+    for (const dept of managed_departments) {
+      await run(
+        'INSERT INTO department_admin_departments (admin_id, department_name) VALUES (?, ?)',
+        [current.id, dept]
+      );
+    }
+  }
+
+  // 构建 afterState
+  const newDepts = Array.isArray(managed_departments) ? managed_departments : beforeState.managed_departments;
+  const afterState = {
+    person_id: current.person_id,
+    role_type: role_type || beforeState.role_type,
+    is_enabled: is_enabled !== undefined ? (is_enabled ? 1 : 0) : beforeState.is_enabled,
+    managed_departments: newDepts,
+    allowed_transfer_targets: allowed_transfer_targets !== undefined ? (allowed_transfer_targets || null) : beforeState.allowed_transfer_targets
+  };
+
+  await run(
+    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+     VALUES (?, ?, 'update', ?, ?)`,
+    [req.user.id, current.person_id, JSON.stringify(beforeState), JSON.stringify(afterState)]
+  );
+
+  res.json({ ok: true });
+});
+
+// 删除授权
+app.delete("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
+  const current = await get('SELECT * FROM department_admins WHERE id = ?', [req.params.id]);
+  if (!current) return res.status(404).json({ message: '授权记录不存在' });
+
+  const currentDepts = await all(
+    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+    [current.id]
+  );
+  const beforeState = {
+    person_id: current.person_id,
+    role_type: current.role_type,
+    is_enabled: current.is_enabled,
+    managed_departments: currentDepts.map(d => d.department_name)
+  };
+
+  await run('DELETE FROM department_admins WHERE id = ?', [current.id]);
+
+  await run(
+    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+     VALUES (?, ?, 'delete', ?, NULL)`,
+    [req.user.id, current.person_id, JSON.stringify(beforeState)]
+  );
+
+  res.json({ ok: true });
+});
+
+// 启用/禁用切换
+app.patch("/api/admin/department-admins/:id/toggle", auth, superAdminOnly, async (req, res) => {
+  const { is_enabled } = req.body;
+  if (is_enabled === undefined) return res.status(400).json({ message: '请指定 is_enabled' });
+
+  const current = await get('SELECT * FROM department_admins WHERE id = ?', [req.params.id]);
+  if (!current) return res.status(404).json({ message: '授权记录不存在' });
+
+  await run(
+    'UPDATE department_admins SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [is_enabled ? 1 : 0, req.params.id]
+  );
+
+  await run(
+    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      req.user.id,
+      current.person_id,
+      is_enabled ? 'enable' : 'disable',
+      JSON.stringify({ is_enabled: current.is_enabled }),
+      JSON.stringify({ is_enabled: is_enabled ? 1 : 0 })
+    ]
+  );
+
+  res.json({ ok: true });
+});
+
+// -- Notification endpoints --
+
+app.get("/api/notifications", auth, async (req, res) => {
+  const pageSize = Math.min(Number(req.query.pageSize || 50), 100);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+
+  const total = await get(
+    "SELECT COUNT(*) AS count FROM notifications WHERE user_id = ?",
+    [req.user.id]
+  );
+  const rows = await all(
+    `SELECT n.*, t.title AS ticket_title, t.status AS ticket_status
+     FROM notifications n
+     LEFT JOIN tickets t ON t.id = n.ticket_id
+     WHERE n.user_id = ?
+     ORDER BY n.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [req.user.id, pageSize, offset]
+  );
+  res.json({ page, pageSize, total: total?.count || 0, rows });
+});
+
+app.patch("/api/notifications/:id/read", auth, async (req, res) => {
+  const notification = await get(
+    "SELECT id, user_id FROM notifications WHERE id = ?",
+    [req.params.id]
+  );
+  if (!notification) return res.status(404).json({ message: "通知不存在" });
+  if (notification.user_id !== req.user.id) return res.status(403).json({ message: "只能操作自己的通知" });
+
+  await run("UPDATE notifications SET is_read = 1 WHERE id = ?", [req.params.id]);
+  res.json({ ok: true });
+});
+
+app.get("/api/notifications/unread-count", auth, async (req, res) => {
+  const row = await get(
+    "SELECT COUNT(*) AS count FROM notifications WHERE user_id = ? AND is_read = 0",
+    [req.user.id]
+  );
+  res.json({ count: row?.count || 0 });
 });
 
 app.patch("/api/admin/tickets/:id/publish", auth, adminOnly, async (req, res) => {
@@ -1317,9 +2216,10 @@ app.get("/api/public/typical-tickets", async (req, res) => {
 
 app.get("/api/public/ticket/:shareCode", async (req, res) => {
   const ticket = await get(
-    `SELECT t.*, p.name AS submitter_name, p.phone AS submitter_phone
+    `SELECT t.*, COALESCE(dp.name, u.name) AS submitter_name, COALESCE(dp.phone, u.phone) AS submitter_phone
      FROM tickets t
-     JOIN datahub_basic_persons p ON p.id = t.submitter_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
+     LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.share_code = ?`,
     [req.params.shareCode]
   );
@@ -1331,18 +2231,20 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
   }
 
   const replies = await all(
-    `SELECT r.*, p.name AS replier_name
+    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
      FROM replies r
-     JOIN datahub_basic_persons p ON p.id = r.replier_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
+     LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
      ORDER BY r.created_at ASC`,
     [ticket.id]
   );
   const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [ticket.id]);
   const transfers = await all(
-    `SELECT tr.*, operator.name AS operator_name
+    `SELECT tr.*, COALESCE(dp.name, u.name) AS operator_name
      FROM transfers tr
-     JOIN datahub_basic_persons operator ON operator.id = tr.operator_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = tr.operator_id
+     LEFT JOIN users u ON u.id = tr.operator_id
      WHERE tr.ticket_id = ?
      ORDER BY tr.created_at ASC`,
     [ticket.id]

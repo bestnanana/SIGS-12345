@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ChevronDown, UserRound } from "lucide-react";
+import { Bell, ChevronDown, UserRound } from "lucide-react";
 import { useLocation } from "react-router-dom";
+import { api } from "../api";
 import { useLanguage, useLocale, useLocaleNavigate, LocaleLink, switchLocalePath } from "../i18n";
+import { formatTime } from "../constants";
 
 const userNavItems = [
   { labelKey: "nav.home", to: "/" },
@@ -40,7 +42,12 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   const navigate = useLocaleNavigate();
   const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [notifLoading, setNotifLoading] = useState(false);
   const userMenuRef = useRef(null);
+  const notifRef = useRef(null);
 
   useEffect(() => {
     if (!userMenuOpen) return;
@@ -52,7 +59,59 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [userMenuOpen]);
+
+  // Click-outside handler for notification dropdown
+  useEffect(() => {
+    if (!notifOpen) return;
+    function handleClick(e) {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotifOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [notifOpen]);
+
+  // Load notifications when dropdown opens
+  async function loadNotifications() {
+    setNotifLoading(true);
+    try {
+      const res = await api.get("/notifications", { params: { pageSize: 10 }, skipAuthExpiredHandler: true });
+      setNotifications(res.data?.rows || []);
+    } catch (_) {
+      setNotifications([]);
+    } finally {
+      setNotifLoading(false);
+    }
+  }
+
+  // Mark notification as read and navigate to target_url
+  async function openNotification(notif) {
+    setNotifOpen(false);
+    try {
+      await api.patch(`/notifications/${notif.id}/read`, {}, { skipAuthExpiredHandler: true });
+      setUnreadCount((c) => Math.max(0, c - 1));
+      setNotifications((prev) => prev.map((n) => n.id === notif.id ? { ...n, is_read: 1 } : n));
+    } catch (_) { /* ignore */ }
+    navigate(notif.target_url.replace(/^\/cn/, "") || "/admin");
+  }
+
   const isAdminLike = user.role === "admin" || user.role === "super_admin" || user.role === "liaison";
+
+  // Poll unread notification count for admin users
+  useEffect(() => {
+    if (!isAdminLike) return;
+    let cancelled = false;
+    function fetchCount() {
+      api.get("/notifications/unread-count", { skipAuthExpiredHandler: true })
+        .then(res => { if (!cancelled) setUnreadCount(res.data?.count || 0); })
+        .catch(() => {});
+    }
+    fetchCount();
+    const timer = setInterval(fetchCount, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isAdminLike, user?.id]);
+
   const roleLabel = isAdminLike ? t(`role.${user.role}`) : t("role.user");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
   const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison";
@@ -105,6 +164,53 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             >
               {otherLocale === "en" ? "EN" : "中"}
             </a>
+            {isAdminLike && (
+              <div className="relative" ref={notifRef}>
+                <button
+                  type="button"
+                  onClick={() => { setNotifOpen((o) => !o); if (!notifOpen) loadNotifications(); }}
+                  className="relative flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/80 transition duration-200 hover:bg-white/20 hover:text-white"
+                  title={t("action.notifications")}
+                >
+                  <Bell size={18} />
+                  {unreadCount > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-tsinghua-800">
+                      {unreadCount > 99 ? "99+" : unreadCount}
+                    </span>
+                  )}
+                </button>
+                {notifOpen && (
+                  <div className="motion-popover absolute right-0 mt-3 w-80 rounded-xl border border-ai-border bg-white shadow-[0_12px_30px_rgba(17,17,17,0.10)]">
+                    <div className="flex items-center justify-between border-b border-ai-border px-3 py-2">
+                      <span className="text-sm font-semibold text-ai-title">{t("action.notifications")}</span>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto">
+                      {notifLoading ? (
+                        <div className="px-3 py-8 text-center text-sm text-ai-muted">加载中...</div>
+                      ) : notifications.length === 0 ? (
+                        <div className="px-3 py-8 text-center text-sm text-ai-muted">暂无通知</div>
+                      ) : (
+                        notifications.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => openNotification(item)}
+                            className={`w-full border-b border-ai-border/60 px-3 py-2.5 text-left transition duration-200 hover:bg-ai-bg ${
+                              !item.is_read ? "bg-ai-primary/[0.04]" : ""
+                            }`}
+                          >
+                            <div className={`text-sm leading-snug ${!item.is_read ? "font-semibold text-ai-title" : "text-ai-body"}`}>
+                              {item.message}
+                            </div>
+                            <div className="mt-1 text-xs text-ai-muted">{formatTime(item.created_at)}</div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="relative" ref={userMenuRef}>
               <button
                 onClick={() => setUserMenuOpen((open) => !open)}
