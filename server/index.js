@@ -1272,8 +1272,8 @@ app.get("/sso/logout", (req, res) => {
   oauthStates.clear();
   
   clearAuthCookies(res);
-  // 注销后重定向到应用首页，用户会自动触发 SSO 登录
-  const logoutUrl = `https://id.sigs.tsinghua.edu.cn/portal/sso/logout.html?redirectUrl=${encodeURIComponent(ssoLogoutRedirectUrl || 'http://10.103.0.148/')}`;
+  // 注销后重定向到 OAuth2 回调地址
+  const logoutUrl = `https://id.sigs.tsinghua.edu.cn/portal/sso/logout.html?redirectUrl=${encodeURIComponent('http://10.103.0.148/oauth2')}`;
   res.redirect(302, logoutUrl);
 });
 
