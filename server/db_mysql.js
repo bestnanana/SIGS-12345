@@ -80,6 +80,9 @@ async function initDb() {
       content TEXT NOT NULL,
       is_anonymous TINYINT(1) DEFAULT 0,
       submitter_id BIGINT NOT NULL,
+      submitter_union_id VARCHAR(191) DEFAULT NULL,
+      submitter_person_id VARCHAR(191) DEFAULT NULL,
+      submitter_name VARCHAR(191) DEFAULT NULL,
       status VARCHAR(32) DEFAULT 'pending',
       current_department VARCHAR(64) DEFAULT '党政办',
       is_published TINYINT(1) DEFAULT 0,
@@ -202,6 +205,9 @@ async function initDb() {
   try { await run("UPDATE tickets SET original_department = department WHERE original_department IS NULL"); } catch {}
   try { await run("ALTER TABLE transfers ADD COLUMN status VARCHAR(32) DEFAULT 'active'"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN share_code VARCHAR(64) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_union_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_person_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_name VARCHAR(191) DEFAULT NULL"); } catch {}
 
   await ensureDatahubPersonTables();
   await ensureFormConfigTables();

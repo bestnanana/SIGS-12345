@@ -1,5 +1,5 @@
 const { fetchBasicPersons } = require("./datahub");
-const { ensureDatahubPersonTables, run, upsertDatahubBasicPersons, disableAdminsForInactivePersons } = require("./db_mysql");
+const { ensureDatahubPersonTables, run, upsertDatahubBasicPersons, disableAdminsForInactivePersons } = require("./db_sqlite");
 const logger = require("./logger");
 
 async function syncBasicPersons(options = {}) {

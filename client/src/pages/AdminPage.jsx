@@ -43,6 +43,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [replySuccess, setReplySuccess] = useState("");
   const [adminPage, setAdminPage] = useState(1);
   const [adminTotal, setAdminTotal] = useState(0);
   const [serverStats, setServerStats] = useState(null);
@@ -207,8 +208,21 @@ export default function AdminPage() {
   }, []);
 
   useEffect(() => {
-    loadDetail(selectedId);
+    if (selectedId) {
+      loadDetail(selectedId);
+    } else {
+      setDetail(null);
+    }
   }, [selectedId]);
+
+  useEffect(() => {
+    if (detail) {
+      console.log("[DEBUG] detail.permission:", detail?.permission);
+      console.log("[DEBUG] user.role:", user?.role);
+      console.log("[DEBUG] selected?.permission:", selected?.permission);
+      console.log("[DEBUG] canHandleSelected:", canHandleSelected);
+    }
+  }, [detail, user, selected, canHandleSelected]);
 
   useEffect(() => {
     if (activeView === "analytics") {
@@ -230,6 +244,11 @@ export default function AdminPage() {
 
   function closeTicketModal() {
     setShowTicketModal(false);
+    setSelectedId(null);
+    setFiles([]);
+    setReply({ content: "", status: "completed" });
+    setError("");
+    setReplySuccess("");
   }
 
   async function handleTransfer(e) {
@@ -257,19 +276,30 @@ export default function AdminPage() {
 
   async function submitReply(e) {
     e.preventDefault();
-    if (!selectedId || !canHandleSelected) return;
+    if (!selectedId || !canHandleSelected) {
+      console.warn("[submitReply] blocked:", { selectedId, canHandleSelected });
+      return;
+    }
     setSubmitting(true);
+    setError("");
+    setReplySuccess("");
     try {
       const data = new FormData();
       data.append("content", reply.content);
       data.append("status", reply.status);
-      files.forEach((file) => data.append("attachments", file));
-      await api.post(`/admin/tickets/${selectedId}/replies`, data, uploadConfig);
+      if (files.length > 0) {
+        for (const f of files) data.append("attachments", f);
+      }
+      console.log("[submitReply] posting to", `/admin/tickets/${selectedId}/replies`, { content: reply.content, status: reply.status });
+      const res = await api.post(`/admin/tickets/${selectedId}/replies`, data, { headers: { "Content-Type": "multipart/form-data" } });
+      console.log("[submitReply] success:", res.data);
       setReply({ ...reply, content: "" });
       setFiles([]);
-      await loadTickets();
-      await loadDetail(selectedId);
+      setReplySuccess("处理结果已提交");
+      loadDetail(selectedId);
+      loadTickets();
     } catch (err) {
+      console.error("[submitReply] error:", err);
       setError(err.response?.data?.message || "回复提交失败");
     } finally {
       setSubmitting(false);
@@ -635,8 +665,8 @@ export default function AdminPage() {
 
     {/* Ticket Detail Modal */}
     {showTicketModal && selected ? (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={closeTicketModal}>
-        <div className="motion-popover w-full max-w-[900px] max-h-[90vh] overflow-y-auto rounded-[24px] border border-white/80 bg-white/95 shadow-[0_28px_80px_rgba(17,17,17,0.16)] backdrop-blur-2xl" onClick={e => e.stopPropagation()}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md" onClick={closeTicketModal}>
+        <div className="motion-popover w-full max-w-[900px] max-h-[90vh] overflow-y-auto rounded-[24px] border border-white/80 bg-white shadow-[0_28px_80px_rgba(17,17,17,0.16)]" onClick={e => e.stopPropagation()}>
           {/* Modal Header */}
           <div className="mesh-hero sticky top-0 z-10 border-b border-ai-border px-6 py-4">
             <div className="flex items-start justify-between gap-4">
@@ -761,6 +791,9 @@ export default function AdminPage() {
                       {submitting ? "提交中..." : "提交处理结果"}
                     </button>
                   </div>
+                  {replySuccess ? (
+                    <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700 ring-1 ring-emerald-200">{replySuccess}</div>
+                  ) : null}
                 </form>
               ) : null}
 

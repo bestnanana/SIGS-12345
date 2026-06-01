@@ -7,10 +7,8 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
   const { t } = useLanguage();
   const { locale } = useLocale();
   const [form, setForm] = useState({ union_id: "", password: "" });
-  const [ssoError, setSsoError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ssoLoading, setSsoLoading] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const transitionTimer = useRef(null);
 
@@ -37,23 +35,6 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
       setError(err.response?.data?.message || t("login.failed"));
       setLoading(false);
       setTransitioning(false);
-    }
-  }
-
-  async function startSsoLogin() {
-    setSsoError("");
-    setSsoLoading(true);
-    try {
-      localStorage.setItem("ssoLocale", locale);
-      const res = await api.get(`/authorize-url?locale=${locale}`, {
-        baseURL: "/sso",
-        skipAuthExpiredHandler: true
-      });
-      window.location.href = res.data.authorize_url;
-    } catch (err) {
-      setSsoError(err.response?.data?.message || t("login.ssoFailed"));
-    } finally {
-      setSsoLoading(false);
     }
   }
 
@@ -108,31 +89,6 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
               <div className="text-sm font-semibold text-ai-primary">{t("login.heading")}</div>
               <h2 className="mt-3 text-[34px] font-semibold tracking-tight text-ai-title">{t("login.welcome")}</h2>
               <p className="mt-2 text-sm leading-6 text-ai-body">{t("login.welcomeDesc")}</p>
-            </div>
-
-            <section className="mb-6 rounded-2xl border border-ai-primary/15 bg-ai-primary/5 p-4">
-              <div className="text-sm font-semibold text-ai-title">{t("login.ssoHeading")}</div>
-              <p className="mt-2 text-xs leading-5 text-ai-body">
-                {t("login.ssoDesc")}
-              </p>
-              <button
-                type="button"
-                onClick={startSsoLogin}
-                disabled={ssoLoading}
-                className="mt-3 flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-ai-primary px-4 text-sm font-semibold text-white transition duration-200 hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <ArrowRight size={16} />
-                {ssoLoading ? t("login.ssoRedirecting") : t("login.ssoButton")}
-              </button>
-              {ssoError ? (
-                <div className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs leading-5 text-red-700 ring-1 ring-red-100">{ssoError}</div>
-              ) : null}
-            </section>
-
-            <div className="mb-4 flex items-center gap-3">
-              <div className="h-px flex-1 bg-ai-border" />
-              <span className="text-xs text-ai-muted">后台管理人员登录</span>
-              <div className="h-px flex-1 bg-ai-border" />
             </div>
 
             <label className="mb-4 block">

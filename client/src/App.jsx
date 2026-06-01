@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { AUTH_EXPIRED_EVENT, api, clearAuthStorage } from "./api";
+import { AUTH_EXPIRED_EVENT, api, clearAuthStorage, getToken, getAuthSource, setToken } from "./api";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
 import HomePage from "./pages/HomePage";
@@ -32,7 +32,7 @@ function App() {
   const { locale } = useLocale();
   const [user, setUser] = useState(readSavedUser);
   const [viewRole, setViewRole] = useState(() => localStorage.getItem("viewRole") || "");
-  const [loading, setLoading] = useState(Boolean(localStorage.getItem("token")));
+  const [loading, setLoading] = useState(Boolean(getToken()));
   const [authMessage, setAuthMessage] = useState("");
   const location = useLocation();
   const navigate = useLocaleNavigate();
@@ -52,11 +52,23 @@ function App() {
 
   useEffect(() => {
     let ignore = false;
-    const token = localStorage.getItem("token");
-    if (!token) {
+    const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
+    const isLocalLogin = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
+
+    // /local/login page: don't redirect, let user log in
+    if (isLocalLogin) {
       setLoading(false);
-      return;
+      return () => { ignore = true; };
     }
+
+    const token = getToken();
+    if (!token) {
+      // No token → redirect to SSO login
+      setLoading(false);
+      window.location.href = `/sso/authorize-url?locale=${locale}`;
+      return () => { ignore = true; };
+    }
+
     api.get("/auth/me")
       .then((res) => {
         if (ignore) return;
@@ -78,10 +90,10 @@ function App() {
         if (!ignore) setLoading(false);
       });
     return () => { ignore = true; };
-  }, []);
+  }, [location.pathname]);
 
   function handleLogin(payload) {
-    localStorage.setItem("token", payload.token);
+    setToken(payload.token, payload.authSource);
     localStorage.setItem("user", JSON.stringify(payload.user));
     if (payload.authSource) localStorage.setItem("authSource", payload.authSource);
     localStorage.removeItem("viewRole");
@@ -97,7 +109,7 @@ function App() {
   }
 
   function handleLogout() {
-    const authSource = localStorage.getItem("authSource");
+    const authSource = getAuthSource();
     clearAuthStorage();
     setUser(null);
     setViewRole("");
@@ -124,7 +136,13 @@ function App() {
   }
 
   if (!user) {
-    return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
+    const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
+    const isLocalLogin = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
+    if (isLocalLogin) {
+      return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
+    }
+    // Should have been redirected to SSO by now; show loading
+    return <div className="flex min-h-screen items-center justify-center text-tsinghua-700">{t("common.loading")}</div>;
   }
 
   const isAdmin = isAdminRole(user.role) && viewRole !== "user";

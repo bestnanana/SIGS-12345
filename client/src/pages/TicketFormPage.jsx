@@ -99,9 +99,22 @@ export default function TicketFormPage({ user }) {
       const data = new FormData();
       Object.entries(form).forEach(([key, value]) => data.append(key, String(value)));
       files.forEach((file) => data.append("attachments", file));
+      const token = localStorage.getItem("token");
+      console.log("[TicketForm] submit", {
+        has_token: Boolean(token),
+        token_prefix: token ? token.slice(0, 30) : null,
+        token_length: token ? token.length : 0,
+        form_keys: Object.keys(form)
+      });
       const res = await api.post("/tickets", data, uploadConfig);
       navigate(`/tickets/${res.data.id}`);
     } catch (err) {
+      console.error("[TicketForm] submit_failed", {
+        status: err.response?.status,
+        data: err.response?.data,
+        message: err.message,
+        token_exists: Boolean(localStorage.getItem("token"))
+      });
       setError(err.response?.data?.message || "提交失败，请稍后重试");
     } finally {
       setSubmitting(false);
@@ -171,10 +184,10 @@ export default function TicketFormPage({ user }) {
             <select
               value={form.department}
               onChange={(e) => setForm({ ...form, department: e.target.value })}
-              className="soft-input w-full appearance-none pr-10 cursor-pointer"
+              className={`soft-input w-full appearance-none pr-10 cursor-pointer ${!form.department ? 'text-ai-muted' : ''}`}
               required
             >
-              <option value="">{t("form.unknownDept")}</option>
+              <option value="" disabled>{t("form.unknownDept")}</option>
               {Object.entries(departmentOptions).map(([type, depts]) => (
                 <optgroup key={type} label={type}>
                   {depts.map((d) => (

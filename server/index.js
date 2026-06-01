@@ -26,7 +26,7 @@ const {
   updateDepartment,
   deleteDepartment,
   disableAdminsForInactivePersons
-} = require("./db_mysql");
+} = require("./db_sqlite");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
 const { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl } = require("./portal-todo");
@@ -35,7 +35,7 @@ const logger = require("./logger");
 const app = express();
 const defaultPort = process.env.NODE_ENV === "production" ? 80 : 3001;
 const port = process.env.PORT || defaultPort;
-const host = process.env.HOST || "127.0.0.1";
+const host = process.env.HOST || "0.0.0.0";
 const rawJwtSecret = process.env.JWT_SECRET;
 const isProduction = process.env.NODE_ENV === "production";
 const jwtSecret = rawJwtSecret || (isProduction ? null : "dev-secret");
@@ -123,16 +123,24 @@ function createSession(res, user, options = {}) {
   const authSource = options.authSource || "local";
   const sessionId = crypto.randomBytes(32).toString("base64url");
   const expiresAt = Date.now() + sessionMaxAgeMs;
+  const accessToken = authSource === "sso" ? extractSsoAccessToken(options.tokenData || {}) : null;
   sessions.set(sessionId, {
     loginUser: publicUser(user),
     authSource,
-    accessToken: authSource === "sso" ? extractSsoAccessToken(options.tokenData || {}) : null,
+    accessToken,
     expiresAt
+  });
+  logger.info("session_created", {
+    session_id_prefix: sessionId.slice(0, 8),
+    auth_source: authSource,
+    user_id: user.id,
+    has_access_token: Boolean(accessToken),
+    cookie_secure: process.env.COOKIE_SECURE === "true"
   });
   res.cookie(sessionCookieName, sessionId, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.COOKIE_SECURE === "true",
     maxAge: sessionMaxAgeMs,
     path: "/"
   });
@@ -143,7 +151,7 @@ function clearAuthCookies(res) {
   const cookieOptions = {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.COOKIE_SECURE === "true",
     path: "/"
   };
   res.clearCookie(sessionCookieName, cookieOptions);
@@ -229,6 +237,13 @@ async function loadSession(req, res) {
   if (!session?.loginUser || session.expiresAt <= Date.now()) {
     sessions.delete(sessionId);
     if (res) clearAuthCookies(res);
+    logger.warn("loadSession_expired_or_missing", {
+      request_id: req.requestId,
+      path: req.path,
+      session_found: Boolean(session),
+      has_user: Boolean(session?.loginUser),
+      expired: session ? session.expiresAt <= Date.now() : null
+    });
     return null;
   }
   if (session.authSource !== "sso") {
@@ -238,6 +253,11 @@ async function loadSession(req, res) {
   if (!session.accessToken) {
     sessions.delete(sessionId);
     if (res) clearAuthCookies(res);
+    logger.warn("loadSession_no_access_token", {
+      request_id: req.requestId,
+      path: req.path,
+      user_id: session.loginUser?.id
+    });
     return null;
   }
   const now = Date.now();
@@ -249,11 +269,14 @@ async function loadSession(req, res) {
     } catch (error) {
       sessions.delete(sessionId);
       if (res) clearAuthCookies(res);
-      logger.warn("sso_session_access_token_invalid", {
+      logger.warn("loadSession_sso_token_invalid", {
         request_id: req.requestId,
+        path: req.path,
+        user_id: session.loginUser?.id,
         sso_ret: error.ssoRet ?? "",
         message: error.message,
-        sso_response: sanitizeSsoResponse(error.ssoResponse)
+        sso_response: sanitizeSsoResponse(error.ssoResponse),
+        time_since_last_check: session.lastSsoCheck ? now - session.lastSsoCheck : null
       });
       return null;
     }
@@ -328,7 +351,7 @@ function createOauthState(res, locale = "cn") {
   res.cookie(ssoStateCookieName, state, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.COOKIE_SECURE === "true",
     maxAge: ssoStateMaxAgeMs,
     path: "/"
   });
@@ -545,8 +568,15 @@ async function handleSsoCallback(req, res) {
       user_id: user.id,
       union_id: user.union_id
     });
+    const jwtToken = signUser(user);
+    logger.info("sso_callback_jwt_signed", {
+      request_id: req.requestId,
+      user_id: user.id,
+      jwt_prefix: jwtToken.slice(0, 30),
+      jwt_length: jwtToken.length
+    });
     return res.type("html").set("Cache-Control", "no-store").send(renderSsoLoginPage({
-      token: signUser(user),
+      token: jwtToken,
       user: publicUser(user),
       redirect: `/${locale}/`,
       authSource: "sso"
@@ -588,16 +618,6 @@ function isLocalLoginWhitelist(req) {
   );
 }
 
-app.get("/oauth2", handleSsoCallback);
-app.get("/sso/callback", handleSsoCallback);
-
-app.get("/", (req, res, next) => {
-  if (req.query?.code || req.query?.state) {
-    return handleSsoCallback(req, res);
-  }
-  return res.redirect(302, "/cn/");
-});
-
 function isPublicRoute(req) {
   const pathname = req.path;
   return (
@@ -627,15 +647,24 @@ async function globalLoginInterceptor(req, res, next) {
         return next();
       }
     } catch (error) {
-      // Token invalid or user not found, fall through to redirect.
+      // Token invalid or user not found, fall through.
     }
   }
-  const locale = (req.path.match(/^\/(cn|en)\//) || [])[1] || "cn";
-  const authorizeUrl = ssoAuthorizeUrl(req, res, locale);
-  return res.redirect(302, authorizeUrl);
+  // SPA route: let frontend handle auth check and redirect logic
+  return next();
 }
 
 app.use(globalLoginInterceptor);
+
+app.get("/oauth2", handleSsoCallback);
+app.get("/sso/callback", handleSsoCallback);
+
+app.get("/", (req, res, next) => {
+  if (req.query?.code || req.query?.state) {
+    return handleSsoCallback(req, res);
+  }
+  return res.redirect(302, "/cn/");
+});
 
 function publicUser(user) {
   if (!user) return null;
@@ -660,11 +689,11 @@ function publicHandler(user) {
   };
 }
 
-function signUser(user) {
+function signUser(user, expiresIn) {
   return jwt.sign(
     { id: user.id, role: user.role || "user", department: user.department },
     jwtSecret,
-    { expiresIn: jwtExpiresIn }
+    { expiresIn: expiresIn || jwtExpiresIn }
   );
 }
 
@@ -678,16 +707,46 @@ async function auth(req, res, next) {
   if (session?.loginUser) {
     req.session = session;
     req.user = session.loginUser;
+    logger.info("auth_ok_session", {
+      request_id: req.requestId,
+      method: req.method,
+      path: req.path,
+      user_id: session.loginUser.id
+    });
     return next();
   }
 
   const token = tokenFromRequest(req);
-  if (!token) return res.status(401).json({ code: "TOKEN_MISSING", message: "请先登录" });
+  if (!token) {
+    logger.warn("auth_fail_no_token", {
+      request_id: req.requestId,
+      method: req.method,
+      path: req.path,
+      has_session_cookie: Boolean(parseCookies(req)[sessionCookieName]),
+      session_found: Boolean(session),
+      session_has_user: Boolean(session?.loginUser)
+    });
+    return res.status(401).json({ code: "TOKEN_MISSING", message: "请先登录" });
+  }
   try {
     req.user = jwt.verify(token, jwtSecret);
+    logger.info("auth_ok_jwt", {
+      request_id: req.requestId,
+      method: req.method,
+      path: req.path,
+      user_id: req.user.id
+    });
     next();
   } catch (error) {
     const expired = error.name === "TokenExpiredError";
+    logger.warn("auth_fail_jwt_invalid", {
+      request_id: req.requestId,
+      method: req.method,
+      path: req.path,
+      error_name: error.name,
+      error_message: error.message,
+      token_prefix: token.slice(0, 20)
+    });
     res.status(401).json({
       code: expired ? "TOKEN_EXPIRED" : "TOKEN_INVALID",
       message: expired ? "登录已过期，请重新登录" : "登录已失效，请重新登录"
@@ -713,61 +772,64 @@ async function getTicketPermission(ticketId, viewer) {
   );
   if (!ticket) return null;
 
-  // 提交者本人可查看
-  if (String(ticket.submitter_id) === String(viewer.id)) return 'view';
-
   // 超级管理员可处理
   if (viewer.role === 'super_admin') return 'handle';
 
-  // 普通用户（非管理员、非提交者）
-  if (!isAdminLike(viewer)) return null;
-
-  // 优先检查 department_admins 多部门授权
-  const deptAdmin = await get(
-    'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-    [viewer.id]
-  );
-
-  if (deptAdmin) {
-    const managedDepts = await all(
-      'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-      [deptAdmin.id]
+  // 管理员：优先检查部门权限（管理员可能同时也是提交者）
+  if (isAdminLike(viewer)) {
+    // 优先检查 department_admins 多部门授权
+    const deptAdmin = await get(
+      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
+      [String(viewer.id)]
     );
-    const managedNames = managedDepts.map(d => d.department_name);
 
-    if (managedNames.includes(ticket.current_department)) {
-      return deptAdmin.role_type === 'observer' ? 'view' : 'handle';
+    if (deptAdmin) {
+      const managedDepts = await all(
+        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
+        [deptAdmin.id]
+      );
+      const managedNames = managedDepts.map(d => d.department_name);
+
+      if (managedNames.includes(ticket.current_department)) {
+        return deptAdmin.role_type === 'observer' ? 'view' : 'handle';
+      }
+      if (managedNames.includes(ticket.original_department)) return 'view';
+
+      const inTransferChain = await get(
+        `SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department IN (${managedNames.map(() => '?').join(',')}) OR to_department IN (${managedNames.map(() => '?').join(',')})) LIMIT 1`,
+        [ticketId, ...managedNames, ...managedNames]
+      );
+      if (inTransferChain) return 'view';
     }
-    if (managedNames.includes(ticket.original_department)) return 'view';
 
-    const inTransferChain = await get(
-      `SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department IN (${managedNames.map(() => '?').join(',')}) OR to_department IN (${managedNames.map(() => '?').join(',')})) LIMIT 1`,
-      [ticketId, ...managedNames, ...managedNames]
-    );
-    if (inTransferChain) return 'view';
-    return null;
+    // 回退：原有单部门逻辑
+    const dept = viewer.department;
+    if (dept) {
+      if (dept === ticket.current_department) return 'handle';
+      if (dept === ticket.original_department) return 'view';
+
+      const inTransferChain = await get(
+        'SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department = ? OR to_department = ?) LIMIT 1',
+        [ticketId, dept, dept]
+      );
+      if (inTransferChain) return 'view';
+    }
   }
 
-  // 回退：原有单部门逻辑
-  const dept = viewer.department;
-  if (!dept) return null;
-
-  if (dept === ticket.current_department) return 'handle';
-  if (dept === ticket.original_department) return 'view';
-
-  const inTransferChain = await get(
-    'SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department = ? OR to_department = ?) LIMIT 1',
-    [ticketId, dept, dept]
-  );
-  if (inTransferChain) return 'view';
+  // 提交者本人可查看（管理员已检查过部门权限，此处为兜底）
+  if (String(ticket.submitter_id) === String(viewer.id)) return 'view';
 
   return null;
 }
 
 async function loadPerson(id) {
+  // 优先查 token_persons（SSO 用户）
+  const tokenPerson = await get("SELECT * FROM token_persons WHERE id = ?", [String(id)]);
+  if (tokenPerson) return tokenPerson;
+  // 查 datahub（同步过来的人员数据）
   const person = await get("SELECT * FROM datahub_basic_persons WHERE id = ?", [String(id)]);
   if (person) return person;
-  // Fallback: check users table for local accounts
+  // Fallback: 本地账号
   const user = await get("SELECT * FROM users WHERE id = ?", [id]);
   if (user) {
     return {
@@ -793,36 +855,31 @@ async function loadPerson(id) {
 
 async function loadOrCreateSsoPerson(ssoUser) {
   await ensureDatahubPersonTables(); await ensureFormConfigTables(); await seedDefaultFormOptions(); await seedDepartments();
-  const existing = await get(
-    "SELECT * FROM datahub_basic_persons WHERE union_id = ? OR id = ? LIMIT 1",
-    [ssoUser.uid, ssoUser.personId || ssoUser.uid]
-  );
+  const id = ssoUser.personId || `sso_${ssoUser.uid}`;
+
+  // 检查 token_persons 是否已有此人
+  const existing = await get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
   if (existing) {
-    // Sync role from users if this person is a registered local admin
-    const adminRow = await get("SELECT role, department FROM users WHERE union_id = ?", [ssoUser.uid]);
-    const role = adminRow?.role || existing.role || "user";
-    const dept = adminRow?.department || existing.department;
     await run(
-      `UPDATE datahub_basic_persons
-       SET union_id = ?, name = ?, type = COALESCE(NULLIF(?, ''), type),
-           role = ?, department = ?,
+      `UPDATE token_persons
+       SET name = ?, person_type = COALESCE(NULLIF(?, ''), person_type),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [ssoUser.uid, ssoUser.name, ssoUser.personType, role, dept, existing.id]
+       WHERE uid = ?`,
+      [ssoUser.name, ssoUser.personType, ssoUser.uid]
     );
-    return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [existing.id]);
+    return get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
   }
 
-  const id = ssoUser.personId || `sso_${ssoUser.uid}`;
-  const adminRow = await get("SELECT role, department FROM users WHERE union_id = ?", [ssoUser.uid]);
-  const role = adminRow?.role || "user";
-  const dept = adminRow?.department || null;
+  const role = "user";
+  const dept = null;
+  const phone = null;
+
   await run(
-    `INSERT INTO datahub_basic_persons (id, union_id, username, name, type, role, department, raw_json, updated_at)
+    `INSERT INTO token_persons (id, uid, name, person_type, department, role, phone, raw_json, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [id, ssoUser.uid, ssoUser.uid, ssoUser.name, ssoUser.personType, role, dept, JSON.stringify({ sso_person_id: ssoUser.personId })]
+    [id, ssoUser.uid, ssoUser.name, ssoUser.personType, dept, role, phone, JSON.stringify(ssoUser.raw || {})]
   );
-  return get("SELECT * FROM datahub_basic_persons WHERE id = ?", [id]);
+  return get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
 }
 
 async function adminOnly(req, res, next) {
@@ -836,7 +893,7 @@ async function adminOnly(req, res, next) {
     // 检查 department_admins 授权表
     const deptAdmin = await get(
       'SELECT role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [req.user.id]
+      [String(req.user.id)]
     );
     if (deptAdmin) {
       req.user.role = user?.role || 'admin';
@@ -897,9 +954,10 @@ async function saveFiles(files, ticketId = null, replyId = null) {
 async function ticketDetails(id, viewer) {
   const ticket = await get(
     `SELECT t.*,
-            COALESCE(dp.name, u.name) AS submitter_name,
-            COALESCE(dp.phone, u.phone) AS submitter_phone
+            COALESCE(tp.name, dp.name, u.name) AS submitter_name,
+            COALESCE(tp.phone, dp.phone, u.phone) AS submitter_phone
      FROM tickets t
+     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.id = ?`,
@@ -923,8 +981,9 @@ async function ticketDetails(id, viewer) {
   }
 
   const replies = await all(
-    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
+    `SELECT r.*, COALESCE(tp.name, dp.name, u.name) AS replier_name
      FROM replies r
+     LEFT JOIN token_persons tp ON tp.id = r.replier_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
      LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
@@ -941,8 +1000,9 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   const satisfaction = await get(
-    `SELECT s.*, COALESCE(dp.name, u.name) AS user_name
+    `SELECT s.*, COALESCE(tp.name, dp.name, u.name) AS user_name
      FROM satisfaction_surveys s
+     LEFT JOIN token_persons tp ON tp.id = s.user_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = s.user_id
      LEFT JOIN users u ON u.id = s.user_id
      WHERE s.ticket_id = ?`,
@@ -951,17 +1011,17 @@ async function ticketDetails(id, viewer) {
   const deptName = ticket.current_department || ticket.department || "党政办";
   const currentHandler = await get(
     `SELECT id, name, department FROM (
-       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
+       SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
        FROM datahub_basic_persons p
        WHERE p.role IN ('admin', 'super_admin', 'liaison') AND p.department = ?
        UNION
-       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
+       SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
        FROM datahub_basic_persons p
        JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
        JOIN department_admin_departments dad ON dad.admin_id = da.id
        WHERE dad.department_name = ?
        UNION ALL
-       SELECT CAST(id AS CHAR) AS id, name, department FROM users
+       SELECT CAST(id AS TEXT) AS id, name, department FROM users
        WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
      ) AS handlers ORDER BY id ASC LIMIT 1`,
     [deptName, deptName, deptName]
@@ -1027,10 +1087,10 @@ app.post("/local/doLogin", authLimiter, async (req, res) => {
   });
   createSession(res, user, { authSource: "local" });
   res.json({
-    token: signUser(user),
-    expires_in: jwtExpiresIn,
+    token: signUser(user, "24h"),
+    expires_in: "24h",
     user: publicUser(user),
-    authSource: "local"
+    authSource: "native"
   });
 });
 
@@ -1296,6 +1356,7 @@ app.get("/api/tickets", auth, async (req, res) => {
 });
 
 app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) => {
+try {
   const { title, field, department, content, is_anonymous, phone } = req.body;
   if (!title || !field || !content) return res.status(400).json({ message: "请填写标题、事项领域和内容" });
 
@@ -1305,13 +1366,22 @@ app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) 
   const targetDept = isUnknownDept ? DEFAULT_DEPT : department;
 
   if (!isUnknownDept && !(await isValidDepartment(targetDept))) return res.status(400).json({ message: "请选择有效部门" });
-  if (phone) await run("UPDATE datahub_basic_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
+  if (phone) await run("UPDATE token_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
+
+  // Look up submitter's person info for storing on ticket
+  const submitterPersonRow = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [req.user.id, req.user.id]).catch(() => null);
+  const submitterDatahubRow = submitterPersonRow?.union_id
+    ? await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE union_id = ?', [submitterPersonRow.union_id])
+    : await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE id = ?', [req.user.id]);
+  const submitterUnionId = submitterDatahubRow?.union_id || null;
+  const submitterPersonId = submitterDatahubRow?.id || req.user.id;
+  const submitterName = req.user.name || submitterDatahubRow?.name || null;
 
   const shareCode = crypto.randomBytes(12).toString("base64url");
   const result = await run(
-    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, status, share_code)
-     VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, shareCode]
+    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, submitter_union_id, submitter_person_id, submitter_name, status, share_code)
+     VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, submitterUnionId, submitterPersonId, submitterName, shareCode]
   );
   await saveFiles(req.files, result.insertId, null);
 
@@ -1348,25 +1418,44 @@ app.post("/api/tickets", auth, upload.array("attachments", 8), async (req, res) 
   }
 
   // Portal todo for submitter
-  const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [req.user.id, req.user.id]);
-  const submitterDatahub = submitterPerson?.union_id
-    ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
-    : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [req.user.id]);
-  if (submitterDatahub?.id) {
+  if (submitterDatahubRow?.id) {
     pushPortalTodo({
       id: buildTodoId(result.insertId, 'submitter'),
       name: `【${title}】-待您处理`,
       url: buildSiteUrl(`/cn/tickets/${result.insertId}`),
-      principalPersonId: submitterDatahub.id
+      principalPersonId: submitterDatahubRow.id
     }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, type: 'submitter', message: err.message }));
   }
 
   res.status(201).json({ id: result.insertId, share_code: shareCode });
+} catch (err) {
+  console.error('POST /api/tickets error:', err);
+  res.status(500).json({ message: "提交失败: " + err.message });
+}
 });
 
 app.get("/api/tickets/:id", auth, async (req, res) => {
   const details = await ticketDetails(req.params.id, req.user);
   if (!details) return res.status(404).json({ message: "事项不存在" });
+
+  // When submitter views the ticket and there are replies or it's completed, complete their portal todo
+  if (String(details.submitter_id) === String(req.user.id)) {
+    const hasReplies = (details.replies && details.replies.length > 0) || details.status === 'completed';
+    if (hasReplies) {
+      const submitterPerson = await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [req.user.id]).catch(() => null);
+      const submitterUnionId = details.submitter_union_id;
+      const submitterPersonRow = submitterUnionId
+        ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterUnionId]).catch(() => null)
+        : submitterPerson;
+      if (submitterPersonRow?.id) {
+        const todoId = buildTodoId(req.params.id, 'submitter');
+        completePortalTodo(todoId, submitterPersonRow.id).catch(err =>
+          logger.warn('portal_todo_complete_failed', { ticket_id: req.params.id, type: 'submitter', message: err.message })
+        );
+      }
+    }
+  }
+
   res.json(details);
 });
 
@@ -1380,7 +1469,7 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
   if (comment.length > 500) return res.status(400).json({ message: "评价内容不能超过 500 字" });
   const ticket = await get("SELECT id, submitter_id, status FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  if (ticket.submitter_id !== req.user.id) return res.status(403).json({ message: "只有事项发起人可以进行满意度评价" });
+  if (String(ticket.submitter_id) !== String(req.user.id)) return res.status(403).json({ message: "只有事项发起人可以进行满意度评价" });
   if (ticket.status !== "completed") return res.status(400).json({ message: "事项处理完成后才可以评价" });
   const existingSurvey = await get("SELECT id FROM satisfaction_surveys WHERE ticket_id = ?", [req.params.id]);
   if (existingSurvey) return res.status(409).json({ message: "该事项已提交满意度评价，不能重复评价" });
@@ -1401,7 +1490,7 @@ app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
   if (!isGlobalAdmin) {
     const deptAdmin = await get(
       'SELECT id FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [user.id]
+      [String(user.id)]
     );
     if (deptAdmin) {
       const managedDepts = await all(
@@ -1496,7 +1585,7 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
     // 优先检查 department_admins 多部门授权
     const deptAdmin = await get(
       'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [user.id]
+      [String(user.id)]
     );
 
     if (deptAdmin) {
@@ -1543,7 +1632,7 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   if (!isGlobalAdmin) {
     const deptAdmin2 = await get(
       'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [user.id]
+      [String(user.id)]
     );
     if (deptAdmin2 && deptAdmin2.role_type !== 'observer') {
       const managedDepts2 = await all(
@@ -1558,14 +1647,15 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
 
   const rows = await all(
     `SELECT t.*,
-            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(dp.name, u.name) END AS submitter_name,
-            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(dp.phone, u.phone) END AS submitter_phone,
+            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(tp.name, dp.name, u.name) END AS submitter_name,
+            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(tp.phone, dp.phone, u.phone) END AS submitter_phone,
             s.score AS satisfaction_score,
             s.comment AS satisfaction_comment,
             s.updated_at AS satisfaction_updated_at,
             COUNT(a.id) AS attachment_count,
             ${permissionExpr} AS permission
      FROM tickets t
+     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      LEFT JOIN attachments a ON a.ticket_id = t.id
@@ -1663,7 +1753,7 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   // 检查转办目标限制
   const deptAdmin = await get(
     'SELECT allowed_transfer_targets FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-    [req.user.id]
+    [String(req.user.id)]
   );
   if (deptAdmin?.allowed_transfer_targets) {
     const allowed = JSON.parse(deptAdmin.allowed_transfer_targets);
@@ -1806,7 +1896,7 @@ app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
 
   const deptAdmin = await get(
     'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-    [req.user.id]
+    [String(req.user.id)]
   );
   if (!deptAdmin) {
     return res.json({ departments: [], role_type: null, is_super_admin: false });
@@ -1901,7 +1991,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
 
   const conditions = [];
   if (keyword) {
-    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.department LIKE ? OR u.name LIKE ? OR u.department LIKE ? OR CAST(u.id AS CHAR) LIKE ?)");
+    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.department LIKE ? OR u.name LIKE ? OR u.department LIKE ? OR CAST(u.id AS TEXT) LIKE ?)");
     const like = `%${keyword}%`;
     params.push(like, like, like, like, like, like);
   }
@@ -1920,7 +2010,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   const countRow = await get(
     `SELECT COUNT(*) AS count FROM department_admins da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}`,
     params
   );
@@ -1934,7 +2024,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
             p.union_id AS person_union_id
      FROM department_admins da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}
      ORDER BY da.updated_at DESC
      LIMIT ? OFFSET ?`,
@@ -1964,7 +2054,7 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
             p.union_id AS person_union_id
      FROM department_admins da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS CHAR) = da.person_id
+     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      WHERE da.id = ?`,
     [req.params.id]
   );
@@ -2216,8 +2306,9 @@ app.get("/api/public/typical-tickets", async (req, res) => {
 
 app.get("/api/public/ticket/:shareCode", async (req, res) => {
   const ticket = await get(
-    `SELECT t.*, COALESCE(dp.name, u.name) AS submitter_name, COALESCE(dp.phone, u.phone) AS submitter_phone
+    `SELECT t.*, COALESCE(tp.name, dp.name, u.name) AS submitter_name, COALESCE(tp.phone, dp.phone, u.phone) AS submitter_phone
      FROM tickets t
+     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.share_code = ?`,
@@ -2231,8 +2322,9 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
   }
 
   const replies = await all(
-    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
+    `SELECT r.*, COALESCE(tp.name, dp.name, u.name) AS replier_name
      FROM replies r
+     LEFT JOIN token_persons tp ON tp.id = r.replier_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
      LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
@@ -2241,8 +2333,9 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
   );
   const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [ticket.id]);
   const transfers = await all(
-    `SELECT tr.*, COALESCE(dp.name, u.name) AS operator_name
+    `SELECT tr.*, COALESCE(tp.name, dp.name, u.name) AS operator_name
      FROM transfers tr
+     LEFT JOIN token_persons tp ON tp.id = tr.operator_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = tr.operator_id
      LEFT JOIN users u ON u.id = tr.operator_id
      WHERE tr.ticket_id = ?
@@ -2302,7 +2395,6 @@ initDb()
     const server = app.listen(port, host, () => {
       logger.info("server_started", { host, port });
       console.log(`API server running at http://${host}:${port}`);
-      console.log("Seed accounts: student/123456, admin/123456");
     });
     server.keepAliveTimeout = 65 * 1000;
     server.headersTimeout = 70 * 1000;
