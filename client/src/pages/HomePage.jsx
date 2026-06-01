@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowRight, ClipboardList } from "lucide-react";
+import { AlertCircle, ArrowRight, ClipboardList, FileText, Clock, CheckCircle2 } from "lucide-react";
 import { api } from "../api";
 import TypicalIssuesPanel from "../components/TypicalIssuesPanel";
 import { formatTime } from "../constants";
@@ -45,80 +45,164 @@ export default function HomePage({ user }) {
     [tickets]
   );
 
+  const completedTickets = useMemo(
+    () => tickets.filter((ticket) => toUserStatusKey(ticket.status) === "handled"),
+    [tickets]
+  );
+
   return (
     <div className="space-y-6 sm:space-y-8">
-      <section className="grid min-w-0 gap-5 lg:grid-cols-[340px_minmax(0,1fr)] lg:gap-6">
-        <div className="app-card">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <h2 className="text-xl font-semibold text-ai-title">{t("home.myTickets")}</h2>
-              <p className="mt-2 text-sm leading-6 text-ai-body">{t("home.myTicketsDesc")}</p>
-            </div>
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-ai-primary/10 text-ai-primary">
-              <ClipboardList size={22} />
-            </div>
-          </div>
-          <div className="mt-8 text-[44px] font-semibold leading-none tracking-tight text-ai-title">
-            {loadingTickets ? "--" : tickets.length}
-          </div>
-          <LocaleLink to="/tickets" className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
-            {t("home.enterMyTickets")}
-            <ArrowRight size={16} />
-          </LocaleLink>
-        </div>
-
-        <div className="app-card min-w-0">
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 ring-1 ring-amber-100">
-                <AlertCircle size={20} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-xl font-semibold text-ai-title">{t("home.unresolved")}</h2>
-              </div>
-            </div>
-            <span className="rounded-full bg-ai-primary/10 px-3 py-1 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/10">
-              {loadingTickets ? t("common.loading") : t("common.items", { count: unresolvedTickets.length })}
-            </span>
-          </div>
-
-          {ticketsError ? (
-            <div className="rounded-2xl bg-amber-50 px-4 py-5 text-sm text-amber-800 ring-1 ring-amber-100">{ticketsError}</div>
-          ) : loadingTickets ? (
-            <div className="rounded-2xl bg-[#FAFAFC] px-4 py-8 text-center text-sm text-ai-body ring-1 ring-ai-border">{t("home.ticketsLoading")}</div>
-          ) : unresolvedTickets.length === 0 ? (
-            <div className="rounded-2xl bg-[#FAFAFC] px-4 py-8 text-center text-sm text-ai-body ring-1 ring-ai-border">{t("home.noUnresolved")}</div>
-          ) : (
-            <div className="space-y-3">
-              {unresolvedTickets.slice(0, 4).map((ticket) => {
-                const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
-                return (
-                  <LocaleLink
-                    key={ticket.id}
-                    to={`/tickets/${ticket.id}`}
-                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-ai-border bg-[#FAFAFC] px-4 py-3 transition duration-200 hover:-translate-y-0.5 hover:border-ai-primary/20 hover:bg-white hover:shadow-[0_12px_28px_rgba(0,0,0,0.05)]"
-                  >
-                    <div className="min-w-0">
-                      <div className="max-w-full truncate font-semibold text-ai-title">{ticket.title}</div>
-                      <div className="mt-1 text-xs text-ai-muted">
-                        #{String(ticket.id).padStart(6, "0")} · {formatTime(ticket.created_at, dateLocale)}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center justify-end gap-2">
-                      <span className={`hidden items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ring-1 sm:inline-flex ${status.badgeClassName || status.className}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${status.dotClassName || "bg-current"}`} />
-                        {status.label}
-                      </span>
-                      <ArrowRight size={16} className="text-ai-primary" />
-                    </div>
-                  </LocaleLink>
-                );
-              })}
-            </div>
-          )}
+      {/* 欢迎区域 */}
+      <section className="mesh-hero rounded-2xl p-6 sm:p-8">
+        <div className="relative z-10">
+          <h1 className="text-2xl font-bold text-ai-title sm:text-3xl">
+            {t("nav.home")}
+          </h1>
+          <p className="mt-2 text-sm text-ai-body sm:text-base">
+            {t("home.myTicketsDesc")}
+          </p>
         </div>
       </section>
 
+      {/* 统计卡片 */}
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-5">
+        {/* 我的事项总数 */}
+        <div className="app-card app-card-hover group">
+          <div className="flex items-start justify-between">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-tsinghua-100 to-tsinghua-200 text-tsinghua-700 transition-transform duration-300 group-hover:scale-110">
+              <FileText size={22} />
+            </div>
+            <span className="ai-chip">
+              {t("home.myTickets")}
+            </span>
+          </div>
+          <div className="mt-4 text-3xl font-bold tracking-tight text-ai-title">
+            {loadingTickets ? (
+              <div className="h-8 w-16 animate-pulse rounded-lg bg-ai-bg" />
+            ) : (
+              tickets.length
+            )}
+          </div>
+          <LocaleLink 
+            to="/tickets" 
+            className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-ai-primary transition-all duration-300 hover:gap-2.5"
+          >
+            {t("home.enterMyTickets")}
+            <ArrowRight size={15} />
+          </LocaleLink>
+        </div>
+
+        {/* 待处理事项 */}
+        <div className="app-card app-card-hover group">
+          <div className="flex items-start justify-between">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-100 to-amber-200 text-amber-700 transition-transform duration-300 group-hover:scale-110">
+              <Clock size={22} />
+            </div>
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-600 ring-1 ring-amber-200">
+              {t("home.unresolved")}
+            </span>
+          </div>
+          <div className="mt-4 text-3xl font-bold tracking-tight text-ai-title">
+            {loadingTickets ? (
+              <div className="h-8 w-16 animate-pulse rounded-lg bg-ai-bg" />
+            ) : (
+              unresolvedTickets.length
+            )}
+          </div>
+          <p className="mt-3 text-sm text-ai-muted">
+            {loadingTickets ? t("common.loading") : t("common.items", { count: unresolvedTickets.length })}
+          </p>
+        </div>
+
+        {/* 已完成事项 */}
+        <div className="app-card app-card-hover group">
+          <div className="flex items-start justify-between">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-green-100 to-green-200 text-green-700 transition-transform duration-300 group-hover:scale-110">
+              <CheckCircle2 size={22} />
+            </div>
+            <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-600 ring-1 ring-green-200">
+              已完成
+            </span>
+          </div>
+          <div className="mt-4 text-3xl font-bold tracking-tight text-ai-title">
+            {loadingTickets ? (
+              <div className="h-8 w-16 animate-pulse rounded-lg bg-ai-bg" />
+            ) : (
+              completedTickets.length
+            )}
+          </div>
+          <p className="mt-3 text-sm text-ai-muted">
+            {loadingTickets ? t("common.loading") : `完成率 ${tickets.length > 0 ? Math.round((completedTickets.length / tickets.length) * 100) : 0}%`}
+          </p>
+        </div>
+      </section>
+
+      {/* 待处理事项列表 */}
+      <section className="app-card">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+              <AlertCircle size={20} />
+            </div>
+            <h2 className="text-lg font-semibold text-ai-title">{t("home.unresolved")}</h2>
+          </div>
+        </div>
+
+        {ticketsError ? (
+          <div className="rounded-xl bg-red-50 px-4 py-4 text-sm text-red-600 ring-1 ring-red-200">
+            {ticketsError}
+          </div>
+        ) : loadingTickets ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="animate-pulse rounded-xl bg-ai-bg p-4">
+                <div className="h-4 w-3/4 rounded bg-ai-border" />
+                <div className="mt-2 h-3 w-1/2 rounded bg-ai-border" />
+              </div>
+            ))}
+          </div>
+        ) : unresolvedTickets.length === 0 ? (
+          <div className="rounded-xl bg-ai-bg px-4 py-12 text-center">
+            <CheckCircle2 size={48} className="mx-auto mb-3 text-green-400" />
+            <p className="text-sm font-medium text-ai-body">{t("home.noUnresolved")}</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {unresolvedTickets.slice(0, 5).map((ticket, index) => {
+              const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
+              return (
+                <LocaleLink
+                  key={ticket.id}
+                  to={`/tickets/${ticket.id}`}
+                  className="group flex items-center justify-between rounded-xl border border-ai-border bg-white p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-ai-primary/20 hover:shadow-card-hover"
+                  style={{ animationDelay: `${index * 50}ms` }}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-ai-muted">
+                        #{String(ticket.id).padStart(6, "0")}
+                      </span>
+                      <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${status.badgeClassName || status.className}`}>
+                        <span className={`h-1 w-1 rounded-full ${status.dotClassName || "bg-current"}`} />
+                        {status.label}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 truncate font-medium text-ai-title group-hover:text-ai-primary transition-colors duration-300">
+                      {ticket.title}
+                    </div>
+                    <div className="mt-1 text-xs text-ai-muted">
+                      {formatTime(ticket.created_at, dateLocale)}
+                    </div>
+                  </div>
+                  <ArrowRight size={18} className="shrink-0 text-ai-muted transition-all duration-300 group-hover:translate-x-1 group-hover:text-ai-primary" />
+                </LocaleLink>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* 典型问题 */}
       <TypicalIssuesPanel limit={3} showViewAll />
     </div>
   );

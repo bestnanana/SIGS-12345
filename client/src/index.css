@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==================== 基础样式 ==================== */
 * {
   box-sizing: border-box;
 }
@@ -9,14 +10,17 @@
 html {
   font-size: 112.5%;
   scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   margin: 0;
-  background: #fafafc;
-  color: #111111;
+  background: #f8f9fc;
+  color: #1a1528;
   font-family: Inter, "HarmonyOS Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Arial, sans-serif;
   text-rendering: geometricPrecision;
+  line-height: 1.6;
 }
 
 button, input, textarea, select {
@@ -35,130 +39,185 @@ button:not(:disabled):active, a:active {
   transform: translateY(1px) scale(0.985);
 }
 
-.form-label::before {
-  content: "*";
-  color: #d93025;
-  margin-right: 4px;
-}
-
-.scrollbar-thin::-webkit-scrollbar {
+/* ==================== 滚动条样式 ==================== */
+::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #d7c7ef;
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d7d0e8;
   border-radius: 999px;
 }
 
+::-webkit-scrollbar-thumb:hover {
+  background: #b8b0cc;
+}
+
+/* ==================== 组件层 ==================== */
 @layer components {
+  /* 页面容器 */
   .page-shell {
     @apply min-h-screen bg-ai-bg text-ai-title;
+    background-image: 
+      radial-gradient(ellipse at 20% 0%, rgba(108, 76, 241, 0.03) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(108, 76, 241, 0.02) 0%, transparent 50%);
   }
 
   .page-fade {
-    animation: page-in 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: pageIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* 表单输入 */
+  .form-label::before {
+    content: "*";
+    color: #ef4444;
+    margin-right: 4px;
   }
 
   .glass-search {
-    @apply h-11 rounded-xl border border-white/70 bg-white/70 px-4 text-sm text-ai-body shadow-sm backdrop-blur-xl outline-none transition duration-200 placeholder:text-ai-muted focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10;
+    @apply h-11 rounded-xl border border-white/70 bg-white/70 px-4 text-sm text-ai-body shadow-sm backdrop-blur-xl outline-none transition-all duration-300 placeholder:text-ai-muted focus:border-ai-primary/40 focus:bg-white focus:ring-4 focus:ring-ai-primary/10;
   }
 
+  /* 卡片 */
   .app-card {
-    @apply rounded-xl border border-ai-border bg-white p-4 shadow-[0_4px_20px_rgba(0,0,0,0.04)] transition duration-300 ease-out sm:p-5;
+    @apply rounded-2xl border border-ai-border bg-white p-5 shadow-card transition-all duration-300 ease-out sm:p-6;
     transform: translateZ(0);
     transition-property: transform, box-shadow, border-color, background-color, opacity;
-    transition-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
   .app-card-hover {
-    @apply hover:-translate-y-1 hover:shadow-[0_16px_38px_rgba(17,17,17,0.08)];
+    @apply hover:-translate-y-0.5 hover:shadow-card-hover hover:border-ai-primary/20;
   }
 
+  /* 按钮 */
   .primary-button {
-    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-ai-primary px-5 text-sm font-semibold text-white transition duration-200 ease-out hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55;
-    box-shadow: 0 10px 24px rgba(108, 76, 241, 0.18);
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-ai-primary px-6 text-sm font-semibold text-white transition-all duration-300 ease-out hover:bg-ai-primary-hover disabled:cursor-not-allowed disabled:opacity-55;
+    box-shadow: 0 4px 16px rgba(108, 76, 241, 0.24);
     transform: translateZ(0);
-    transition-property: transform, box-shadow, filter, background-color, opacity;
   }
 
-  .secondary-button {
-    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-ai-primary/10 px-5 text-sm font-semibold text-ai-primary transition duration-200 ease-out hover:bg-ai-primary/15 disabled:cursor-not-allowed disabled:opacity-55;
-    transform: translateZ(0);
-    transition-property: transform, box-shadow, background-color, opacity;
-  }
-
-  .ghost-button {
-    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-ai-border bg-white px-5 text-sm font-medium text-ai-body transition duration-200 ease-out hover:bg-[#F6F6FA];
-    transform: translateZ(0);
-    transition-property: transform, box-shadow, border-color, background-color, opacity;
-  }
-
-  .primary-button:hover,
-  .secondary-button:hover,
-  .ghost-button:hover {
+  .primary-button:hover:not(:disabled) {
     transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(108, 76, 241, 0.32);
   }
 
-  .primary-button:hover {
-    box-shadow: 0 14px 30px rgba(108, 76, 241, 0.24);
-  }
-
-  .secondary-button:hover,
-  .ghost-button:hover {
-    box-shadow: 0 10px 24px rgba(17, 17, 17, 0.06);
-  }
-
-  .primary-button:active,
-  .secondary-button:active,
-  .ghost-button:active {
+  .primary-button:active:not(:disabled) {
     transform: translateY(0) scale(0.98);
   }
 
+  .secondary-button {
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-ai-primary-light px-6 text-sm font-semibold text-ai-primary transition-all duration-300 ease-out hover:bg-ai-primary/15 disabled:cursor-not-allowed disabled:opacity-55;
+    transform: translateZ(0);
+  }
+
+  .secondary-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(108, 76, 241, 0.12);
+  }
+
+  .ghost-button {
+    @apply inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-ai-border bg-white px-6 text-sm font-medium text-ai-body transition-all duration-300 ease-out hover:bg-ai-bg hover:border-ai-primary/20 hover:text-ai-title;
+    transform: translateZ(0);
+  }
+
+  .ghost-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  }
+
+  /* 输入框 */
   .soft-input {
-    @apply h-11 rounded-xl border border-ai-border bg-white px-4 text-sm text-ai-title outline-none transition duration-200 placeholder:text-ai-muted focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10 disabled:bg-[#F6F6FA] disabled:text-ai-muted;
-    transition-property: transform, border-color, box-shadow, background-color, color;
+    @apply h-11 rounded-xl border border-ai-border bg-white px-4 text-sm text-ai-title outline-none transition-all duration-300 placeholder:text-ai-muted focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10 disabled:bg-ai-bg disabled:text-ai-muted;
+  }
+
+  .soft-input:focus {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(108, 76, 241, 0.08);
   }
 
   .soft-textarea {
-    @apply rounded-xl border border-ai-border bg-white px-4 py-3 text-sm leading-7 text-ai-title outline-none transition duration-200 placeholder:text-ai-muted focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10 disabled:bg-[#F6F6FA] disabled:text-ai-muted;
-    transition-property: transform, border-color, box-shadow, background-color, color;
+    @apply rounded-xl border border-ai-border bg-white px-4 py-3 text-sm leading-7 text-ai-title outline-none transition-all duration-300 placeholder:text-ai-muted focus:border-ai-primary/40 focus:ring-4 focus:ring-ai-primary/10 disabled:bg-ai-bg disabled:text-ai-muted;
   }
 
-  .soft-input:focus,
   .soft-textarea:focus {
     transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(108, 76, 241, 0.08);
   }
 
+  /* 徽章/标签 */
   .ai-chip {
-    @apply inline-flex items-center rounded-full bg-ai-primary/10 px-3 py-1 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/10;
-    animation: chip-in 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    @apply inline-flex items-center rounded-full bg-ai-primary-light px-3 py-1 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/10;
+    animation: chipIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  /* ==================== Header 样式 ==================== */
   .tsinghua-header {
-    background:
-      linear-gradient(120deg, rgba(255, 255, 255, 0.16), transparent 30%),
-      linear-gradient(135deg, #3f1b70 0%, #5e23ab 42%, #8d49e8 100%);
-    box-shadow: 0 14px 36px rgba(63, 27, 112, 0.18);
+    background: linear-gradient(135deg, #4a0e8e 0%, #6c3cb2 50%, #8b5cf6 100%);
+    box-shadow: 0 4px 20px rgba(74, 14, 142, 0.25);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .tsinghua-header::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+      radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
+      radial-gradient(circle at 80% 50%, rgba(255, 255, 255, 0.05) 0%, transparent 50%);
+    pointer-events: none;
   }
 
   .tsinghua-header-link {
-    @apply relative flex h-[84px] items-center text-sm font-medium text-white/75 transition duration-200 hover:text-white;
+    @apply relative flex items-center text-sm font-medium text-white/75 transition-all duration-300 hover:text-white;
+    padding: 0 16px;
+    height: 100%;
+  }
+
+  .tsinghua-header-link::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 3px;
+    background: white;
+    border-radius: 3px 3px 0 0;
+    transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .tsinghua-header-link:hover::after {
+    width: 24px;
   }
 
   .tsinghua-header-link-active {
     @apply text-white;
   }
 
+  .tsinghua-header-link-active::after {
+    width: 32px;
+  }
+
   .tsinghua-header-pill {
-    @apply bg-white/20 text-white shadow-[0_8px_22px_rgba(26,8,49,0.18)] ring-1 ring-white/20;
+    @apply bg-white/15 text-white shadow-lg ring-1 ring-white/20;
+    backdrop-filter: blur(8px);
   }
 
   .tsinghua-logo img {
     filter: brightness(0) invert(1);
+    opacity: 0.95;
   }
 
   .tsinghua-logo .bg-ai-border {
-    background-color: rgba(255, 255, 255, 0.24);
+    background-color: rgba(255, 255, 255, 0.2);
   }
 
   .tsinghua-logo .text-ai-title {
@@ -166,100 +225,133 @@ button:not(:disabled):active, a:active {
   }
 
   .tsinghua-logo .text-ai-muted {
-    color: rgba(255, 255, 255, 0.7);
+    color: rgba(255, 255, 255, 0.75);
   }
 
+  /* ==================== Hero 区域 ==================== */
   .mesh-hero {
     position: relative;
     overflow: hidden;
-    background:
-      radial-gradient(circle at 12% 20%, rgba(108, 76, 241, 0.18), transparent 34%),
-      radial-gradient(circle at 86% 14%, rgba(60, 188, 182, 0.16), transparent 34%),
-      linear-gradient(135deg, #f7f4ff 0%, #eef7f7 100%);
+    background: 
+      radial-gradient(circle at 15% 25%, rgba(108, 76, 241, 0.15) 0%, transparent 40%),
+      radial-gradient(circle at 85% 20%, rgba(59, 130, 246, 0.1) 0%, transparent 40%),
+      radial-gradient(circle at 50% 80%, rgba(108, 76, 241, 0.05) 0%, transparent 50%),
+      linear-gradient(135deg, #f8f5ff 0%, #f0f4ff 50%, #f5f3ff 100%);
+  }
+
+  .mesh-hero::before {
+    content: "";
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: 
+      radial-gradient(circle at 30% 30%, rgba(108, 76, 241, 0.08) 0%, transparent 30%),
+      radial-gradient(circle at 70% 70%, rgba(59, 130, 246, 0.06) 0%, transparent 30%);
+    animation: meshFloat 20s ease-in-out infinite;
+    pointer-events: none;
   }
 
   .mesh-hero::after {
     content: "";
     position: absolute;
-    right: -120px;
-    bottom: -130px;
-    width: 360px;
-    height: 360px;
+    right: -100px;
+    bottom: -100px;
+    width: 300px;
+    height: 300px;
     border-radius: 999px;
-    background: rgba(108, 76, 241, 0.12);
-    filter: blur(38px);
+    background: rgba(108, 76, 241, 0.08);
+    filter: blur(60px);
+    pointer-events: none;
+  }
+
+  /* ==================== 表格 ==================== */
+  .soft-table {
+    @apply w-full;
+    border-collapse: separate;
+    border-spacing: 0;
   }
 
   .soft-table th {
-    @apply bg-ai-bg px-6 py-4 text-left text-xs font-semibold uppercase tracking-wide text-ai-muted;
+    @apply bg-ai-bg px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider text-ai-muted;
+    border-bottom: 1px solid #e8e5f0;
   }
 
   .soft-table td {
-    @apply h-14 px-6 text-sm text-ai-body;
-    transition: background-color 180ms ease, color 180ms ease;
+    @apply px-6 py-4 text-sm text-ai-body;
+    border-bottom: 1px solid #f0edf7;
+    transition: all 200ms ease;
   }
 
   .soft-table tbody tr {
-    @apply transition duration-200 hover:bg-[#F7F7FB];
+    @apply transition-all duration-200;
+  }
+
+  .soft-table tbody tr:hover {
+    background: linear-gradient(90deg, rgba(108, 76, 241, 0.02) 0%, rgba(108, 76, 241, 0.04) 50%, rgba(108, 76, 241, 0.02) 100%);
   }
 
   .soft-table tbody tr:hover td {
     @apply text-ai-title;
   }
 
+  /* ==================== 弹出层 ==================== */
   .motion-popover {
-    animation: popover-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: popoverIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
     transform-origin: top right;
   }
 
   .motion-underline {
-    animation: underline-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: underlineIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  /* ==================== 登录页 ==================== */
   .login-stage {
     position: relative;
   }
 
   .login-stage-leave main {
-    animation: login-leave 720ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: loginLeave 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .login-hero {
-    animation: login-hero-in 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: loginHeroIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .login-panel {
-    animation: login-panel-in 680ms 90ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: loginPanelIn 0.7s 0.1s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
   .login-submit {
     transform: translateZ(0);
-    transition-property: transform, box-shadow, filter, opacity;
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .login-submit:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 20px 42px rgba(108, 76, 241, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(108, 76, 241, 0.35);
   }
 
   .login-submit:active:not(:disabled),
   .login-submit.is-loading {
-    transform: translateY(0) scale(0.985);
+    transform: translateY(0) scale(0.98);
   }
 
   .login-submit-bar {
-    animation: login-submit-progress 900ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+    animation: loginSubmitProgress 1s cubic-bezier(0.16, 1, 0.3, 1) infinite;
   }
 
   .login-success-mark {
-    animation: login-success-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: loginSuccessIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 }
 
-@keyframes page-in {
+/* ==================== 动画关键帧 ==================== */
+@keyframes pageIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
@@ -267,7 +359,7 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes chip-in {
+@keyframes chipIn {
   from {
     opacity: 0;
     transform: translateY(4px) scale(0.96);
@@ -278,10 +370,10 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes popover-in {
+@keyframes popoverIn {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.96);
+    transform: translateY(-6px) scale(0.96);
   }
   to {
     opacity: 1;
@@ -289,7 +381,7 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes underline-in {
+@keyframes underlineIn {
   from {
     opacity: 0;
     transform: translateX(-50%) scaleX(0.35);
@@ -300,10 +392,10 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes login-hero-in {
+@keyframes loginHeroIn {
   from {
     opacity: 0;
-    transform: translateX(-18px);
+    transform: translateX(-20px);
   }
   to {
     opacity: 1;
@@ -311,10 +403,10 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes login-panel-in {
+@keyframes loginPanelIn {
   from {
     opacity: 0;
-    transform: translateY(18px) scale(0.985);
+    transform: translateY(20px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -322,25 +414,25 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes login-submit-progress {
-  from {
+@keyframes loginSubmitProgress {
+  0% {
     width: 0%;
-    opacity: 0.85;
+    opacity: 0.8;
   }
   60% {
-    width: 82%;
+    width: 80%;
     opacity: 1;
   }
-  to {
+  100% {
     width: 100%;
-    opacity: 0.55;
+    opacity: 0.5;
   }
 }
 
-@keyframes login-success-in {
+@keyframes loginSuccessIn {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.94);
+    transform: translateY(12px) scale(0.92);
   }
   to {
     opacity: 1;
@@ -348,7 +440,7 @@ button:not(:disabled):active, a:active {
   }
 }
 
-@keyframes login-leave {
+@keyframes loginLeave {
   from {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -356,11 +448,24 @@ button:not(:disabled):active, a:active {
   }
   to {
     opacity: 0;
-    transform: translateY(-10px) scale(0.985);
+    transform: translateY(-12px) scale(0.98);
     filter: blur(8px);
   }
 }
 
+@keyframes meshFloat {
+  0%, 100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  33% {
+    transform: translate(2%, 2%) rotate(1deg);
+  }
+  66% {
+    transform: translate(-1%, 1%) rotate(-1deg);
+  }
+}
+
+/* ==================== 减弱动画 ==================== */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -369,10 +474,10 @@ button:not(:disabled):active, a:active {
   *,
   *::before,
   *::after {
-    animation-duration: 1ms !important;
+    animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
-    transition-duration: 1ms !important;
+    transition-duration: 0.01ms !important;
   }
 
   button:not(:disabled):active,
