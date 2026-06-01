@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowRight, CheckCircle2, LockKeyhole, Sparkles, UserRound } from "lucide-react";
+import { ArrowRight, CheckCircle2, LockKeyhole, Sparkles, UserRound, ExternalLink } from "lucide-react";
 import { api } from "../api";
 import { useLanguage, useLocale } from "../i18n";
 
 export default function LoginPage({ onLogin, authMessage = "" }) {
   const { t } = useLanguage();
   const { locale } = useLocale();
-  const [form, setForm] = useState({ union_id: "", password: "" });
+  const [loginMode, setLoginMode] = useState("local"); // "local" or "sso"
+  const [form, setForm] = useState({ username: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const transitionTimer = useRef(null);
 
@@ -18,13 +20,12 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
     };
   }, []);
 
-  async function submit(e) {
+  async function handleLocalLogin(e) {
     e.preventDefault();
     setLoading(true);
     setError("");
     try {
-      const res = await api.post("/doLogin", form, {
-        baseURL: "/local",
+      const res = await api.post("/auth/login", form, {
         skipAuthExpiredHandler: true
       });
       setTransitioning(true);
@@ -35,6 +36,18 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
       setError(err.response?.data?.message || t("login.failed"));
       setLoading(false);
       setTransitioning(false);
+    }
+  }
+
+  async function handleSsoLogin() {
+    setSsoLoading(true);
+    setError("");
+    try {
+      const res = await api.get("/sso/authorize-url", { skipAuthExpiredHandler: true });
+      window.location.href = res.data.authorize_url;
+    } catch (err) {
+      setError(t("login.ssoFailed"));
+      setSsoLoading(false);
     }
   }
 
@@ -81,65 +94,120 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
         </section>
 
         <section className="flex items-center justify-center px-6 py-8 sm:px-10">
-          <form
-            onSubmit={submit}
-            className="login-panel w-full max-w-[460px] rounded-[32px] border border-white/80 bg-white/90 p-7 shadow-[0_28px_80px_rgba(17,17,17,0.12)] backdrop-blur-2xl sm:p-8"
-          >
-            <div className="mb-8">
+          <div className="login-panel w-full max-w-[460px] rounded-[32px] border border-white/80 bg-white/90 p-7 shadow-[0_28px_80px_rgba(17,17,17,0.12)] backdrop-blur-2xl sm:p-8">
+            <div className="mb-6">
               <div className="text-sm font-semibold text-ai-primary">{t("login.heading")}</div>
               <h2 className="mt-3 text-[34px] font-semibold tracking-tight text-ai-title">{t("login.welcome")}</h2>
               <p className="mt-2 text-sm leading-6 text-ai-body">{t("login.welcomeDesc")}</p>
             </div>
 
-            <label className="mb-4 block">
-              <span className="mb-2 block text-sm font-medium text-ai-body">{t("login.unionId")}</span>
-              <div className="group flex items-center rounded-2xl border border-ai-border bg-white px-4 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
-                <UserRound size={18} className="text-ai-muted transition duration-200 group-focus-within:text-ai-primary" />
-                <input
-                  value={form.union_id}
-                  onChange={(e) => setForm({ ...form, union_id: e.target.value })}
+            {/* 登录方式切换 */}
+            <div className="mb-6 flex rounded-2xl bg-gray-100 p-1">
+              <button
+                type="button"
+                onClick={() => setLoginMode("local")}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition-all ${
+                  loginMode === "local"
+                    ? "bg-white text-ai-title shadow-sm"
+                    : "text-ai-body hover:text-ai-title"
+                }`}
+              >
+                {t("login.localLogin")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoginMode("sso")}
+                className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition-all ${
+                  loginMode === "sso"
+                    ? "bg-white text-ai-title shadow-sm"
+                    : "text-ai-body hover:text-ai-title"
+                }`}
+              >
+                {t("login.ssoLogin")}
+              </button>
+            </div>
+
+            {loginMode === "local" ? (
+              /* 本地账号密码登录 */
+              <form onSubmit={handleLocalLogin}>
+                <label className="mb-4 block">
+                  <span className="mb-2 block text-sm font-medium text-ai-body">{t("login.username")}</span>
+                  <div className="group flex items-center rounded-2xl border border-ai-border bg-white px-4 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
+                    <UserRound size={18} className="text-ai-muted transition duration-200 group-focus-within:text-ai-primary" />
+                    <input
+                      value={form.username}
+                      onChange={(e) => setForm({ ...form, username: e.target.value })}
+                      disabled={isBusy}
+                      className="h-12 w-full border-0 bg-transparent px-3 text-ai-title outline-none disabled:cursor-not-allowed"
+                      autoComplete="username"
+                    />
+                  </div>
+                </label>
+
+                <label className="mb-5 block">
+                  <span className="mb-2 block text-sm font-medium text-ai-body">{t("login.password")}</span>
+                  <div className="group flex items-center rounded-2xl border border-ai-border bg-white px-4 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
+                    <LockKeyhole size={18} className="text-ai-muted transition duration-200 group-focus-within:text-ai-primary" />
+                    <input
+                      type="password"
+                      value={form.password}
+                      onChange={(e) => setForm({ ...form, password: e.target.value })}
+                      disabled={isBusy}
+                      className="h-12 w-full border-0 bg-transparent px-3 text-ai-title outline-none disabled:cursor-not-allowed"
+                      autoComplete="current-password"
+                    />
+                  </div>
+                </label>
+
+                <p className="mb-4 text-xs text-ai-muted">{t("login.localHint")}</p>
+
+                {authMessage ? (
+                  <div className="mb-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">{authMessage}</div>
+                ) : null}
+
+                {error ? (
+                  <div className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">{error}</div>
+                ) : null}
+
+                <button
+                  type="submit"
                   disabled={isBusy}
-                  className="h-12 w-full border-0 bg-transparent px-3 text-ai-title outline-none disabled:cursor-not-allowed"
-                  autoComplete="username"
-                />
+                  className={`login-submit relative h-12 w-full overflow-hidden rounded-2xl bg-ai-primary px-5 text-sm font-semibold text-white shadow-[0_16px_34px_rgba(108,76,241,0.24)] transition duration-300 hover:brightness-105 disabled:cursor-not-allowed ${isBusy ? "is-loading" : ""}`}
+                >
+                  <span className="relative z-10 flex items-center justify-center gap-2">
+                    {transitioning ? t("login.entering") : loading ? t("login.verifying") : t("login.loginButton")}
+                    <ArrowRight size={18} />
+                  </span>
+                  {isBusy ? <span className="login-submit-bar absolute inset-y-0 left-0 bg-white/24" /> : null}
+                </button>
+              </form>
+            ) : (
+              /* SSO 登录 */
+              <div>
+                <p className="mb-6 text-sm text-ai-body">{t("login.ssoHint")}</p>
+
+                {error ? (
+                  <div className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">{error}</div>
+                ) : null}
+
+                <button
+                  type="button"
+                  onClick={handleSsoLogin}
+                  disabled={ssoLoading}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-ai-primary px-5 text-sm font-semibold text-white shadow-[0_16px_34px_rgba(108,76,241,0.24)] transition duration-300 hover:brightness-105 disabled:cursor-not-allowed"
+                >
+                  {ssoLoading ? (
+                    <span>{t("login.ssoRedirecting")}</span>
+                  ) : (
+                    <>
+                      <span>{t("login.ssoButton")}</span>
+                      <ExternalLink size={18} />
+                    </>
+                  )}
+                </button>
               </div>
-            </label>
-
-            <label className="mb-5 block">
-              <span className="mb-2 block text-sm font-medium text-ai-body">{t("login.password")}</span>
-              <div className="group flex items-center rounded-2xl border border-ai-border bg-white px-4 transition duration-200 focus-within:border-ai-primary/40 focus-within:ring-4 focus-within:ring-ai-primary/10">
-                <LockKeyhole size={18} className="text-ai-muted transition duration-200 group-focus-within:text-ai-primary" />
-                <input
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  disabled={isBusy}
-                  className="h-12 w-full border-0 bg-transparent px-3 text-ai-title outline-none disabled:cursor-not-allowed"
-                  autoComplete="current-password"
-                />
-              </div>
-            </label>
-
-            {authMessage ? (
-              <div className="mb-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-800 ring-1 ring-amber-100">{authMessage}</div>
-            ) : null}
-
-            {error ? (
-              <div className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-100">{error}</div>
-            ) : null}
-
-            <button
-              type="submit"
-              disabled={isBusy}
-              className={`login-submit relative h-12 w-full overflow-hidden rounded-2xl bg-ai-primary px-5 text-sm font-semibold text-white shadow-[0_16px_34px_rgba(108,76,241,0.24)] transition duration-300 hover:brightness-105 disabled:cursor-not-allowed ${isBusy ? "is-loading" : ""}`}
-            >
-              <span className="relative z-10 flex items-center justify-center gap-2">
-                {transitioning ? t("login.entering") : loading ? t("login.verifying") : t("login.loginButton")}
-                <ArrowRight size={18} />
-              </span>
-              {isBusy ? <span className="login-submit-bar absolute inset-y-0 left-0 bg-white/24" /> : null}
-            </button>
-          </form>
+            )}
+          </div>
         </section>
       </main>
     </div>

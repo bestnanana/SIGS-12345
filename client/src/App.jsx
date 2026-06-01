@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AUTH_EXPIRED_EVENT, api, clearAuthStorage, getToken, getAuthSource, setToken } from "./api";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
+import ChangePasswordPage from "./pages/ChangePasswordPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import MyTicketsPage from "./pages/MyTicketsPage";
@@ -34,6 +35,7 @@ function App() {
   const [viewRole, setViewRole] = useState(() => localStorage.getItem("viewRole") || "");
   const [loading, setLoading] = useState(Boolean(getToken()));
   const [authMessage, setAuthMessage] = useState("");
+  const [mustChangePassword, setMustChangePassword] = useState(false);
   const location = useLocation();
   const navigate = useLocaleNavigate();
 
@@ -110,11 +112,25 @@ function App() {
     setUser(payload.user);
     setViewRole("");
     setAuthMessage("");
+
+    // 首次登录强制修改密码
+    if (payload.must_change_password) {
+      setMustChangePassword(true);
+      navigate("/change-password", { replace: true });
+      return;
+    }
+
     const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
     const isLoginPage = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
     const target = isLoginPage
       ? (isAdminRole(payload.user?.role) ? "/admin" : "/")
       : `${pathNoLocale}${location.search}${location.hash}`;
+    navigate(target, { replace: true });
+  }
+
+  function handlePasswordChanged() {
+    setMustChangePassword(false);
+    const target = isAdminRole(user?.role) ? "/admin" : "/";
     navigate(target, { replace: true });
   }
 
@@ -158,6 +174,11 @@ function App() {
     return <div className="flex min-h-screen items-center justify-center text-tsinghua-700">{t("common.loading")}</div>;
   }
 
+  // 首次登录强制修改密码
+  if (mustChangePassword) {
+    return <ChangePasswordPage onSuccess={handlePasswordChanged} />;
+  }
+
   const isAdmin = isAdminRole(user.role) && viewRole !== "user";
   const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user" } : user;
 
@@ -170,6 +191,7 @@ function App() {
         <Route path="/tickets/:id" element={<TicketDetailPage user={effectiveUser} />} />
         <Route path="/typical" element={<TypicalIssuesPage />} />
         <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to={`/${locale}/`} replace />} />
+        <Route path="/change-password" element={<ChangePasswordPage onSuccess={handlePasswordChanged} />} />
         <Route path="/local/login" element={<Navigate to={`/${locale}/`} replace />} />
         <Route path="*" element={<Navigate to={`/${locale}/`} replace />} />
       </Routes>

@@ -129,10 +129,10 @@ function PermissionManager() {
     try {
       const body = {
         role_type: "admin",
-        managed_departments: form.managed_departments,
+        department_names: form.managed_departments,
       };
       if (editId) {
-        await api.patch(`/admin/department-admins/${editId}`, body);
+        await api.put(`/admin/department-admins/${editId}`, body);
       } else {
         body.person_id = form.person_id;
         await api.post("/admin/department-admins", body);

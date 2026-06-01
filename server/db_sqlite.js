@@ -58,21 +58,25 @@ function safeAddColumn(table, column, definition) {
 async function initDb() {
   const database = getDb();
 
-  // Users (仅保留原生登录账号)
+  // Users (本地登录凭证表)
   await run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE,
-      password TEXT NOT NULL,
-      name TEXT NOT NULL,
-      phone TEXT,
-      department TEXT,
-      role TEXT DEFAULT 'user',
+      password_hash TEXT NOT NULL,
       union_id TEXT DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (union_id) REFERENCES datahub_basic_persons(union_id)
     )
   `);
-  safeAddColumn('users', 'union_id', 'TEXT DEFAULT NULL');
+  // 兼容旧表结构：添加新字段
+  safeAddColumn('users', 'password_hash', 'TEXT');
+  safeAddColumn('users', 'is_active', 'INTEGER DEFAULT 1');
+  safeAddColumn('users', 'must_change_password', 'INTEGER DEFAULT 0');
+  // 迁移旧数据：将 password 字段数据复制到 password_hash（仅当 password_hash 为空时）
+  await run(`UPDATE users SET password_hash = password WHERE password_hash IS NULL AND password IS NOT NULL`).catch(() => {});
+  // 删除旧字段（SQLite 不支持 DROP COLUMN，保留兼容）
 
   // Tickets
   await run(`
@@ -314,30 +318,71 @@ async function seedRolesAndPermissions() {
 
 async function seedSuperadmin() {
   const bcrypt = require('bcryptjs');
-  
-  // 检查是否已存在
-  const existing = await get("SELECT id FROM users WHERE username = 'superadmin'");
-  if (existing) return;
-  
-  // 获取 super_admin 角色
-  const superAdminRole = await getRoleByCode('super_admin');
-  if (!superAdminRole) return;
-  
-  // 创建 users 表记录
-  const passwordHash = bcrypt.hashSync('superadmin123', 10);
-  const result = await run(
-    "INSERT INTO users (username, password, name, phone, role, department, union_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ['superadmin', passwordHash, '超级管理员', '010-62780000', 'super_admin', '党政办公室', 'local_superadmin']
-  );
-  
-  // 创建 datahub_basic_persons 表记录
+
+  // 1. 先确保 super_admin 角色存在（解决 roles 表未初始化的问题）
+  let superAdminRole = await getRoleByCode('super_admin');
+  if (!superAdminRole) {
+    await run(
+      "INSERT INTO roles (code, name, is_system) VALUES (?, ?, ?)",
+      ['super_admin', '超级管理员', 1]
+    );
+    superAdminRole = await getRoleByCode('super_admin');
+    if (!superAdminRole) return;
+  }
+
+  // 2. 确保 datahub_basic_persons 中有 superadmin 记录
+  const existingPerson = await get("SELECT id FROM datahub_basic_persons WHERE union_id = 'local_superadmin'");
+  if (!existingPerson) {
+    await run(
+      `INSERT INTO datahub_basic_persons (id, union_id, name, type, department, role, role_id, auth_source, is_active, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'local', 1, '{}')`,
+      ['local_superadmin', 'local_superadmin', '超级管理员', '教职员', '党政办公室', 'super_admin', superAdminRole.id]
+    );
+  }
+
+  // 3. 检查 users 表是否已有 superadmin
+  const existingUser = await get("SELECT id, union_id, password, password_hash, is_active FROM users WHERE username = 'superadmin'");
+
+  if (existingUser) {
+    // 3.1 修复缺失的 union_id
+    if (!existingUser.union_id) {
+      await run("UPDATE users SET union_id = 'local_superadmin' WHERE id = ?", [existingUser.id]);
+    }
+
+    // 3.2 修复密码字段（关键！旧表可能只有 password 没有 password_hash）
+    if (!existingUser.password_hash) {
+      let newHash;
+      if (existingUser.password) {
+        // 旧字段有密码，先判断是否是 bcrypt 格式（$2a$ 或 $2b$ 开头）
+        if (existingUser.password.startsWith('$2')) {
+          newHash = existingUser.password;
+        } else {
+          newHash = bcrypt.hashSync(existingUser.password, 10);
+        }
+      } else {
+        const defaultPwd = process.env.SUPERADMIN_DEFAULT_PASSWORD || 'superadmin123';
+        newHash = bcrypt.hashSync(defaultPwd, 10);
+        console.warn('[seedSuperadmin] superadmin 密码已重置为默认值，请登录后尽快修改');
+      }
+      await run("UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?", [newHash, existingUser.id]);
+    }
+
+    // 3.3 确保账号启用
+    if (!existingUser.is_active) {
+      await run("UPDATE users SET is_active = 1 WHERE id = ?", [existingUser.id]);
+    }
+
+    return;
+  }
+
+  // 4. 全新安装：创建 superadmin
+  const defaultPwd = process.env.SUPERADMIN_DEFAULT_PASSWORD || 'superadmin123';
+  const passwordHash = bcrypt.hashSync(defaultPwd, 10);
   await run(
-    `INSERT INTO datahub_basic_persons (id, union_id, name, department, role, role_id, auth_source, is_active, raw_json)
-     VALUES (?, ?, ?, ?, ?, ?, 'local', 1, '{}')`,
-    ['local_superadmin', 'local_superadmin', '超级管理员', '党政办公室', 'super_admin', superAdminRole.id]
+    "INSERT INTO users (username, password_hash, union_id, is_active, must_change_password) VALUES (?, ?, ?, 1, 1)",
+    ['superadmin', passwordHash, 'local_superadmin']
   );
-  
-  console.log('Superadmin 账号已创建: superadmin / superadmin123');
+  console.log('[seedSuperadmin] 已创建默认 superadmin 账号（首次登录需修改密码）');
 }
 
 // ==================== 人员数据表 ====================
@@ -593,7 +638,18 @@ async function upsertDatahubBasicPersons(rows = []) {
     const existing = await get("SELECT auth_source FROM datahub_basic_persons WHERE id = ?", [row.id]);
     if (existing && existing.auth_source === 'local') continue;
     
-    const isActive = row.status === 'true' ? 1 : 0;
+    // 判断是否活跃：status 为 true 或 on_the_job 视为活跃，其余（departure/retire/die/false/0）视为非活跃
+    const activeStatuses = new Set(['true', 'on_the_job', '在校', '在职']);
+    const inactiveStatuses = new Set(['false', '0', 'departure', 'retire', 'die', 'abandon_employee', '离职', '退休']);
+    let isActive = 1; // 默认活跃
+    if (row.status) {
+      if (activeStatuses.has(row.status)) {
+        isActive = 1;
+      } else if (inactiveStatuses.has(row.status)) {
+        isActive = 0;
+      }
+      // 未知状态保持默认 active=1
+    }
     stmt.run(
       row.id, row.union_id, row.name, row.type, row.category,
       row.department, row.status, row.appoint_attr, row.appointment_form,

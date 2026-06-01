@@ -671,7 +671,10 @@ function publicUser(user) {
     role: user.role || "user",
     role_id: user.role_id,
     department: user.department,
-    can_manage_roles: Boolean(user.can_manage_roles)
+    can_manage_roles: Boolean(user.can_manage_roles),
+    // 部门管理员权限信息
+    dept_admin_assignments: user.dept_admin_assignments || [],
+    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0)
   };
 }
 
@@ -685,11 +688,15 @@ function publicHandler(user) {
 }
 
 function signUser(user, expiresIn) {
-  return jwt.sign(
-    { id: user.id, role: user.role || "user", department: user.department },
-    jwtSecret,
-    { expiresIn: expiresIn || jwtExpiresIn }
-  );
+  const payload = {
+    id: user.id,
+    role: user.role || "user",
+    department: user.department,
+    // 部门管理员权限信息
+    dept_admin_assignments: user.dept_admin_assignments || [],
+    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0)
+  };
+  return jwt.sign(payload, jwtSecret, { expiresIn: expiresIn || jwtExpiresIn });
 }
 
 function tokenFromRequest(req) {
@@ -812,31 +819,45 @@ async function getTicketPermission(ticketId, viewer) {
 }
 
 async function loadPerson(id) {
-  const person = await get("SELECT * FROM datahub_basic_persons WHERE id = ?", [String(id)]);
-  if (person) return person;
-  const user = await get("SELECT * FROM users WHERE id = ?", [id]);
-  if (user) {
-    return {
-      id: String(user.id),
-      union_id: null,
-      name: user.name,
-      type: null,
-      category: null,
-      department: user.department,
-      status: null,
-      username: user.username,
-      phone: user.phone,
-      role: user.role,
-      role_id: null,
-      auth_source: 'local',
-      is_active: 1,
-      can_manage_roles: 0,
-      raw_json: null,
-      synced_at: null,
-      created_at: user.created_at,
-      updated_at: user.created_at
-    };
+  // 1. 优先从 datahub_basic_persons 查
+  let person = await get(
+    `SELECT dp.*, r.code as role_code
+     FROM datahub_basic_persons dp
+     LEFT JOIN roles r ON dp.role_id = r.id
+     WHERE dp.id = ?`,
+    [String(id)]
+  );
+
+  if (person) {
+    person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+    return person;
   }
+
+  // 2. 如果 datahub 查不到，检查是否是本地账号（users 表存在）
+  const user = await get("SELECT id, union_id, username, is_active FROM users WHERE id = ? OR union_id = ?", [String(id), String(id)]);
+  if (user && user.union_id) {
+    // 2.1 自动创建 datahub_basic_persons 影子记录（避免登录失败）
+    const localRole = await getRoleByCode('user');
+    await run(
+      `INSERT OR IGNORE INTO datahub_basic_persons (id, union_id, name, type, department, role_id, auth_source, is_active, raw_json)
+       VALUES (?, ?, ?, ?, ?, ?, 'local', 1, '{}')`,
+      [user.union_id, user.union_id, user.username, '未知', '未分配', localRole?.id || null]
+    );
+
+    // 2.2 重新查询
+    person = await get(
+      `SELECT dp.*, r.code as role_code
+       FROM datahub_basic_persons dp
+       LEFT JOIN roles r ON dp.role_id = r.id
+       WHERE dp.id = ?`,
+      [user.union_id]
+    );
+    if (person) {
+      person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+      return person;
+    }
+  }
+
   return null;
 }
 
@@ -854,7 +875,10 @@ async function loadOrCreateSsoPerson(ssoUser) {
        WHERE union_id = ?`,
       [ssoUser.name, ssoUser.personType, ssoUser.uid]
     );
-    return get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
+    const person = await get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
+    // 查询部门管理员权限
+    person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+    return person;
   }
 
   // 获取默认用户角色
@@ -866,7 +890,10 @@ async function loadOrCreateSsoPerson(ssoUser) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sso', 1, ?, CURRENT_TIMESTAMP)`,
     [id, ssoUser.uid, ssoUser.name, ssoUser.personType, null, 'user', null, defaultRoleId, JSON.stringify(ssoUser.raw || {})]
   );
-  return get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
+  const person = await get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
+  // 新用户默认无部门管理员权限
+  person.dept_admin_assignments = [];
+  return person;
 }
 
 async function adminOnly(req, res, next) {
@@ -1040,55 +1067,135 @@ async function ticketDetails(id, viewer) {
   };
 }
 
-app.post("/api/auth/login", async (req, res) => {
-  return res.status(404).json({ message: "本地登录入口已迁移至 /local/login" });
+app.post("/api/auth/login", authLimiter, async (req, res) => {
+  const username = String(req.body.username || "").trim();
+  const { password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ message: "请填写用户名和密码" });
+  }
+
+  try {
+    // 查 users 表（username + is_active=1）
+    const user = await get(
+      "SELECT * FROM users WHERE username = ? AND is_active = 1 LIMIT 1",
+      [username]
+    );
+    if (!user) {
+      logger.warn("auth_login_failed", { request_id: req.requestId, username, reason: "user_not_found" });
+      return res.status(401).json({ message: "账号或密码错误" });
+    }
+
+    // 防御性校验 password_hash
+    const passwordHash = user.password_hash || user.password;
+    if (!passwordHash || typeof passwordHash !== 'string') {
+      logger.error("auth_login_bad_hash", { request_id: req.requestId, username, has_hash: Boolean(user.password_hash), has_password: Boolean(user.password) });
+      return res.status(500).json({ message: "账号凭证异常，请联系管理员" });
+    }
+
+    // bcrypt 比对密码
+    let valid = false;
+    try {
+      valid = await bcrypt.compare(password, passwordHash);
+    } catch (compareErr) {
+      logger.error("auth_login_bcrypt_error", { request_id: req.requestId, username, error: compareErr.message });
+      return res.status(500).json({ message: "账号凭证异常，请联系管理员" });
+    }
+    if (!valid) {
+      logger.warn("auth_login_failed", { request_id: req.requestId, username, reason: "invalid_credentials" });
+      return res.status(401).json({ message: "账号或密码错误" });
+    }
+
+    // 通过 loadPerson 关联 datahub_basic_persons（自动处理本地账号影子记录）
+    const person = await loadPerson(user.union_id || user.id);
+    if (!person) {
+      logger.error("auth_login_person_missing", { request_id: req.requestId, username, union_id: user.union_id, user_id: user.id });
+      return res.status(500).json({ message: "用户身份信息异常，请联系管理员" });
+    }
+
+    // 查 role_id → roles 表
+    let roleCode = person.role_code || person.role || 'user';
+    if (person.role_id && !person.role_code) {
+      const role = await getRoleById(person.role_id);
+      if (role) roleCode = role.code;
+    }
+
+    // 查 department_assignments（is_enabled=1）
+    const assignments = await getDepartmentAssignments(person.id);
+
+    // 构建用户对象
+    const loginUser = {
+      id: person.id,
+      union_id: person.union_id,
+      name: person.name,
+      phone: person.phone,
+      department: person.department,
+      role: roleCode,
+      role_id: person.role_id,
+      dept_admin_assignments: assignments,
+      is_dept_admin: assignments.length > 0
+    };
+
+    logger.info("auth_login_success", {
+      request_id: req.requestId,
+      user_id: loginUser.id,
+      union_id: loginUser.union_id,
+      role: loginUser.role,
+      department: loginUser.department
+    });
+
+    createSession(res, loginUser, { authSource: "local" });
+
+    // 生成 JWT（格式和 SSO 登录完全一致）
+    const token = signUser(loginUser, "24h");
+    res.json({
+      token,
+      expires_in: "24h",
+      user: publicUser(loginUser),
+      authSource: "local",
+      must_change_password: user.must_change_password === 1
+    });
+  } catch (err) {
+    logger.error("auth_login_exception", { request_id: req.requestId, username, error: err.message });
+    res.status(500).json({ message: "登录服务异常" });
+  }
 });
 
-app.post("/local/doLogin", authLimiter, async (req, res) => {
-  const username = String(req.body.username || req.body.union_id || "").trim();
-  const { password } = req.body;
-  const user = await get(
-    "SELECT * FROM users WHERE username = ? LIMIT 1",
-    [username]
-  );
-  if (!user || !await bcrypt.compare(password, user.password)) {
-    logger.warn("auth_login_failed", { request_id: req.requestId, username, reason: "invalid_credentials" });
-    return res.status(401).json({ message: "账号或密码错误" });
+// 修改密码（本地账号）
+app.post("/api/auth/change-password", auth, async (req, res) => {
+  const { old_password, new_password } = req.body;
+  if (!old_password || !new_password) {
+    return res.status(400).json({ message: "请填写旧密码和新密码" });
+  }
+  if (new_password.length < 6) {
+    return res.status(400).json({ message: "新密码至少 6 位" });
   }
 
-  // 关联 datahub_basic_persons 获取权限
-  const person = await get(
-    "SELECT id, role_id, department, name FROM datahub_basic_persons WHERE union_id = ? AND is_active = 1",
-    [user.union_id]
-  );
-  
-  if (person) {
-    // 使用 datahub_basic_persons 的信息
-    user.role_id = person.role_id;
-    user.department = person.department || user.department;
-    user.name = person.name || user.name;
-    
-    // 获取角色信息
-    if (person.role_id) {
-      const role = await getRoleById(person.role_id);
-      if (role) user.role = role.code;
+  try {
+    const user = await get("SELECT * FROM users WHERE union_id = ? OR id = ?", [req.user.id, req.user.id]);
+    if (!user) {
+      return res.status(404).json({ message: "本地账号不存在" });
     }
-  }
 
-  logger.info("auth_login_success", {
-    request_id: req.requestId,
-    user_id: user.id,
-    union_id: user.union_id,
-    role: user.role,
-    department: user.department
-  });
-  createSession(res, user, { authSource: "local" });
-  res.json({
-    token: signUser(user, "24h"),
-    expires_in: "24h",
-    user: publicUser(user),
-    authSource: "native"
-  });
+    // 验证旧密码
+    const passwordHash = user.password_hash || user.password;
+    if (!passwordHash || typeof passwordHash !== 'string') {
+      return res.status(500).json({ message: "账号凭证异常" });
+    }
+    const valid = await bcrypt.compare(old_password, passwordHash);
+    if (!valid) {
+      return res.status(401).json({ message: "旧密码错误" });
+    }
+
+    // 更新密码
+    const newHash = await bcrypt.hash(new_password, 10);
+    await run("UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?", [newHash, user.id]);
+
+    res.json({ ok: true, message: "密码修改成功" });
+  } catch (err) {
+    logger.error("change_password_error", { request_id: req.requestId, user_id: req.user.id, error: err.message });
+    res.status(500).json({ message: "修改密码失败" });
+  }
 });
 
 app.get("/sso/authorize-url", ssoLimiter, (req, res) => {
@@ -1896,13 +2003,13 @@ app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
 
 // 创建授权
 app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) => {
-  const { person_id, role_type, managed_departments, allowed_transfer_targets } = req.body;
+  const { person_id, department_names, role_type, can_transfer_to, is_enabled } = req.body;
 
-  if (!person_id || !role_type || !Array.isArray(managed_departments) || managed_departments.length === 0) {
-    return res.status(400).json({ message: '请填写完整授权信息' });
+  if (!person_id || !role_type || !Array.isArray(department_names) || department_names.length === 0) {
+    return res.status(400).json({ message: '请填写完整授权信息（person_id, department_names, role_type）' });
   }
   if (!['admin', 'observer'].includes(role_type)) {
-    return res.status(400).json({ message: '角色类型无效' });
+    return res.status(400).json({ message: '角色类型无效，仅支持 admin 或 observer' });
   }
 
   // 检查人员是否存在（仅 datahub_basic_persons，限院外人员/教职员）
@@ -1912,44 +2019,45 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
   );
   if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限院外人员、教职员）' });
 
-  // 验证部门有效性
-  for (const dept of managed_departments) {
+  // 验证 department_names 中的部门必须存在于 departments 表且 is_active=1
+  for (const dept of department_names) {
     if (!(await isValidDepartment(dept))) {
-      return res.status(400).json({ message: `部门「${dept}」无效` });
+      return res.status(400).json({ message: `部门「${dept}」无效或未启用` });
     }
   }
 
-  // 检查是否已有授权
-  const existing = await get(
-    'SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ?',
-    [person_id, managed_departments[0]]
-  );
-  if (existing) return res.status(409).json({ message: '该人员在此部门已有授权记录' });
+  // 验证 can_transfer_to 中的部门（如果提供）
+  if (Array.isArray(can_transfer_to) && can_transfer_to.length > 0) {
+    for (const dept of can_transfer_to) {
+      if (!(await isValidDepartment(dept))) {
+        return res.status(400).json({ message: `转派目标部门「${dept}」无效或未启用` });
+      }
+    }
+  }
 
-  const transferTargetsStr = allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]';
+  // 检查同一人员在同一部门是否已有 is_enabled=1 的记录
+  for (const dept of department_names) {
+    const existing = await get(
+      'SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ? AND is_enabled = 1',
+      [person_id, dept]
+    );
+    if (existing) return res.status(409).json({ message: `该人员在部门「${dept}」已有启用的授权记录` });
+  }
+
+  const transferTargetsStr = Array.isArray(can_transfer_to) ? JSON.stringify(can_transfer_to) : '[]';
+  const enabledValue = is_enabled !== undefined ? (is_enabled ? 1 : 0) : 1;
   let insertedId = null;
 
-  for (const dept of managed_departments) {
+  for (const dept of department_names) {
     const result = await run(
-      'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, 1)',
-      [person_id, dept, role_type, transferTargetsStr]
+      'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, ?)',
+      [person_id, dept, role_type, transferTargetsStr, enabledValue]
     );
     if (!insertedId) insertedId = result.insertId;
   }
 
-  // 自动在 users 表创建登录账号（username=工号，密码=123456）
-  if (person.union_id) {
-    const existingUser = await get('SELECT id FROM users WHERE username = ?', [person.union_id]);
-    if (!existingUser) {
-      const hash = await bcrypt.hash('123456', 10);
-      await run(
-        'INSERT INTO users (username, password, name, phone, department, role, union_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [person.union_id, hash, person.name, null, person.department, 'user', person.union_id]
-      );
-    }
-  }
-
-  const afterState = { person_id, role_type, managed_departments, allowed_transfer_targets: allowed_transfer_targets || null };
+  // 记录审计日志
+  const afterState = { person_id, role_type, department_names, can_transfer_to: can_transfer_to || [], is_enabled: enabledValue };
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
      VALUES (?, ?, 'create', NULL, ?)`,
@@ -1963,6 +2071,7 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
 app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) => {
   const keyword = String(req.query.keyword || '').trim();
   const roleType = String(req.query.role_type || '').trim();
+  const departmentName = String(req.query.department_name || '').trim();
   const isEnabled = req.query.is_enabled;
   const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
   const page = Math.max(Number(req.query.page || 1), 1);
@@ -1973,13 +2082,17 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
 
   const conditions = [];
   if (keyword) {
-    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.department LIKE ? OR u.name LIKE ? OR u.department LIKE ? OR CAST(u.id AS TEXT) LIKE ?)");
+    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.union_id LIKE ? OR p.department LIKE ?)");
     const like = `%${keyword}%`;
-    params.push(like, like, like, like, like, like);
+    params.push(like, like, like, like);
   }
   if (roleType && ['admin', 'observer'].includes(roleType)) {
     conditions.push("da.role_type = ?");
     params.push(roleType);
+  }
+  if (departmentName) {
+    conditions.push("da.department_name = ?");
+    params.push(departmentName);
   }
   if (isEnabled === '1' || isEnabled === '0') {
     conditions.push("da.is_enabled = ?");
@@ -1992,7 +2105,6 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   const countRow = await get(
     `SELECT COUNT(*) AS count FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}`,
     params
   );
@@ -2000,13 +2112,13 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   const rows = await all(
     `SELECT da.id, da.person_id, da.department_name, da.role_type, da.is_enabled, da.can_transfer_to,
             da.created_at, da.updated_at,
-            COALESCE(p.name, u.name) AS person_name,
-            COALESCE(p.department, u.department) AS person_department,
-            COALESCE(p.role, u.role) AS person_role,
+            p.name AS person_name,
+            p.department AS person_department,
+            p.type AS person_type,
+            p.phone AS person_phone,
             p.union_id AS person_union_id
      FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}
      ORDER BY da.updated_at DESC
      LIMIT ? OFFSET ?`,
@@ -2024,10 +2136,11 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
         is_enabled: row.is_enabled,
         person_name: row.person_name,
         person_department: row.person_department,
-        person_role: row.person_role,
+        person_type: row.person_type,
+        person_phone: row.person_phone,
         person_union_id: row.person_union_id,
         managed_departments: [],
-        allowed_transfer_targets: [],
+        can_transfer_to: [],
         created_at: row.created_at,
         updated_at: row.updated_at
       };
@@ -2036,7 +2149,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
     if (row.can_transfer_to) {
       try {
         const targets = JSON.parse(row.can_transfer_to);
-        grouped[row.person_id].allowed_transfer_targets.push(...targets);
+        grouped[row.person_id].can_transfer_to.push(...targets);
       } catch {}
     }
   }
@@ -2050,13 +2163,13 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
 app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
   const row = await get(
     `SELECT da.*,
-            COALESCE(p.name, u.name) AS person_name,
-            COALESCE(p.department, u.department) AS person_department,
-            COALESCE(p.role, u.role) AS person_role,
+            p.name AS person_name,
+            p.department AS person_department,
+            p.type AS person_type,
+            p.phone AS person_phone,
             p.union_id AS person_union_id
      FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      WHERE da.id = ?`,
     [req.params.id]
   );
@@ -2065,14 +2178,14 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
   // 获取同一人员的所有部门授权
   const allAssignments = await getDepartmentAssignments(row.person_id);
   row.managed_departments = allAssignments.map(a => a.department_name);
-  row.allowed_transfer_targets = row.can_transfer_to ? JSON.parse(row.can_transfer_to) : [];
+  row.can_transfer_to = row.can_transfer_to ? JSON.parse(row.can_transfer_to) : [];
 
   res.json(row);
 });
 
-// 编辑授权
-app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
-  const { role_type, managed_departments, allowed_transfer_targets, is_enabled } = req.body;
+// 更新授权（单条记录）
+app.put("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
+  const { role_type, can_transfer_to, is_enabled } = req.body;
 
   const current = await get(
     `SELECT da.*, p.name AS person_name
@@ -2083,17 +2196,25 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
   );
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
-  // 获取当前人员的所有部门授权
-  const allCurrentAssignments = await getDepartmentAssignments(current.person_id);
+  // 记录更新前的状态
   const beforeState = {
     person_id: current.person_id,
+    department_name: current.department_name,
     role_type: current.role_type,
-    is_enabled: current.is_enabled,
-    managed_departments: allCurrentAssignments.map(a => a.department_name),
-    allowed_transfer_targets: current.can_transfer_to ? JSON.parse(current.can_transfer_to) : []
+    can_transfer_to: current.can_transfer_to ? JSON.parse(current.can_transfer_to) : [],
+    is_enabled: current.is_enabled
   };
 
-  // 更新 department_assignments 记录
+  // 验证 can_transfer_to 中的部门（如果提供）
+  if (Array.isArray(can_transfer_to) && can_transfer_to.length > 0) {
+    for (const dept of can_transfer_to) {
+      if (!(await isValidDepartment(dept))) {
+        return res.status(400).json({ message: `转派目标部门「${dept}」无效或未启用` });
+      }
+    }
+  }
+
+  // 构建更新语句
   const updates = [];
   const params = [];
   if (role_type && ['admin', 'observer'].includes(role_type)) {
@@ -2104,45 +2225,26 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
     updates.push('is_enabled = ?');
     params.push(is_enabled ? 1 : 0);
   }
-  if (allowed_transfer_targets !== undefined) {
+  if (can_transfer_to !== undefined) {
     updates.push('can_transfer_to = ?');
-    params.push(allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]');
-  }
-  if (updates.length) {
-    updates.push('updated_at = CURRENT_TIMESTAMP');
-    params.push(req.params.id);
-    await run(`UPDATE department_assignments SET ${updates.join(', ')} WHERE id = ?`, params);
+    params.push(Array.isArray(can_transfer_to) ? JSON.stringify(can_transfer_to) : '[]');
   }
 
-  // 更新管辖部门
-  if (Array.isArray(managed_departments)) {
-    for (const dept of managed_departments) {
-      if (!(await isValidDepartment(dept))) {
-        return res.status(400).json({ message: `部门「${dept}」无效` });
-      }
-    }
-    // 删除该人员的所有旧授权
-    await run('DELETE FROM department_assignments WHERE person_id = ?', [current.person_id]);
-    // 重新插入
-    const transferTargetsStr = allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]';
-    const finalRoleType = role_type || current.role_type;
-    const finalIsEnabled = is_enabled !== undefined ? (is_enabled ? 1 : 0) : current.is_enabled;
-    for (const dept of managed_departments) {
-      await run(
-        'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, ?)',
-        [current.person_id, dept, finalRoleType, transferTargetsStr, finalIsEnabled]
-      );
-    }
+  if (updates.length === 0) {
+    return res.status(400).json({ message: '未提供任何更新字段' });
   }
 
-  // 构建 afterState
-  const newDepts = Array.isArray(managed_departments) ? managed_departments : beforeState.managed_departments;
+  updates.push('updated_at = CURRENT_TIMESTAMP');
+  params.push(req.params.id);
+  await run(`UPDATE department_assignments SET ${updates.join(', ')} WHERE id = ?`, params);
+
+  // 记录更新后的状态
   const afterState = {
     person_id: current.person_id,
+    department_name: current.department_name,
     role_type: role_type || beforeState.role_type,
-    is_enabled: is_enabled !== undefined ? (is_enabled ? 1 : 0) : beforeState.is_enabled,
-    managed_departments: newDepts,
-    allowed_transfer_targets: allowed_transfer_targets !== undefined ? (allowed_transfer_targets || null) : beforeState.allowed_transfer_targets
+    can_transfer_to: can_transfer_to !== undefined ? (can_transfer_to || []) : beforeState.can_transfer_to,
+    is_enabled: is_enabled !== undefined ? (is_enabled ? 1 : 0) : beforeState.is_enabled
   };
 
   await run(
@@ -2249,6 +2351,127 @@ app.get("/api/notifications/unread-count", auth, async (req, res) => {
     [req.user.id]
   );
   res.json({ count: row?.count || 0 });
+});
+
+// -- Local Account Management (superadmin only) --
+
+// 获取本地账号列表
+app.get("/api/admin/local-accounts", auth, superAdminOnly, async (req, res) => {
+  const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const keyword = String(req.query.keyword || "").trim();
+
+  let where = "";
+  const params = [];
+  if (keyword) {
+    where = "WHERE u.username LIKE ? OR p.name LIKE ? OR p.department LIKE ?";
+    const like = `%${keyword}%`;
+    params.push(like, like, like);
+  }
+
+  const countRow = await get(
+    `SELECT COUNT(*) AS count FROM users u
+     LEFT JOIN datahub_basic_persons p ON p.union_id = u.union_id
+     ${where}`,
+    params
+  );
+
+  const rows = await all(
+    `SELECT u.id, u.username, u.union_id, u.is_active, u.created_at,
+            p.name AS person_name, p.department AS person_department, p.type AS person_type
+     FROM users u
+     LEFT JOIN datahub_basic_persons p ON p.union_id = u.union_id
+     ${where}
+     ORDER BY u.created_at DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+
+  res.json({ page, pageSize, total: countRow?.count || 0, rows });
+});
+
+// 创建本地账号
+app.post("/api/admin/local-accounts", auth, superAdminOnly, async (req, res) => {
+  const { person_id, username, password, is_active } = req.body;
+
+  if (!person_id || !username || !password) {
+    return res.status(400).json({ message: "请填写完整信息（person_id, username, password）" });
+  }
+
+  // 检查 username 唯一性
+  const existingUser = await get("SELECT id FROM users WHERE username = ?", [username]);
+  if (existingUser) {
+    return res.status(409).json({ message: "用户名已存在" });
+  }
+
+  // 检查 person_id 是否存在
+  const person = await get("SELECT id, union_id FROM datahub_basic_persons WHERE id = ?", [person_id]);
+  if (!person) {
+    return res.status(404).json({ message: "人员不存在" });
+  }
+
+  // 检查该 person_id 是否已有本地账号
+  const existingAccount = await get("SELECT id FROM users WHERE union_id = ?", [person.union_id]);
+  if (existingAccount) {
+    return res.status(409).json({ message: "该人员已有本地账号" });
+  }
+
+  // 密码哈希
+  const passwordHash = await bcrypt.hash(password, 10);
+  const enabledValue = is_active !== undefined ? (is_active ? 1 : 0) : 1;
+
+  const result = await run(
+    "INSERT INTO users (username, password_hash, union_id, is_active) VALUES (?, ?, ?, ?)",
+    [username, passwordHash, person.union_id, enabledValue]
+  );
+
+  res.status(201).json({ ok: true, id: result.insertId });
+});
+
+// 更新本地账号
+app.put("/api/admin/local-accounts/:id", auth, superAdminOnly, async (req, res) => {
+  const { password, is_active } = req.body;
+
+  const current = await get("SELECT * FROM users WHERE id = ?", [req.params.id]);
+  if (!current) {
+    return res.status(404).json({ message: "账号不存在" });
+  }
+
+  const updates = [];
+  const params = [];
+
+  if (password) {
+    const passwordHash = await bcrypt.hash(password, 10);
+    updates.push("password_hash = ?");
+    params.push(passwordHash);
+  }
+
+  if (is_active !== undefined) {
+    updates.push("is_active = ?");
+    params.push(is_active ? 1 : 0);
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ message: "未提供任何更新字段" });
+  }
+
+  params.push(req.params.id);
+  await run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, params);
+
+  res.json({ ok: true });
+});
+
+// 删除本地账号（软删除）
+app.delete("/api/admin/local-accounts/:id", auth, superAdminOnly, async (req, res) => {
+  const current = await get("SELECT * FROM users WHERE id = ?", [req.params.id]);
+  if (!current) {
+    return res.status(404).json({ message: "账号不存在" });
+  }
+
+  await run("UPDATE users SET is_active = 0 WHERE id = ?", [req.params.id]);
+
+  res.json({ ok: true });
 });
 
 app.patch("/api/admin/tickets/:id/publish", auth, adminOnly, async (req, res) => {
