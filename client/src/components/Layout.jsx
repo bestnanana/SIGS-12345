@@ -148,17 +148,17 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             <LogoMark />
           </button>
 
-          <nav className="hidden flex-1 items-center justify-center gap-0 lg:flex">
+          <nav className="hidden flex-1 items-center justify-center gap-1 lg:flex">
             {navItems.map((item) => {
               const active = isCurrent(item);
               return (
                 <LocaleLink
                   key={`${item.labelKey}-${item.to}`}
                   to={item.to}
-                  className={`relative flex h-[64px] w-[72px] items-center justify-center text-[16px] transition-all duration-300 ${
+                  className={`relative flex h-[36px] items-center justify-center rounded-lg px-5 text-[15px] transition-all duration-300 ${
                     active 
-                      ? "bg-white font-semibold text-tsinghua-700" 
-                      : "font-medium text-white/75 hover:text-white hover:bg-white/10"
+                      ? "bg-white/95 font-semibold text-tsinghua-700 shadow-sm" 
+                      : "font-medium text-white/80 hover:text-white hover:bg-white/15"
                   }`}
                 >
                   {t(item.labelKey)}
