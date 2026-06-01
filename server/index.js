@@ -1670,59 +1670,64 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
 });
 
 app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attachments", 8), async (req, res) => {
-  const { content, status } = req.body;
-  if (!content) return res.status(400).json({ message: "请填写回复内容" });
-  const user = await loadPerson(req.user.id);
-  const ticket = await get("SELECT id, title, submitter_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
-  if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  const permission = await getTicketPermission(req.params.id, user);
-  if (permission !== 'handle') {
-    return res.status(403).json({ message: "您所在的部门当前不是承办部门，无法处理此事项" });
-  }
-  if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
-  const result = await run(
-    "INSERT INTO replies (ticket_id, content, replier_id, department) VALUES (?, ?, ?, ?)",
-    [req.params.id, content, req.user.id, user.department]
-  );
-  await saveFiles(req.files, null, result.insertId);
-  await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "completed", req.params.id]);
-
-  // Notify the ticket submitter
-  if (ticket.submitter_id) {
-    const notifResult = await run(
-      `INSERT INTO notifications (user_id, ticket_id, type, message)
-       VALUES (?, ?, 'replied', ?)`,
-      [ticket.submitter_id, req.params.id, `您的事项【${ticket.title}】已有新的处理回复。`]
-    );
-    const targetUrl = `/cn/tickets/${req.params.id}?nid=${notifResult.insertId}`;
-    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
-  }
-
-  // Complete portal todos
-  const ticketId = req.params.id;
-
-  // Always complete submitter's todo when admin replies
-  const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [ticket.submitter_id, ticket.submitter_id]);
-  const submitterDatahub = submitterPerson?.union_id
-    ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
-    : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [ticket.submitter_id]);
-  if (submitterDatahub?.id) {
-    completePortalTodo(buildTodoId(ticketId, 'submitter'), submitterDatahub.id)
-      .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'submitter', message: err.message }));
-  }
-
-  // Complete the replying admin's own todo
-  if (user.union_id || user.id) {
-    const adminPersonId = user.union_id
-      ? (await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [user.union_id]))?.id
-      : user.id;
-    if (adminPersonId) {
-      completePortalTodo(buildTodoId(ticketId, 'admin', adminPersonId), adminPersonId)
-        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'admin_replier', message: err.message }));
+  try {
+    const { content, status } = req.body;
+    if (!content) return res.status(400).json({ message: "请填写回复内容" });
+    const user = await loadPerson(req.user.id);
+    const ticket = await get("SELECT id, title, submitter_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
+    if (!ticket) return res.status(404).json({ message: "事项不存在" });
+    const permission = await getTicketPermission(req.params.id, user);
+    if (permission !== 'handle') {
+      return res.status(403).json({ message: "您所在的部门当前不是承办部门，无法处理此事项" });
     }
-  }
+    if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
+    const result = await run(
+      "INSERT INTO replies (ticket_id, content, replier_id, department) VALUES (?, ?, ?, ?)",
+      [req.params.id, content, req.user.id, user.department]
+    );
+    await saveFiles(req.files, null, result.insertId);
+    await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "completed", req.params.id]);
 
-  res.status(201).json({ id: result.insertId });
+    // Notify the ticket submitter
+    if (ticket.submitter_id) {
+      const notifResult = await run(
+        `INSERT INTO notifications (user_id, ticket_id, type, message)
+         VALUES (?, ?, 'replied', ?)`,
+        [ticket.submitter_id, req.params.id, `您的事项【${ticket.title}】已有新的处理回复。`]
+      );
+      const targetUrl = `/cn/tickets/${req.params.id}?nid=${notifResult.insertId}`;
+      await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+    }
+
+    // Complete portal todos
+    const ticketId = req.params.id;
+
+    // Always complete submitter's todo when admin replies
+    const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [ticket.submitter_id, ticket.submitter_id]);
+    const submitterDatahub = submitterPerson?.union_id
+      ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
+      : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [ticket.submitter_id]);
+    if (submitterDatahub?.id) {
+      completePortalTodo(buildTodoId(ticketId, 'submitter'), submitterDatahub.id)
+        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'submitter', message: err.message }));
+    }
+
+    // Complete the replying admin's own todo
+    if (user.union_id || user.id) {
+      const adminPersonId = user.union_id
+        ? (await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [user.union_id]))?.id
+        : user.id;
+      if (adminPersonId) {
+        completePortalTodo(buildTodoId(ticketId, 'admin', adminPersonId), adminPersonId)
+          .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'admin_replier', message: err.message }));
+      }
+    }
+
+    res.status(201).json({ id: result.insertId });
+  } catch (err) {
+    console.error('Reply handler error:', err);
+    if (!res.headersSent) res.status(500).json({ message: '回复失败: ' + err.message });
+  }
 });
 
 app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => {
