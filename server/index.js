@@ -1275,6 +1275,10 @@ app.post("/sso/manual-code", async (req, res) => {
 app.get("/sso/logout", (req, res) => {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (sessionId) sessions.delete(sessionId);
+  
+  // 清理内存中的 oauthStates
+  oauthStates.clear();
+  
   clearAuthCookies(res);
   // 注销后重定向到 OAuth 登录页面（使用相对路径）
   const redirectUrl = `/sso/oauth/authorize?response_type=code&client_id=${ssoClientId}&redirect_uri=${encodeURIComponent(ssoRedirectUri)}`;
@@ -1285,6 +1289,8 @@ app.get("/sso/logout", (req, res) => {
 app.get("/api/auth/logout", (req, res) => {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (sessionId) sessions.delete(sessionId);
+  // 清理内存中的 oauthStates
+  oauthStates.clear();
   clearAuthCookies(res);
   res.json({ ok: true });
 });
