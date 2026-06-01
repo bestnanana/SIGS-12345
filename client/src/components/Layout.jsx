@@ -17,16 +17,16 @@ const adminNavItems = [
 
 function LogoMark() {
   return (
-    <div className="tsinghua-logo flex min-w-0 items-center">
+    <div className="tsinghua-logo flex items-center">
       <img
         src="/tsinghua-sigs-logo.png"
         alt="清华大学深圳国际研究生院"
-        className="h-12 w-[228px] shrink-0 object-contain object-left"
+        className="h-12 w-[180px] shrink-0 object-contain object-left lg:w-[228px]"
       />
-      <div className="mx-7 hidden h-12 w-px bg-ai-border md:block" />
-      <div className="hidden min-w-0 md:block">
-        <div className="truncate text-[20px] font-semibold leading-6 tracking-tight text-ai-title">SIGS投诉即办</div>
-        <div className="mt-1 truncate text-xs text-ai-muted">SIGS Prompt Complaint</div>
+      <div className="mx-4 hidden h-12 w-px shrink-0 bg-ai-border lg:mx-7 lg:block" />
+      <div className="hidden min-w-0 shrink-0 lg:block">
+        <div className="whitespace-nowrap text-[20px] font-semibold leading-6 tracking-tight text-ai-title">SIGS投诉即办</div>
+        <div className="mt-1 whitespace-nowrap text-xs text-ai-muted">SIGS Prompt Complaint</div>
       </div>
     </div>
   );
