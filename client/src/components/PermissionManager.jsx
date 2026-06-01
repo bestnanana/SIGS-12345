@@ -71,7 +71,6 @@ function PermissionManager() {
   // person search in modal
   useEffect(() => {
     if (!showModal || editId) return; // don't search when editing
-    if (!searchKeyword.trim()) { setSearchResults([]); return; }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setSearchLoading(true);

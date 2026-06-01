@@ -1,6 +1,6 @@
 require("dotenv").config();
 
-const { initDb, get } = require("../server/db");
+const { initDb, get } = require("../server/db_sqlite");
 const { syncBasicPersons } = require("../server/datahub-sync");
 
 async function main() {

@@ -63,9 +63,19 @@ function App() {
 
     const token = getToken();
     if (!token) {
-      // No token → redirect to SSO login
+      // No token → fetch SSO authorize URL and redirect
       setLoading(false);
-      window.location.href = `/sso/authorize-url?locale=${locale}`;
+      fetch(`/sso/authorize-url?locale=${locale}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.authorize_url) {
+            window.location.href = data.authorize_url;
+          }
+        })
+        .catch(() => {
+          // Fallback to direct redirect
+          window.location.href = `/sso/authorize-url?locale=${locale}`;
+        });
       return () => { ignore = true; };
     }
 
@@ -108,17 +118,20 @@ function App() {
     navigate(target, { replace: true });
   }
 
-  function handleLogout() {
-    const authSource = getAuthSource();
+  async function handleLogout() {
+    // 先调用后端 logout 接口清除 session
+    try {
+      await api.get("/auth/logout");
+    } catch (e) {
+      // 忽略错误
+    }
+    // 清除前端存储
     clearAuthStorage();
     setUser(null);
     setViewRole("");
     setAuthMessage("");
-    if (authSource === "sso") {
-      window.location.href = `/sso/logout?locale=${locale}`;
-    } else {
-      window.location.href = `/${locale}/local/login`;
-    }
+    // 跳转到后端的 SSO 登出接口（会重定向到统一身份认证注销页面）
+    window.location.href = "/sso/logout";
   }
 
   function handleViewRoleChange(nextRole) {

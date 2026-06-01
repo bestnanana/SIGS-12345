@@ -10,22 +10,15 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const {
-  initDb,
-  run,
-  get,
-  all,
+  initDb, run, get, all,
   isValidDepartment,
   ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped,
   listFormOptionsGrouped, listFormOptions,
-  getFormOptionLabels,
-  createFormOption,
-  updateFormOption,
-  deleteFormOption,
-  listDepartmentsAll,
-  createDepartment,
-  updateDepartment,
-  deleteDepartment,
-  disableAdminsForInactivePersons
+  getFormOptionLabels, createFormOption, updateFormOption, deleteFormOption,
+  listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment,
+  disableAdminsForInactivePersons,
+  getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission,
+  getDepartmentAssignments, isDepartmentAdmin, getTransferTargets
 } = require("./db_sqlite");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
@@ -33,6 +26,7 @@ const { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl } = requir
 const logger = require("./logger");
 
 const app = express();
+app.set("trust proxy", 1);
 const defaultPort = process.env.NODE_ENV === "production" ? 80 : 3001;
 const port = process.env.PORT || defaultPort;
 const host = process.env.HOST || "0.0.0.0";
@@ -670,11 +664,12 @@ function publicUser(user) {
   if (!user) return null;
   return {
     id: user.id,
-    username: user.union_id,
+    username: user.union_id || user.username,
     union_id: user.union_id,
     name: user.name,
     phone: user.phone,
     role: user.role || "user",
+    role_id: user.role_id,
     department: user.department,
     can_manage_roles: Boolean(user.can_manage_roles)
   };
@@ -777,21 +772,15 @@ async function getTicketPermission(ticketId, viewer) {
 
   // 管理员：优先检查部门权限（管理员可能同时也是提交者）
   if (isAdminLike(viewer)) {
-    // 优先检查 department_admins 多部门授权
-    const deptAdmin = await get(
-      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [String(viewer.id)]
-    );
+    // 优先检查 department_assignments 多部门授权
+    const assignments = await getDepartmentAssignments(String(viewer.id));
 
-    if (deptAdmin) {
-      const managedDepts = await all(
-        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-        [deptAdmin.id]
-      );
-      const managedNames = managedDepts.map(d => d.department_name);
+    if (assignments.length > 0) {
+      const managedNames = assignments.map(a => a.department_name);
+      const isObserver = assignments.some(a => a.role_type === 'observer');
 
       if (managedNames.includes(ticket.current_department)) {
-        return deptAdmin.role_type === 'observer' ? 'view' : 'handle';
+        return isObserver ? 'view' : 'handle';
       }
       if (managedNames.includes(ticket.original_department)) return 'view';
 
@@ -823,13 +812,8 @@ async function getTicketPermission(ticketId, viewer) {
 }
 
 async function loadPerson(id) {
-  // 优先查 token_persons（SSO 用户）
-  const tokenPerson = await get("SELECT * FROM token_persons WHERE id = ?", [String(id)]);
-  if (tokenPerson) return tokenPerson;
-  // 查 datahub（同步过来的人员数据）
   const person = await get("SELECT * FROM datahub_basic_persons WHERE id = ?", [String(id)]);
   if (person) return person;
-  // Fallback: 本地账号
   const user = await get("SELECT * FROM users WHERE id = ?", [id]);
   if (user) {
     return {
@@ -843,6 +827,9 @@ async function loadPerson(id) {
       username: user.username,
       phone: user.phone,
       role: user.role,
+      role_id: null,
+      auth_source: 'local',
+      is_active: 1,
       can_manage_roles: 0,
       raw_json: null,
       synced_at: null,
@@ -857,29 +844,29 @@ async function loadOrCreateSsoPerson(ssoUser) {
   await ensureDatahubPersonTables(); await ensureFormConfigTables(); await seedDefaultFormOptions(); await seedDepartments();
   const id = ssoUser.personId || `sso_${ssoUser.uid}`;
 
-  // 检查 token_persons 是否已有此人
-  const existing = await get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
+  // 检查 datahub_basic_persons 是否已有此人
+  const existing = await get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
   if (existing) {
     await run(
-      `UPDATE token_persons
-       SET name = ?, person_type = COALESCE(NULLIF(?, ''), person_type),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE uid = ?`,
+      `UPDATE datahub_basic_persons
+       SET name = ?, type = COALESCE(NULLIF(?, ''), type),
+           auth_source = 'sso', updated_at = CURRENT_TIMESTAMP
+       WHERE union_id = ?`,
       [ssoUser.name, ssoUser.personType, ssoUser.uid]
     );
-    return get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
+    return get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
   }
 
-  const role = "user";
-  const dept = null;
-  const phone = null;
+  // 获取默认用户角色
+  const userRole = await getRoleByCode('user');
+  const defaultRoleId = userRole ? userRole.id : null;
 
   await run(
-    `INSERT INTO token_persons (id, uid, name, person_type, department, role, phone, raw_json, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [id, ssoUser.uid, ssoUser.name, ssoUser.personType, dept, role, phone, JSON.stringify(ssoUser.raw || {})]
+    `INSERT INTO datahub_basic_persons (id, union_id, name, type, department, role, phone, role_id, auth_source, is_active, raw_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sso', 1, ?, CURRENT_TIMESTAMP)`,
+    [id, ssoUser.uid, ssoUser.name, ssoUser.personType, null, 'user', null, defaultRoleId, JSON.stringify(ssoUser.raw || {})]
   );
-  return get("SELECT * FROM token_persons WHERE uid = ?", [ssoUser.uid]);
+  return get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
 }
 
 async function adminOnly(req, res, next) {
@@ -890,15 +877,12 @@ async function adminOnly(req, res, next) {
       req.user.department = user.department;
       return next();
     }
-    // 检查 department_admins 授权表
-    const deptAdmin = await get(
-      'SELECT role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [String(req.user.id)]
-    );
-    if (deptAdmin) {
+    // 检查 department_assignments 授权表
+    const assignments = await getDepartmentAssignments(String(req.user.id));
+    if (assignments.length > 0) {
       req.user.role = user?.role || 'admin';
       req.user.department = user?.department;
-      req.user.dept_admin_role = deptAdmin.role_type;
+      req.user.dept_admin_role = assignments.some(a => a.role_type === 'observer') ? 'observer' : 'admin';
       return next();
     }
     return res.status(403).json({ message: "需要管理员权限" });
@@ -954,10 +938,9 @@ async function saveFiles(files, ticketId = null, replyId = null) {
 async function ticketDetails(id, viewer) {
   const ticket = await get(
     `SELECT t.*,
-            COALESCE(tp.name, dp.name, u.name) AS submitter_name,
-            COALESCE(tp.phone, dp.phone, u.phone) AS submitter_phone
+            COALESCE(dp.name, u.name) AS submitter_name,
+            COALESCE(dp.phone, u.phone) AS submitter_phone
      FROM tickets t
-     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.id = ?`,
@@ -981,9 +964,8 @@ async function ticketDetails(id, viewer) {
   }
 
   const replies = await all(
-    `SELECT r.*, COALESCE(tp.name, dp.name, u.name) AS replier_name
+    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
      FROM replies r
-     LEFT JOIN token_persons tp ON tp.id = r.replier_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
      LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
@@ -1000,9 +982,8 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   const satisfaction = await get(
-    `SELECT s.*, COALESCE(tp.name, dp.name, u.name) AS user_name
+    `SELECT s.*, COALESCE(dp.name, u.name) AS user_name
      FROM satisfaction_surveys s
-     LEFT JOIN token_persons tp ON tp.id = s.user_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = s.user_id
      LEFT JOIN users u ON u.id = s.user_id
      WHERE s.ticket_id = ?`,
@@ -1013,13 +994,12 @@ async function ticketDetails(id, viewer) {
     `SELECT id, name, department FROM (
        SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
        FROM datahub_basic_persons p
-       WHERE p.role IN ('admin', 'super_admin', 'liaison') AND p.department = ?
+       WHERE p.role_id IN (1, 2, 3) AND p.department = ?
        UNION
        SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
        FROM datahub_basic_persons p
-       JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
-       JOIN department_admin_departments dad ON dad.admin_id = da.id
-       WHERE dad.department_name = ?
+       JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+       WHERE da.department_name = ?
        UNION ALL
        SELECT CAST(id AS TEXT) AS id, name, department FROM users
        WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
@@ -1035,7 +1015,7 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN users u_op ON u_op.id = tr.operator_id
      LEFT JOIN datahub_basic_persons dp_tgt ON dp_tgt.id = (
        SELECT id FROM datahub_basic_persons
-       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = tr.to_department
+       WHERE role_id IN (1, 2, 3) AND department = tr.to_department
        ORDER BY id ASC LIMIT 1
      )
      LEFT JOIN users u_tgt ON u_tgt.id = (
@@ -1076,12 +1056,29 @@ app.post("/local/doLogin", authLimiter, async (req, res) => {
     return res.status(401).json({ message: "账号或密码错误" });
   }
 
+  // 关联 datahub_basic_persons 获取权限
+  const person = await get(
+    "SELECT id, role_id, department, name FROM datahub_basic_persons WHERE union_id = ? AND is_active = 1",
+    [user.union_id]
+  );
   
+  if (person) {
+    // 使用 datahub_basic_persons 的信息
+    user.role_id = person.role_id;
+    user.department = person.department || user.department;
+    user.name = person.name || user.name;
+    
+    // 获取角色信息
+    if (person.role_id) {
+      const role = await getRoleById(person.role_id);
+      if (role) user.role = role.code;
+    }
+  }
 
   logger.info("auth_login_success", {
     request_id: req.requestId,
     user_id: user.id,
-    union_id: user.username,
+    union_id: user.union_id,
     role: user.role,
     department: user.department
   });
@@ -1172,10 +1169,17 @@ app.get("/sso/logout", (req, res) => {
   const sessionId = parseCookies(req)[sessionCookieName];
   if (sessionId) sessions.delete(sessionId);
   clearAuthCookies(res);
-  const ssoLoginUrl = ssoAuthorizeUrl(req, res, "cn");
-  const logoutUrl = new URL(ssoLogoutUrl);
-  logoutUrl.searchParams.set("redirectUrl", ssoLoginUrl);
-  res.redirect(302, logoutUrl.toString());
+  // 注销后重定向到 OAuth 登录页面（使用相对路径）
+  const redirectUrl = `/sso/oauth/authorize?response_type=code&client_id=${ssoClientId}&redirect_uri=${encodeURIComponent(ssoRedirectUri)}`;
+  const logoutUrl = `https://id.sigs.tsinghua.edu.cn/portal/sso/logout.html?redirectUrl=${encodeURIComponent(redirectUrl)}`;
+  res.redirect(302, logoutUrl);
+});
+
+app.get("/api/auth/logout", (req, res) => {
+  const sessionId = parseCookies(req)[sessionCookieName];
+  if (sessionId) sessions.delete(sessionId);
+  clearAuthCookies(res);
+  res.json({ ok: true });
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
@@ -1366,35 +1370,37 @@ try {
   const targetDept = isUnknownDept ? DEFAULT_DEPT : department;
 
   if (!isUnknownDept && !(await isValidDepartment(targetDept))) return res.status(400).json({ message: "请选择有效部门" });
-  if (phone) await run("UPDATE token_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
+  if (phone) await run("UPDATE datahub_basic_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
 
   // Look up submitter's person info for storing on ticket
   const submitterPersonRow = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [req.user.id, req.user.id]).catch(() => null);
   const submitterDatahubRow = submitterPersonRow?.union_id
     ? await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE union_id = ?', [submitterPersonRow.union_id])
     : await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE id = ?', [req.user.id]);
-  const submitterUnionId = submitterDatahubRow?.union_id || null;
+  const submitterUnionId = req.user.union_id || submitterDatahubRow?.union_id || null;
   const submitterPersonId = submitterDatahubRow?.id || req.user.id;
   const submitterName = req.user.name || submitterDatahubRow?.name || null;
+  const submitterPhone = req.user.phone || null;
+  const submitterRole = req.user.role || 'user';
+  const submitterDepartment = req.user.department || null;
 
   const shareCode = crypto.randomBytes(12).toString("base64url");
   const result = await run(
-    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, submitter_union_id, submitter_person_id, submitter_name, status, share_code)
-     VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, submitterUnionId, submitterPersonId, submitterName, shareCode]
+    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, submitter_union_id, submitter_person_id, submitter_name, submitter_phone, submitter_role, submitter_department, status, share_code)
+     VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, submitterUnionId, submitterPersonId, submitterName, submitterPhone, submitterRole, submitterDepartment, shareCode]
   );
   await saveFiles(req.files, result.insertId, null);
 
-  // Notify admins in the target department + all super_admins + department_admins
+  // Notify admins in the target department + all super_admins + department_assignments
   const admins = await all(
     `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
-     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
-     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
-     WHERE p.role = 'super_admin'
-        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
-        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+     LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+     WHERE p.role_id = 1
+        OR (p.role_id IN (2, 3) AND p.department = ?)
+        OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [targetDept, targetDept]
   );
   const displayDept = isUnknownDept ? DEFAULT_DEPT : department;
@@ -1488,16 +1494,9 @@ app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
   let scope = "";
 
   if (!isGlobalAdmin) {
-    const deptAdmin = await get(
-      'SELECT id FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [String(user.id)]
-    );
-    if (deptAdmin) {
-      const managedDepts = await all(
-        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-        [deptAdmin.id]
-      );
-      const deptNames = managedDepts.map(d => d.department_name);
+    const assignments = await getDepartmentAssignments(String(user.id));
+    if (assignments.length > 0) {
+      const deptNames = assignments.map(a => a.department_name);
       if (deptNames.length > 0) {
         const ph = deptNames.map(() => '?').join(',');
         scope = `WHERE t.current_department IN (${ph})`;
@@ -1582,19 +1581,12 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   let isObserver = false;
 
   if (!isGlobalAdmin) {
-    // 优先检查 department_admins 多部门授权
-    const deptAdmin = await get(
-      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [String(user.id)]
-    );
+    // 优先检查 department_assignments 多部门授权
+    const assignments = await getDepartmentAssignments(String(user.id));
 
-    if (deptAdmin) {
-      isObserver = deptAdmin.role_type === 'observer';
-      const managedDepts = await all(
-        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-        [deptAdmin.id]
-      );
-      const deptNames = managedDepts.map(d => d.department_name);
+    if (assignments.length > 0) {
+      isObserver = assignments.some(a => a.role_type === 'observer');
+      const deptNames = assignments.map(a => a.department_name);
       if (deptNames.length === 0) {
         return res.json({ page, pageSize, total: 0, rows: [] });
       }
@@ -1630,32 +1622,24 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   // 构建 permission 参数
   const permParams = [];
   if (!isGlobalAdmin) {
-    const deptAdmin2 = await get(
-      'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-      [String(user.id)]
-    );
-    if (deptAdmin2 && deptAdmin2.role_type !== 'observer') {
-      const managedDepts2 = await all(
-        'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-        [deptAdmin2.id]
-      );
-      permParams.push(...managedDepts2.map(d => d.department_name));
-    } else if (!deptAdmin2 && user?.department) {
+    const permAssignments = await getDepartmentAssignments(String(user.id));
+    if (permAssignments.length > 0 && !permAssignments.every(a => a.role_type === 'observer')) {
+      permParams.push(...permAssignments.filter(a => a.role_type !== 'observer').map(a => a.department_name));
+    } else if (permAssignments.length === 0 && user?.department) {
       permParams.push(user.department);
     }
   }
 
   const rows = await all(
     `SELECT t.*,
-            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(tp.name, dp.name, u.name) END AS submitter_name,
-            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(tp.phone, dp.phone, u.phone) END AS submitter_phone,
+            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(dp.name, u.name) END AS submitter_name,
+            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(dp.phone, u.phone) END AS submitter_phone,
             s.score AS satisfaction_score,
             s.comment AS satisfaction_comment,
             s.updated_at AS satisfaction_updated_at,
             COUNT(a.id) AS attachment_count,
             ${permissionExpr} AS permission
      FROM tickets t
-     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      LEFT JOIN attachments a ON a.ticket_id = t.id
@@ -1756,13 +1740,9 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   }
 
   // 检查转办目标限制
-  const deptAdmin = await get(
-    'SELECT allowed_transfer_targets FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-    [String(req.user.id)]
-  );
-  if (deptAdmin?.allowed_transfer_targets) {
-    const allowed = JSON.parse(deptAdmin.allowed_transfer_targets);
-    if (!allowed.includes(to_department)) {
+  const transferTargets = await getTransferTargets(String(req.user.id), ticket.current_department);
+  if (transferTargets.length > 0) {
+    if (!transferTargets.includes(to_department)) {
       return res.status(403).json({ message: '您没有权限转办至该部门' });
     }
   }
@@ -1782,16 +1762,15 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   );
   await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
 
-  // Notify admins in the target department + all super_admins + department_admins
+  // Notify admins in the target department + all super_admins + department_assignments
   const admins = await all(
     `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
-     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
-     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
-     WHERE p.role = 'super_admin'
-        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
-        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+     LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+     WHERE p.role_id = 1
+        OR (p.role_id IN (2, 3) AND p.department = ?)
+        OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [to_department, to_department]
   );
   for (const admin of admins) {
@@ -1816,11 +1795,10 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   const oldDeptAdmins = await all(
     `SELECT DISTINCT p.id AS admin_person_id
      FROM datahub_basic_persons p
-     LEFT JOIN department_admins da ON da.person_id = p.id AND da.is_enabled = 1
-     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
-     WHERE p.role = 'super_admin'
-        OR (p.role IN ('admin', 'liaison') AND p.department = ?)
-        OR (da.id IS NOT NULL AND dad.department_name = ?)`,
+     LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+     WHERE p.role_id = 1
+        OR (p.role_id IN (2, 3) AND p.department = ?)
+        OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [fromDept, fromDept]
   );
   for (const admin of oldDeptAdmins) {
@@ -1868,22 +1846,27 @@ app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req,
   const offset = (page - 1) * pageSize;
 
   const like = keyword ? `%${keyword}%` : '%';
-  const notInAuth = "NOT IN (SELECT person_id FROM department_admins)";
+  const notInAuth = "NOT IN (SELECT DISTINCT person_id FROM department_assignments)";
 
-  // 只查 datahub_basic_persons，限院外人员和教职员
-  let where = `WHERE p.type IN ('院外人员', '教职员') AND (p.status IS NULL OR p.status != '0') AND p.id ${notInAuth}`;
+  // 查 datahub_basic_persons，限院外人员和教职员，排除离职和无效人员
+  let where = `WHERE p.type IN ('院外人员', '教职员', 'faculty') 
+    AND (p.status IS NULL OR p.status NOT IN ('0', 'false', 'departure', 'abandon_employee', 'die'))
+    AND p.is_active = 1
+    AND p.id ${notInAuth}`;
   const params = [];
   if (keyword) {
-    where += " AND (p.union_id LIKE ? OR p.name LIKE ?)";
-    params.push(like, like);
+    where += " AND (p.union_id LIKE ? OR p.name LIKE ? OR p.department LIKE ?)";
+    params.push(like, like, like);
   }
 
   const countRow = await get(`SELECT COUNT(*) AS count FROM datahub_basic_persons p ${where}`, params);
   const total = Number(countRow?.count || 0);
 
   const rows = await all(
-    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status, p.role
-     FROM datahub_basic_persons p ${where}
+    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status, p.role_id, r.code as role_code
+     FROM datahub_basic_persons p
+     LEFT JOIN roles r ON r.id = p.role_id
+     ${where}
      ORDER BY p.name ASC
      LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
@@ -1899,22 +1882,14 @@ app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
     return res.json({ departments: [], role_type: null, is_super_admin: true });
   }
 
-  const deptAdmin = await get(
-    'SELECT id, role_type FROM department_admins WHERE person_id = ? AND is_enabled = 1',
-    [String(req.user.id)]
-  );
-  if (!deptAdmin) {
+  const assignments = await getDepartmentAssignments(String(req.user.id));
+  if (assignments.length === 0) {
     return res.json({ departments: [], role_type: null, is_super_admin: false });
   }
 
-  const depts = await all(
-    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-    [deptAdmin.id]
-  );
-
   res.json({
-    departments: depts.map(d => d.department_name),
-    role_type: deptAdmin.role_type,
+    departments: assignments.map(a => a.department_name),
+    role_type: assignments[0]?.role_type || null,
     is_super_admin: false
   });
 });
@@ -1937,10 +1912,6 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
   );
   if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限院外人员、教职员）' });
 
-  // 检查是否已授权
-  const existing = await get('SELECT id FROM department_admins WHERE person_id = ?', [person_id]);
-  if (existing) return res.status(409).json({ message: '该人员已有授权记录' });
-
   // 验证部门有效性
   for (const dept of managed_departments) {
     if (!(await isValidDepartment(dept))) {
@@ -1948,16 +1919,22 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
     }
   }
 
-  const result = await run(
-    'INSERT INTO department_admins (person_id, role_type, is_enabled, allowed_transfer_targets) VALUES (?, ?, 1, ?)',
-    [person_id, role_type, allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : null]
+  // 检查是否已有授权
+  const existing = await get(
+    'SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ?',
+    [person_id, managed_departments[0]]
   );
+  if (existing) return res.status(409).json({ message: '该人员在此部门已有授权记录' });
+
+  const transferTargetsStr = allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]';
+  let insertedId = null;
 
   for (const dept of managed_departments) {
-    await run(
-      'INSERT INTO department_admin_departments (admin_id, department_name) VALUES (?, ?)',
-      [result.insertId, dept]
+    const result = await run(
+      'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, 1)',
+      [person_id, dept, role_type, transferTargetsStr]
     );
+    if (!insertedId) insertedId = result.insertId;
   }
 
   // 自动在 users 表创建登录账号（username=工号，密码=123456）
@@ -1979,7 +1956,7 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
     [req.user.id, person_id, JSON.stringify(afterState)]
   );
 
-  res.status(201).json({ ok: true, id: result.insertId });
+  res.status(201).json({ ok: true, id: insertedId });
 });
 
 // 授权列表
@@ -2013,7 +1990,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   }
 
   const countRow = await get(
-    `SELECT COUNT(*) AS count FROM department_admins da
+    `SELECT COUNT(*) AS count FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
      LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}`,
@@ -2021,13 +1998,13 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   );
 
   const rows = await all(
-    `SELECT da.id, da.person_id, da.role_type, da.is_enabled, da.allowed_transfer_targets,
+    `SELECT da.id, da.person_id, da.department_name, da.role_type, da.is_enabled, da.can_transfer_to,
             da.created_at, da.updated_at,
             COALESCE(p.name, u.name) AS person_name,
             COALESCE(p.department, u.department) AS person_department,
             COALESCE(p.role, u.role) AS person_role,
             p.union_id AS person_union_id
-     FROM department_admins da
+     FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
      LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      ${scope}
@@ -2036,17 +2013,37 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
     [...params, pageSize, offset]
   );
 
-  // 批量获取管辖部门
+  // 整理输出格式：按 person_id 分组
+  const grouped = {};
   for (const row of rows) {
-    const depts = await all(
-      'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-      [row.id]
-    );
-    row.managed_departments = depts.map(d => d.department_name);
-    row.allowed_transfer_targets = row.allowed_transfer_targets ? JSON.parse(row.allowed_transfer_targets) : null;
+    if (!grouped[row.person_id]) {
+      grouped[row.person_id] = {
+        id: row.id,
+        person_id: row.person_id,
+        role_type: row.role_type,
+        is_enabled: row.is_enabled,
+        person_name: row.person_name,
+        person_department: row.person_department,
+        person_role: row.person_role,
+        person_union_id: row.person_union_id,
+        managed_departments: [],
+        allowed_transfer_targets: [],
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      };
+    }
+    grouped[row.person_id].managed_departments.push(row.department_name);
+    if (row.can_transfer_to) {
+      try {
+        const targets = JSON.parse(row.can_transfer_to);
+        grouped[row.person_id].allowed_transfer_targets.push(...targets);
+      } catch {}
+    }
   }
 
-  res.json({ page, pageSize, total: countRow?.count || 0, rows });
+  const result = Object.values(grouped);
+
+  res.json({ page, pageSize, total: countRow?.count || 0, rows: result });
 });
 
 // 单条授权详情
@@ -2057,7 +2054,7 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
             COALESCE(p.department, u.department) AS person_department,
             COALESCE(p.role, u.role) AS person_role,
             p.union_id AS person_union_id
-     FROM department_admins da
+     FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
      LEFT JOIN users u ON CAST(u.id AS TEXT) = da.person_id
      WHERE da.id = ?`,
@@ -2065,12 +2062,10 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
   );
   if (!row) return res.status(404).json({ message: '授权记录不存在' });
 
-  const depts = await all(
-    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-    [row.id]
-  );
-  row.managed_departments = depts.map(d => d.department_name);
-  row.allowed_transfer_targets = row.allowed_transfer_targets ? JSON.parse(row.allowed_transfer_targets) : null;
+  // 获取同一人员的所有部门授权
+  const allAssignments = await getDepartmentAssignments(row.person_id);
+  row.managed_departments = allAssignments.map(a => a.department_name);
+  row.allowed_transfer_targets = row.can_transfer_to ? JSON.parse(row.can_transfer_to) : [];
 
   res.json(row);
 });
@@ -2081,26 +2076,24 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
 
   const current = await get(
     `SELECT da.*, p.name AS person_name
-     FROM department_admins da
+     FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
      WHERE da.id = ?`,
     [req.params.id]
   );
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
-  const currentDepts = await all(
-    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-    [current.id]
-  );
+  // 获取当前人员的所有部门授权
+  const allCurrentAssignments = await getDepartmentAssignments(current.person_id);
   const beforeState = {
     person_id: current.person_id,
     role_type: current.role_type,
     is_enabled: current.is_enabled,
-    managed_departments: currentDepts.map(d => d.department_name),
-    allowed_transfer_targets: current.allowed_transfer_targets ? JSON.parse(current.allowed_transfer_targets) : null
+    managed_departments: allCurrentAssignments.map(a => a.department_name),
+    allowed_transfer_targets: current.can_transfer_to ? JSON.parse(current.can_transfer_to) : []
   };
 
-  // 更新 department_admins 主表
+  // 更新 department_assignments 记录
   const updates = [];
   const params = [];
   if (role_type && ['admin', 'observer'].includes(role_type)) {
@@ -2112,13 +2105,13 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
     params.push(is_enabled ? 1 : 0);
   }
   if (allowed_transfer_targets !== undefined) {
-    updates.push('allowed_transfer_targets = ?');
-    params.push(allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : null);
+    updates.push('can_transfer_to = ?');
+    params.push(allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]');
   }
   if (updates.length) {
     updates.push('updated_at = CURRENT_TIMESTAMP');
     params.push(req.params.id);
-    await run(`UPDATE department_admins SET ${updates.join(', ')} WHERE id = ?`, params);
+    await run(`UPDATE department_assignments SET ${updates.join(', ')} WHERE id = ?`, params);
   }
 
   // 更新管辖部门
@@ -2128,11 +2121,16 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
         return res.status(400).json({ message: `部门「${dept}」无效` });
       }
     }
-    await run('DELETE FROM department_admin_departments WHERE admin_id = ?', [current.id]);
+    // 删除该人员的所有旧授权
+    await run('DELETE FROM department_assignments WHERE person_id = ?', [current.person_id]);
+    // 重新插入
+    const transferTargetsStr = allowed_transfer_targets ? JSON.stringify(allowed_transfer_targets) : '[]';
+    const finalRoleType = role_type || current.role_type;
+    const finalIsEnabled = is_enabled !== undefined ? (is_enabled ? 1 : 0) : current.is_enabled;
     for (const dept of managed_departments) {
       await run(
-        'INSERT INTO department_admin_departments (admin_id, department_name) VALUES (?, ?)',
-        [current.id, dept]
+        'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, ?)',
+        [current.person_id, dept, finalRoleType, transferTargetsStr, finalIsEnabled]
       );
     }
   }
@@ -2158,21 +2156,20 @@ app.patch("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, 
 
 // 删除授权
 app.delete("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
-  const current = await get('SELECT * FROM department_admins WHERE id = ?', [req.params.id]);
+  const current = await get('SELECT * FROM department_assignments WHERE id = ?', [req.params.id]);
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
-  const currentDepts = await all(
-    'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-    [current.id]
-  );
+  // 获取该人员的所有部门授权
+  const allAssignments = await getDepartmentAssignments(current.person_id);
   const beforeState = {
     person_id: current.person_id,
     role_type: current.role_type,
     is_enabled: current.is_enabled,
-    managed_departments: currentDepts.map(d => d.department_name)
+    managed_departments: allAssignments.map(a => a.department_name)
   };
 
-  await run('DELETE FROM department_admins WHERE id = ?', [current.id]);
+  // 删除该人员的所有授权记录
+  await run('DELETE FROM department_assignments WHERE person_id = ?', [current.person_id]);
 
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
@@ -2188,11 +2185,11 @@ app.patch("/api/admin/department-admins/:id/toggle", auth, superAdminOnly, async
   const { is_enabled } = req.body;
   if (is_enabled === undefined) return res.status(400).json({ message: '请指定 is_enabled' });
 
-  const current = await get('SELECT * FROM department_admins WHERE id = ?', [req.params.id]);
+  const current = await get('SELECT * FROM department_assignments WHERE id = ?', [req.params.id]);
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
   await run(
-    'UPDATE department_admins SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    'UPDATE department_assignments SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [is_enabled ? 1 : 0, req.params.id]
   );
 
@@ -2311,9 +2308,8 @@ app.get("/api/public/typical-tickets", async (req, res) => {
 
 app.get("/api/public/ticket/:shareCode", async (req, res) => {
   const ticket = await get(
-    `SELECT t.*, COALESCE(tp.name, dp.name, u.name) AS submitter_name, COALESCE(tp.phone, dp.phone, u.phone) AS submitter_phone
+    `SELECT t.*, COALESCE(dp.name, u.name) AS submitter_name, COALESCE(dp.phone, u.phone) AS submitter_phone
      FROM tickets t
-     LEFT JOIN token_persons tp ON tp.id = t.submitter_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.share_code = ?`,
@@ -2327,9 +2323,8 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
   }
 
   const replies = await all(
-    `SELECT r.*, COALESCE(tp.name, dp.name, u.name) AS replier_name
+    `SELECT r.*, COALESCE(dp.name, u.name) AS replier_name
      FROM replies r
-     LEFT JOIN token_persons tp ON tp.id = r.replier_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = r.replier_id
      LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
@@ -2338,9 +2333,8 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
   );
   const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [ticket.id]);
   const transfers = await all(
-    `SELECT tr.*, COALESCE(tp.name, dp.name, u.name) AS operator_name
+    `SELECT tr.*, COALESCE(dp.name, u.name) AS operator_name
      FROM transfers tr
-     LEFT JOIN token_persons tp ON tp.id = tr.operator_id
      LEFT JOIN datahub_basic_persons dp ON dp.id = tr.operator_id
      LEFT JOIN users u ON u.id = tr.operator_id
      WHERE tr.ticket_id = ?

@@ -32,6 +32,7 @@ function normalizeBasicPersonRow(row = {}) {
     appointment_form: String(row.appointment_form || "").trim(),
     hire_post: String(row.hire_post || "").trim(),
     write_date: String(row.write_date || "").trim(),
+    person_id: String(row.person_id || "").trim(),
     raw_json: JSON.stringify(row)
   };
 }
