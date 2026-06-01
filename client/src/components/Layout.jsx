@@ -21,14 +21,14 @@ function LogoMark() {
       <img
         src="/tsinghua-sigs-logo.png"
         alt="清华大学深圳国际研究生院"
-        className="h-10 w-auto shrink-0 object-contain object-left lg:h-11"
+        className="h-8 w-auto shrink-0 object-contain object-left"
       />
-      <div className="hidden h-8 w-px shrink-0 bg-white/20 lg:block" />
+      <div className="hidden h-6 w-px shrink-0 bg-white/20 lg:block" />
       <div className="hidden min-w-0 shrink-0 lg:block">
-        <div className="whitespace-nowrap text-lg font-semibold leading-tight tracking-tight text-white">
+        <div className="whitespace-nowrap text-[15px] font-semibold leading-tight tracking-tight text-white">
           SIGS投诉即办
         </div>
-        <div className="mt-0.5 whitespace-nowrap text-[11px] text-white/70">
+        <div className="mt-0.5 whitespace-nowrap text-[10px] text-white/65">
           SIGS Prompt Complaint
         </div>
       </div>
@@ -135,8 +135,12 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
 
   return (
     <div className="page-shell">
+      {/* 顶部装饰条 2px */}
+      <div className="h-[2px] bg-gradient-to-r from-tsinghua-400 via-tsinghua-300 to-tsinghua-400" />
+      
+      {/* 主体栏 64px */}
       <header className="tsinghua-header sticky top-0 z-20">
-        <div className={`relative mx-auto flex max-w-[1920px] items-center px-4 sm:px-6 lg:px-8 ${isAdminArea ? "h-[72px] gap-3" : "h-[80px] gap-5"}`}>
+        <div className={`relative mx-auto flex max-w-[1920px] items-center px-4 sm:px-6 lg:px-8 ${isAdminArea ? "h-[64px] gap-3" : "h-[64px] gap-4"}`}>
           <button 
             onClick={() => navigate(isAdminLike ? "/admin" : "/")} 
             className="group relative z-10 shrink-0 text-left transition-opacity duration-300 hover:opacity-90"
@@ -144,15 +148,17 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             <LogoMark />
           </button>
 
-          <nav className="hidden flex-1 items-center justify-center gap-1 lg:flex">
+          <nav className="hidden flex-1 items-center justify-center gap-2 lg:flex">
             {navItems.map((item) => {
               const active = isCurrent(item);
               return (
                 <LocaleLink
                   key={`${item.labelKey}-${item.to}`}
                   to={item.to}
-                  className={`tsinghua-header-link rounded-lg px-4 text-[14px] ${
-                    active ? "tsinghua-header-link-active font-semibold" : "font-medium"
+                  className={`relative flex h-[26px] w-[72px] items-center justify-center rounded-md text-[16px] transition-all duration-300 ${
+                    active 
+                      ? "tsinghua-header-link-active bg-white/10 font-semibold text-white" 
+                      : "font-medium text-white/75 hover:text-white hover:bg-white/5"
                   }`}
                 >
                   {t(item.labelKey)}
@@ -161,13 +167,14 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             })}
           </nav>
 
-          <div className="relative z-10 ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
+          <div className="relative z-10 ml-auto flex shrink-0 items-center gap-3">
+            {/* 语言切换 90×16px */}
             <a
               href={switchLocaleUrl}
-              className="hidden items-center gap-1.5 rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-white/80 backdrop-blur-sm transition-all duration-300 hover:bg-white/20 hover:text-white sm:flex"
+              className="hidden h-[32px] w-[90px] items-center justify-center gap-1.5 rounded-lg bg-white/10 text-[14px] font-medium text-white/80 backdrop-blur-sm transition-all duration-300 hover:bg-white/20 hover:text-white sm:flex"
             >
               <Globe size={14} />
-              {otherLocale === "en" ? "EN" : "中"}
+              {otherLocale === "en" ? "English" : "中文"}
             </a>
 
             {isAdminLike && (
@@ -175,12 +182,12 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                 <button
                   type="button"
                   onClick={() => { setNotifOpen((o) => !o); if (!notifOpen) loadNotifications(); }}
-                  className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-white/80 backdrop-blur-sm transition-all duration-300 hover:bg-white/20 hover:text-white"
+                  className="relative flex h-[32px] w-[32px] items-center justify-center rounded-lg bg-white/10 text-white/80 backdrop-blur-sm transition-all duration-300 hover:bg-white/20 hover:text-white"
                   title={t("action.notifications")}
                 >
-                  <Bell size={17} />
+                  <Bell size={16} />
                   {unreadCount > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white shadow-lg">
+                    <span className="absolute -right-1 -top-1 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-bold text-white shadow-lg">
                       {unreadCount > 99 ? "99+" : unreadCount}
                     </span>
                   )}
@@ -227,16 +234,16 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             <div className="relative" ref={userMenuRef}>
               <button
                 onClick={() => setUserMenuOpen((open) => !open)}
-                className="flex items-center gap-2 rounded-lg p-1.5 transition-all duration-300 hover:bg-white/10 sm:gap-3"
+                className="flex items-center gap-2 rounded-lg p-1.5 transition-all duration-300 hover:bg-white/10"
               >
-                <div className="tsinghua-header-pill flex h-9 w-9 items-center justify-center rounded-full text-sm font-semibold">
-                  {initial || <UserRound size={16} />}
+                <div className="tsinghua-header-pill flex h-[28px] w-[28px] items-center justify-center rounded-full text-[12px] font-semibold">
+                  {initial || <UserRound size={14} />}
                 </div>
                 <div className="hidden text-left leading-tight sm:block">
-                  <div className="text-sm font-medium text-white">{user.name}</div>
-                  <div className="mt-0.5 text-[11px] text-white/60">{roleLabel}</div>
+                  <div className="text-[13px] font-medium text-white">{user.name}</div>
+                  <div className="mt-0.5 text-[10px] text-white/55">{roleLabel}</div>
                 </div>
-                <ChevronDown size={14} className="hidden text-white/60 transition-transform duration-300 sm:block" style={{ transform: userMenuOpen ? 'rotate(180deg)' : 'rotate(0)' }} />
+                <ChevronDown size={12} className="hidden text-white/55 transition-transform duration-300 sm:block" style={{ transform: userMenuOpen ? 'rotate(180deg)' : 'rotate(0)' }} />
               </button>
 
               {userMenuOpen && (
@@ -312,14 +319,14 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
         </div>
 
         {navItems.length > 0 && (
-          <nav className="flex gap-2 overflow-x-auto border-t border-white/10 px-3 py-2.5 lg:hidden">
+          <nav className="flex gap-2 overflow-x-auto border-t border-white/10 px-3 py-2 lg:hidden">
             {navItems.map((item) => {
               const active = isCurrent(item);
               return (
                 <LocaleLink
                   key={`mobile-${item.labelKey}-${item.to}`}
                   to={item.to}
-                  className={`flex h-9 shrink-0 items-center rounded-lg px-4 text-sm font-medium transition-all duration-300 ${
+                  className={`flex h-[32px] shrink-0 items-center rounded-lg px-4 text-[14px] font-medium transition-all duration-300 ${
                     active
                       ? "bg-white text-tsinghua-800 shadow-md"
                       : "bg-white/10 text-white/80 hover:bg-white/20 hover:text-white"

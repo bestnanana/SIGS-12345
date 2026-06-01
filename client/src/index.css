@@ -158,8 +158,7 @@ button:not(:disabled):active, a:active {
   /* ==================== Header 样式 ==================== */
   .tsinghua-header {
     background: linear-gradient(135deg, #4a0e8e 0%, #6c3cb2 50%, #8b5cf6 100%);
-    box-shadow: 0 4px 20px rgba(74, 14, 142, 0.25);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 16px rgba(74, 14, 142, 0.2);
   }
 
   .tsinghua-header::before {
@@ -170,40 +169,17 @@ button:not(:disabled):active, a:active {
     right: 0;
     bottom: 0;
     background: 
-      radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
-      radial-gradient(circle at 80% 50%, rgba(255, 255, 255, 0.05) 0%, transparent 50%);
+      radial-gradient(circle at 20% 50%, rgba(255, 255, 255, 0.08) 0%, transparent 50%),
+      radial-gradient(circle at 80% 50%, rgba(255, 255, 255, 0.04) 0%, transparent 50%);
     pointer-events: none;
   }
 
   .tsinghua-header-link {
-    @apply relative flex items-center text-sm font-medium text-white/75 transition-all duration-300 hover:text-white;
-    padding: 0 16px;
-    height: 100%;
-  }
-
-  .tsinghua-header-link::after {
-    content: "";
-    position: absolute;
-    bottom: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 3px;
-    background: white;
-    border-radius: 3px 3px 0 0;
-    transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  .tsinghua-header-link:hover::after {
-    width: 24px;
+    @apply relative flex items-center justify-center text-[16px] font-medium text-white/75 transition-all duration-300 hover:text-white;
   }
 
   .tsinghua-header-link-active {
-    @apply text-white;
-  }
-
-  .tsinghua-header-link-active::after {
-    width: 32px;
+    @apply text-white font-semibold;
   }
 
   .tsinghua-header-pill {
