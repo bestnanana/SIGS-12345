@@ -268,8 +268,8 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                           navigate("/admin");
                         }}
                         className={`flex h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-sm transition-all duration-200 ${
-                          user.role !== "user" 
-                            ? "bg-ai-primary/10 text-ai-primary font-medium" 
+                          isAdminLike
+                            ? "bg-ai-primary/10 text-ai-primary font-medium"
                             : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
                         }`}
                       >
@@ -284,8 +284,8 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                           navigate("/");
                         }}
                         className={`flex h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-sm transition-all duration-200 ${
-                          user.role === "user" 
-                            ? "bg-ai-primary/10 text-ai-primary font-medium" 
+                          !isAdminLike
+                            ? "bg-ai-primary/10 text-ai-primary font-medium"
                             : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
                         }`}
                       >
