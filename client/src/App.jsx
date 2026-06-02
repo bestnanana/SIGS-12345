@@ -16,6 +16,11 @@ function isAdminRole(role) {
   return role === "admin" || role === "super_admin" || role === "liaison";
 }
 
+function hasAdminAccess(userData) {
+  if (!userData) return false;
+  return isAdminRole(userData.role) || userData.is_dept_admin;
+}
+
 function readSavedUser() {
   const saved = localStorage.getItem("user");
   if (!saved || saved === "undefined" || saved === "null") return null;
@@ -86,7 +91,7 @@ function App() {
         if (ignore) return;
         setUser(res.data);
         localStorage.setItem("user", JSON.stringify(res.data));
-        if (!isAdminRole(res.data.role)) {
+        if (!hasAdminAccess(res.data)) {
           localStorage.removeItem("viewRole");
           setViewRole("");
         }
@@ -123,14 +128,14 @@ function App() {
     const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
     const isLoginPage = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
     const target = isLoginPage
-      ? (isAdminRole(payload.user?.role) ? "/admin" : "/")
+      ? (hasAdminAccess(payload.user) ? "/admin" : "/")
       : `${pathNoLocale}${location.search}${location.hash}`;
     navigate(target, { replace: true });
   }
 
   function handlePasswordChanged() {
     setMustChangePassword(false);
-    const target = isAdminRole(user?.role) ? "/admin" : "/";
+    const target = hasAdminAccess(user) ? "/admin" : "/";
     navigate(target, { replace: true });
   }
 
@@ -179,8 +184,8 @@ function App() {
     return <ChangePasswordPage onSuccess={handlePasswordChanged} />;
   }
 
-  const isAdmin = isAdminRole(user.role) && viewRole !== "user";
-  const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user" } : user;
+  const isAdmin = hasAdminAccess(user) && viewRole !== "user";
+  const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user", is_dept_admin: false } : user;
 
   return (
     <Layout user={effectiveUser} actualUser={user} onLogout={handleLogout} onViewRoleChange={handleViewRoleChange}>

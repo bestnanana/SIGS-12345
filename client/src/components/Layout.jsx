@@ -97,7 +97,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
     navigate(notif.target_url.replace(/^\/cn/, "") || "/admin");
   }
 
-  const isAdminLike = user.role === "admin" || user.role === "super_admin" || user.role === "liaison";
+  const isAdminLike = user.role === "admin" || user.role === "super_admin" || user.role === "liaison" || user.is_dept_admin;
 
   useEffect(() => {
     if (!isAdminLike) return;
@@ -112,9 +112,11 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
     return () => { cancelled = true; clearInterval(timer); };
   }, [isAdminLike, user?.id]);
 
-  const roleLabel = isAdminLike ? t(`role.${user.role}`) : t("role.user");
+  const roleLabel = isAdminLike
+    ? (user.is_dept_admin && user.role === "user" ? t("role.dept_admin") : t(`role.${user.role}`))
+    : t("role.user");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
-  const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison";
+  const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison" || actualUser.is_dept_admin;
   const isAdminArea = isAdminLike && stripLocale(location.pathname).startsWith("/admin");
   const navItems = isAdminArea ? [] : userNavItems;
   const mainClassName = isAdminArea

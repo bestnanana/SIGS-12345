@@ -14,6 +14,7 @@ const dictionaries = {
     "role.admin": "管理员",
     "role.super_admin": "超级管理员",
     "role.liaison": "联络员",
+    "role.dept_admin": "部门管理员",
     "role.normalUser": "普通用户",
 
     "action.searchTickets": "搜索事项",
@@ -182,6 +183,7 @@ const dictionaries = {
     "role.admin": "Admin",
     "role.super_admin": "Super Admin",
     "role.liaison": "Liaison",
+    "role.dept_admin": "Dept Admin",
     "role.normalUser": "User",
 
     "action.searchTickets": "Search tickets",
