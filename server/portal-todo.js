@@ -30,7 +30,7 @@ const PORTAL_TODO_BLACKLIST = new Set([
 let dbModule = null;
 function getDb() {
   if (!dbModule) {
-    dbModule = require('./db_sqlite');
+    dbModule = require('./db_mysql');
   }
   return dbModule;
 }
