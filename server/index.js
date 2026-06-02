@@ -774,7 +774,10 @@ async function getTicketPermission(ticketId, viewer) {
   // 管理员：优先检查部门权限（管理员可能同时也是提交者）
   if (isAdminLike(viewer)) {
     // 优先检查 department_assignments 多部门授权
-    const assignments = await getDepartmentAssignments(String(viewer.id));
+    // 使用 loadPerson 确保获取正确的 person.id
+    const person = await loadPerson(viewer.id);
+    const personId = person?.id || viewer.id;
+    const assignments = await getDepartmentAssignments(String(personId));
 
     if (assignments.length > 0) {
       const managedNames = assignments.map(a => a.department_name);
@@ -793,7 +796,7 @@ async function getTicketPermission(ticketId, viewer) {
     }
 
     // 回退：原有单部门逻辑
-    const dept = viewer.department;
+    const dept = person?.department || viewer.department;
     if (dept) {
       if (dept === ticket.current_department) return 'handle';
       if (dept === ticket.original_department) return 'view';
@@ -813,13 +816,13 @@ async function getTicketPermission(ticketId, viewer) {
 }
 
 async function loadPerson(id) {
-  // 1. 优先从 datahub_basic_persons 查
+  // 1. 优先从 datahub_basic_persons 查（同时匹配 id 和 union_id）
   let person = await get(
     `SELECT dp.*, r.code as role_code
      FROM datahub_basic_persons dp
      LEFT JOIN roles r ON dp.role_id = r.id
-     WHERE dp.id = ?`,
-    [String(id)]
+     WHERE dp.id = ? OR dp.union_id = ?`,
+    [String(id), String(id)]
   );
 
   if (person) {
@@ -843,8 +846,8 @@ async function loadPerson(id) {
       `SELECT dp.*, r.code as role_code
        FROM datahub_basic_persons dp
        LEFT JOIN roles r ON dp.role_id = r.id
-       WHERE dp.id = ?`,
-      [user.union_id]
+       WHERE dp.id = ? OR dp.union_id = ?`,
+      [user.union_id, user.union_id]
     );
     if (person) {
       person.dept_admin_assignments = await getDepartmentAssignments(person.id);
@@ -899,10 +902,11 @@ async function adminOnly(req, res, next) {
       return next();
     }
     // 检查 department_assignments 授权表
-    const assignments = await getDepartmentAssignments(String(req.user.id));
+    const personId = user?.id || req.user.id;
+    const assignments = await getDepartmentAssignments(String(personId));
     if (assignments.length > 0) {
       req.user.role = user?.role || 'admin';
-      req.user.department = user?.department;
+      req.user.department = user?.department || req.user.department;
       req.user.dept_admin_role = assignments.some(a => a.role_type === 'observer') ? 'observer' : 'admin';
       return next();
     }
