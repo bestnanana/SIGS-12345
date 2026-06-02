@@ -750,7 +750,9 @@ async function auth(req, res, next) {
 
 function isAdminLike(user) {
   if (!user) return false;
-  return ["admin", "super_admin", "liaison"].includes(user.role);
+  return ["admin", "super_admin", "liaison"].includes(user.role) ||
+    (user.dept_admin_assignments && user.dept_admin_assignments.length > 0) ||
+    user.is_dept_admin;
 }
 
 /**
