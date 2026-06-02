@@ -3,7 +3,7 @@ import paramiko
 def check_dept():
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect('10.103.0.148', username='cy', password='c@Xx503y', timeout=10)
+    client.connect('219.223.170.20', username='cy', password='c@Xx503y', timeout=10)
     
     script = '''const Database = require('better-sqlite3');
 const path = require('path');

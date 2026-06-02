@@ -9,7 +9,7 @@ const PORTAL_TODO_HEADERS = {
 const PORTAL_TODO_KIND_ID = 'jsjb';
 const PORTAL_TODO_PREFIX = '028d0a7edb_';
 const PORTAL_PERSON_PREFIX = 'syncperson_';
-const SITE_BASE_URL = (process.env.SITE_BASE_URL || 'http://10.103.0.148').replace(/\/$/, '');
+const SITE_BASE_URL = (process.env.SITE_BASE_URL || 'http://219.223.170.20').replace(/\/$/, '');
 
 // 黑名单：这些 union_id 的人不会收到统一待办推送
 // 院领导及院长助理
