@@ -1017,16 +1017,16 @@ async function ticketDetails(id, viewer) {
   const deptName = ticket.current_department || ticket.department || "党政办";
   const currentHandler = await get(
     `SELECT id, name, department FROM (
-       SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
+       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
        FROM datahub_basic_persons p
        WHERE p.role_id IN (1, 2, 3) AND p.department = ?
        UNION
-       SELECT CAST(p.id AS TEXT) AS id, p.name, p.department
+       SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
        FROM datahub_basic_persons p
        JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
        WHERE da.department_name = ?
        UNION ALL
-       SELECT CAST(id AS TEXT) AS id, name, department FROM users
+       SELECT CAST(id AS CHAR) AS id, name, department FROM users
        WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
      ) AS handlers ORDER BY id ASC LIMIT 1`,
     [deptName, deptName, deptName]
