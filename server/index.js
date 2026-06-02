@@ -19,7 +19,7 @@ const {
   disableAdminsForInactivePersons,
   getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission,
   getDepartmentAssignments, isDepartmentAdmin, getTransferTargets
-} = require("./db_sqlite");
+} = require("./db_mysql");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
 const { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl } = require("./portal-todo");

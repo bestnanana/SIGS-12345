@@ -587,4 +587,64 @@ async function disableAdminsForInactivePersons() {
   return count;
 }
 
-module.exports = { initDb, run, get, all, adminDepartments, isValidDepartment, ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped, listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment, listFormOptions, listFormOptionsGrouped, getFormOptionLabels, createFormOption, updateFormOption, deleteFormOption, upsertDatahubBasicPersons, ensureDepartmentAdminTables, disableAdminsForInactivePersons };
+// ==================== RBAC 查询函数 ====================
+
+async function getRoleByCode(code) {
+  return get("SELECT * FROM roles WHERE code = ?", [code]);
+}
+
+async function getRoleById(id) {
+  return get("SELECT * FROM roles WHERE id = ?", [id]);
+}
+
+async function getPermissionsByRoleId(roleId) {
+  return all(
+    `SELECT p.* FROM permissions p
+     JOIN role_permissions rp ON rp.permission_id = p.id
+     WHERE rp.role_id = ?`,
+    [roleId]
+  );
+}
+
+async function getPersonPermissions(personId) {
+  const person = await get("SELECT role_id FROM datahub_basic_persons WHERE id = ?", [personId]);
+  if (!person || !person.role_id) return [];
+  return getPermissionsByRoleId(person.role_id);
+}
+
+async function hasPermission(personId, permissionCode) {
+  const perms = await getPersonPermissions(personId);
+  return perms.some(p => p.code === permissionCode);
+}
+
+// ==================== 部门管理员函数 ====================
+
+async function getDepartmentAssignments(personId) {
+  return all(
+    "SELECT * FROM department_assignments WHERE person_id = ? AND is_enabled = 1",
+    [personId]
+  );
+}
+
+async function isDepartmentAdmin(personId, departmentName) {
+  const assignment = await get(
+    "SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ? AND is_enabled = 1",
+    [personId, departmentName]
+  );
+  return Boolean(assignment);
+}
+
+async function getTransferTargets(personId, departmentName) {
+  const assignment = await get(
+    "SELECT can_transfer_to FROM department_assignments WHERE person_id = ? AND department_name = ? AND is_enabled = 1",
+    [personId, departmentName]
+  );
+  if (!assignment || !assignment.can_transfer_to) return [];
+  try {
+    return JSON.parse(assignment.can_transfer_to);
+  } catch {
+    return [];
+  }
+}
+
+module.exports = { initDb, run, get, all, adminDepartments, isValidDepartment, ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped, listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment, listFormOptions, listFormOptionsGrouped, getFormOptionLabels, createFormOption, updateFormOption, deleteFormOption, upsertDatahubBasicPersons, ensureDepartmentAdminTables, disableAdminsForInactivePersons, getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission, getDepartmentAssignments, isDepartmentAdmin, getTransferTargets };
