@@ -5,15 +5,23 @@ import { defaultDepartments, defaultFields } from "../constants";
 import { useLocaleNavigate, useLanguage } from "../i18n";
 
 const acceptTypes = ".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4";
+const departmentTypeLabels = {
+  "职能处室": "Administrative Offices",
+  "教学科研机构": "Teaching and Research Units"
+};
+
+function defaultFieldOptions() {
+  return defaultFields.map((label) => ({ label, label_en: "" }));
+}
 
 export default function TicketFormPage({ user }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const navigate = useLocaleNavigate();
   const [noticeOpen, setNoticeOpen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [files, setFiles] = useState([]);
-  const [fieldOptions, setFieldOptions] = useState(defaultFields);
+  const [fieldOptions, setFieldOptions] = useState(defaultFieldOptions);
   const [departmentOptions, setDepartmentOptions] = useState({});
   const [form, setForm] = useState({
     title: '',
@@ -24,17 +32,28 @@ export default function TicketFormPage({ user }) {
     is_anonymous: false
   });
 
+  function displayName(item, nameKey = "label", enKey = "label_en") {
+    if (!item) return "";
+    if (language === "en" && item[enKey]) return item[enKey];
+    return item[nameKey] || "";
+  }
+
+  function displayDepartmentType(type) {
+    return language === "en" ? (departmentTypeLabels[type] || type) : type;
+  }
+
   useEffect(() => {
     let cancelled = false;
     async function loadOptions() {
       try {
         const res = await api.get('/form-options', { skipAuthExpiredHandler: true });
-        const nextFields = Array.isArray(res.data?.fields) ? res.data.fields.map((item) => item.label).filter(Boolean) : [];
+        const nextFields = Array.isArray(res.data?.fields) ? res.data.fields.filter((item) => item?.label) : [];
+        const nextFieldValues = nextFields.map((item) => item.label);
         if (cancelled) return;
-        setFieldOptions(nextFields.length ? nextFields : defaultFields);
+        setFieldOptions(nextFields.length ? nextFields : defaultFieldOptions());
         setForm((current) => ({
           ...current,
-          field: nextFields.includes(current.field) ? current.field : (nextFields[0] || current.field),
+          field: nextFieldValues.includes(current.field) ? current.field : (nextFieldValues[0] || current.field),
         }));
         const deptRes = await api.get('/departments', { skipAuthExpiredHandler: true });
         if (cancelled) return;
@@ -47,7 +66,7 @@ export default function TicketFormPage({ user }) {
         }));
       } catch (err) {
         if (!cancelled) {
-          setFieldOptions(defaultFields);
+          setFieldOptions(defaultFieldOptions());
           setDepartmentOptions({});
         }
       }
@@ -166,15 +185,15 @@ export default function TicketFormPage({ user }) {
           <div className="form-label pt-1 text-sm font-semibold text-ai-title">{t("common.field")}</div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {fieldOptions.map((field) => (
-              <label key={field} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition duration-200 ${form.field === field ? "border-ai-primary/30 bg-ai-primary/10 text-ai-primary" : "border-ai-border text-ai-body hover:bg-ai-bg"}`}>
+              <label key={field.label} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition duration-200 ${form.field === field.label ? "border-ai-primary/30 bg-ai-primary/10 text-ai-primary" : "border-ai-border text-ai-body hover:bg-ai-bg"}`}>
                 <input
                   type="radio"
                   name="field"
-                  checked={form.field === field}
-                  onChange={() => setForm({ ...form, field })}
+                  checked={form.field === field.label}
+                  onChange={() => setForm({ ...form, field: field.label })}
                   className="h-4 w-4 accent-ai-primary"
                 />
-                {field}
+                {displayName(field)}
               </label>
             ))}
           </div>
@@ -189,9 +208,9 @@ export default function TicketFormPage({ user }) {
             >
               <option value="" disabled>{t("form.unknownDept")}</option>
               {Object.entries(departmentOptions).map(([type, depts]) => (
-                <optgroup key={type} label={type}>
+                <optgroup key={type} label={displayDepartmentType(type)}>
                   {depts.map((d) => (
-                    <option key={d.id} value={d.name}>{d.name}</option>
+                    <option key={d.id} value={d.name}>{displayName(d, "name", "name_en")}</option>
                   ))}
                 </optgroup>
               ))}

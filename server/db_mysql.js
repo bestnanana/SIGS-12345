@@ -26,21 +26,85 @@ function getPool() {
 }
 
 async function run(sql, params = []) {
-  const [res] = await getPool().execute(sql, params);
+  const [res] = await getPool().query(sql, params);
   return { affectedRows: res.affectedRows, insertId: res.insertId };
 }
 
 async function get(sql, params = []) {
-  const [rows] = await getPool().execute(sql, params);
+  const [rows] = await getPool().query(sql, params);
   return rows[0];
 }
 
 async function all(sql, params = []) {
-  const [rows] = await getPool().execute(sql, params);
+  const [rows] = await getPool().query(sql, params);
   return rows;
 }
 
 const adminDepartments = ['信数中心', '党政办', '学工办', '培养处', '财务办', '人事办'];
+
+async function ensureColumn(table, column, definition) {
+  const row = await get(
+    `SELECT COUNT(*) AS count
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column]
+  );
+  if (Number(row?.count || 0) === 0) {
+    await run(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+}
+
+async function seedRbac() {
+  const roles = [
+    ["super_admin", "超级管理员", 1],
+    ["dept_admin", "部门管理员", 1],
+    ["liaison", "联络员", 1],
+    ["user", "普通用户", 1]
+  ];
+  for (const role of roles) {
+    await run("INSERT IGNORE INTO roles (code, name, is_system) VALUES (?, ?, ?)", role);
+  }
+
+  const permissions = [
+    ["ticket.create", "创建工单", "ticket"],
+    ["ticket.view", "查看工单", "ticket"],
+    ["ticket.view_own", "查看自己的工单", "ticket"],
+    ["ticket.reply", "回复工单", "ticket"],
+    ["ticket.transfer", "转办工单", "ticket"],
+    ["ticket.manage", "管理工单", "ticket"],
+    ["ticket.publish", "发布工单", "ticket"],
+    ["ticket.delete", "删除工单", "ticket"],
+    ["admin.config", "系统配置", "admin"],
+    ["admin.user_manage", "用户管理", "admin"],
+    ["admin.view_analytics", "查看统计", "admin"]
+  ];
+  for (const permission of permissions) {
+    await run("INSERT IGNORE INTO permissions (code, name, module) VALUES (?, ?, ?)", permission);
+  }
+
+  const roleRows = await all("SELECT id, code FROM roles");
+  const permissionRows = await all("SELECT id, code FROM permissions");
+  const roleMap = Object.fromEntries(roleRows.map((row) => [row.code, row.id]));
+  const permMap = Object.fromEntries(permissionRows.map((row) => [row.code, row.id]));
+
+  const grants = {
+    super_admin: permissionRows.map((row) => row.code),
+    dept_admin: ["ticket.view", "ticket.reply", "ticket.transfer", "ticket.manage", "admin.view_analytics"],
+    liaison: ["ticket.view", "ticket.reply"],
+    user: ["ticket.create", "ticket.view_own"]
+  };
+
+  for (const [roleCode, permissionCodes] of Object.entries(grants)) {
+    const roleId = roleMap[roleCode];
+    if (!roleId) continue;
+    for (const permissionCode of permissionCodes) {
+      const permissionId = permMap[permissionCode];
+      if (permissionId) {
+        await run("INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)", [roleId, permissionId]);
+      }
+    }
+  }
+}
 
 async function initDb() {
   // Ensure database exists
@@ -79,19 +143,25 @@ async function initDb() {
       department VARCHAR(64),
       content TEXT NOT NULL,
       is_anonymous TINYINT(1) DEFAULT 0,
-      submitter_id BIGINT NOT NULL,
+      submitter_id VARCHAR(191) NOT NULL,
       submitter_union_id VARCHAR(191) DEFAULT NULL,
       submitter_person_id VARCHAR(191) DEFAULT NULL,
       submitter_name VARCHAR(191) DEFAULT NULL,
+      submitter_phone VARCHAR(64) DEFAULT NULL,
+      submitter_role VARCHAR(64) DEFAULT NULL,
+      submitter_department VARCHAR(191) DEFAULT NULL,
       status VARCHAR(32) DEFAULT 'pending',
       current_department VARCHAR(64) DEFAULT '党政办',
+      current_handler_id VARCHAR(191) DEFAULT NULL,
       is_published TINYINT(1) DEFAULT 0,
       published_at TIMESTAMP NULL,
       ai_category VARCHAR(191),
       ai_suggestion TEXT,
+      original_department VARCHAR(64) DEFAULT NULL,
+      share_code VARCHAR(64) DEFAULT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      FOREIGN KEY (submitter_id) REFERENCES users(id)
+      KEY idx_tickets_submitter_id (submitter_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -101,11 +171,11 @@ async function initDb() {
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       ticket_id BIGINT NOT NULL,
       content TEXT NOT NULL,
-      replier_id BIGINT NOT NULL,
+      replier_id VARCHAR(191) NOT NULL,
       department VARCHAR(64) NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (replier_id) REFERENCES users(id)
+      KEY idx_replies_ticket_id (ticket_id),
+      KEY idx_replies_replier_id (replier_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -121,8 +191,8 @@ async function initDb() {
       file_size BIGINT NOT NULL,
       file_type VARCHAR(128) NOT NULL,
       uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (reply_id) REFERENCES replies(id)
+      KEY idx_attachments_ticket_id (ticket_id),
+      KEY idx_attachments_reply_id (reply_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -133,11 +203,14 @@ async function initDb() {
       ticket_id BIGINT NOT NULL,
       from_department VARCHAR(64) NOT NULL,
       to_department VARCHAR(64) NOT NULL,
-      operator_id BIGINT NOT NULL,
+      operator_id VARCHAR(191) NOT NULL,
+      from_handler_id VARCHAR(191) DEFAULT NULL,
+      to_handler_id VARCHAR(191) DEFAULT NULL,
       note TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id),
-      FOREIGN KEY (operator_id) REFERENCES users(id)
+      status VARCHAR(32) DEFAULT 'active',
+      KEY idx_transfers_ticket_id (ticket_id),
+      KEY idx_transfers_operator_id (operator_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -152,7 +225,7 @@ async function initDb() {
       target_url VARCHAR(512) DEFAULT '',
       is_read TINYINT(1) DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+      KEY idx_notifications_ticket_id (ticket_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
   // Migration: add target_url column if missing (for existing databases)
@@ -168,9 +241,53 @@ async function initDb() {
       user_id VARCHAR(191) NOT NULL,
       score INT NOT NULL,
       comment TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_satisfaction_ticket (ticket_id),
-      FOREIGN KEY (ticket_id) REFERENCES tickets(id)
+      UNIQUE KEY uniq_satisfaction_ticket (ticket_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ratings (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticket_id BIGINT NOT NULL,
+      user_id VARCHAR(191) NOT NULL,
+      type VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_rating_ticket_user_type (ticket_id, user_id, type),
+      KEY idx_ratings_ticket_id (ticket_id),
+      KEY idx_ratings_user_id (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS roles (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(50) NOT NULL UNIQUE,
+      name VARCHAR(100) NOT NULL,
+      is_system TINYINT(1) DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS permissions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(100) NOT NULL UNIQUE,
+      name VARCHAR(200) NOT NULL,
+      module VARCHAR(64) NOT NULL DEFAULT 'general',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      role_id INT NOT NULL,
+      permission_id INT NOT NULL,
+      UNIQUE KEY uniq_role_permission (role_id, permission_id),
+      KEY idx_role_permissions_role_id (role_id),
+      KEY idx_role_permissions_permission_id (permission_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -208,6 +325,19 @@ async function initDb() {
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_union_id VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_person_id VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_name VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_phone VARCHAR(64) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_role VARCHAR(64) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN submitter_department VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE tickets ADD COLUMN current_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE transfers ADD COLUMN from_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE transfers ADD COLUMN to_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await run("ALTER TABLE satisfaction_surveys ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); } catch {}
+  try { await ensureColumn("users", "password_hash", "VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await ensureColumn("users", "is_active", "TINYINT(1) DEFAULT 1"); } catch {}
+  try { await ensureColumn("users", "must_change_password", "TINYINT(1) DEFAULT 0"); } catch {}
+  try { await ensureColumn("permissions", "module", "VARCHAR(64) NOT NULL DEFAULT 'general'"); } catch {}
+
+  await seedRbac();
 
   await ensureDatahubPersonTables();
   await ensureFormConfigTables();
@@ -246,6 +376,10 @@ async function ensureDatahubPersonTables() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  try { await ensureColumn("datahub_basic_persons", "person_id", "VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await ensureColumn("datahub_basic_persons", "auth_source", "VARCHAR(32) DEFAULT 'sync'"); } catch {}
+  try { await ensureColumn("datahub_basic_persons", "is_active", "TINYINT(1) DEFAULT 1"); } catch {}
+  try { await ensureColumn("datahub_basic_persons", "role_id", "INT DEFAULT NULL"); } catch {}
   await run(`CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_union_id ON datahub_basic_persons(union_id)`).catch(() => {});
   await run(`CREATE INDEX IF NOT EXISTS idx_datahub_basic_persons_department ON datahub_basic_persons(department)`).catch(() => {});
   await run(`
@@ -269,6 +403,7 @@ async function ensureFormConfigTables() {
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       category VARCHAR(64) NOT NULL,
       label VARCHAR(191) NOT NULL,
+      label_en VARCHAR(191) DEFAULT NULL,
       sort_order INT NOT NULL DEFAULT 0,
       is_active TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -282,6 +417,7 @@ async function ensureFormConfigTables() {
     CREATE TABLE IF NOT EXISTS departments (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(191) NOT NULL UNIQUE,
+      name_en VARCHAR(191) DEFAULT NULL,
       type VARCHAR(64) NOT NULL COMMENT '职能处室 or 教学科研机构',
       sort_order INT NOT NULL DEFAULT 0,
       is_active TINYINT(1) NOT NULL DEFAULT 1,
@@ -289,6 +425,8 @@ async function ensureFormConfigTables() {
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  await ensureColumn("form_options", "label_en", "VARCHAR(191) DEFAULT NULL");
+  await ensureColumn("departments", "name_en", "VARCHAR(191) DEFAULT NULL");
 }
 
 async function seedDefaultFormOptions() {
@@ -327,7 +465,7 @@ async function seedDepartments() {
 
 async function listDepartmentsGrouped() {
   const rows = await all(
-    "SELECT id, name, type, sort_order FROM departments WHERE is_active = 1 ORDER BY sort_order ASC"
+    "SELECT id, name, name_en, type, sort_order FROM departments WHERE is_active = 1 ORDER BY sort_order ASC"
   );
   const groups = {};
   for (const row of rows) {
@@ -340,15 +478,15 @@ async function listDepartmentsGrouped() {
 async function listDepartmentsAll(includeInactive = false) {
   const where = includeInactive ? "" : "WHERE is_active = 1";
   return all(
-    `SELECT id, name, type, sort_order, is_active FROM departments ${where} ORDER BY sort_order ASC, id ASC`
+    `SELECT id, name, name_en, type, sort_order, is_active FROM departments ${where} ORDER BY sort_order ASC, id ASC`
   );
 }
 
-async function createDepartment(name, type, isActive = true) {
+async function createDepartment(name, type, isActive = true, nameEn = null) {
   const row = await get("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM departments");
   return run(
-    "INSERT INTO departments (name, type, sort_order, is_active) VALUES (?, ?, ?, ?)",
-    [name, type, row.next_order, isActive ? 1 : 0]
+    "INSERT INTO departments (name, name_en, type, sort_order, is_active) VALUES (?, ?, ?, ?, ?)",
+    [name, nameEn || null, type, row.next_order, isActive ? 1 : 0]
   );
 }
 
@@ -358,6 +496,10 @@ async function updateDepartment(id, fields = {}) {
   if (typeof fields.name === "string") {
     updates.push("name = ?");
     params.push(fields.name.trim());
+  }
+  if (typeof fields.name_en === "string") {
+    updates.push("name_en = ?");
+    params.push(fields.name_en.trim() || null);
   }
   if (typeof fields.type === "string" && ["职能处室", "教学科研机构"].includes(fields.type)) {
     updates.push("type = ?");
@@ -391,7 +533,7 @@ async function listFormOptions(category = null, includeInactive = false) {
   if (!includeInactive) clauses.push("is_active = 1");
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   return all(
-    `SELECT id, category, label, sort_order, is_active, created_at, updated_at
+    `SELECT id, category, label, label_en, sort_order, is_active, created_at, updated_at
      FROM form_options
      ${where}
      ORDER BY category ASC, sort_order ASC, id ASC`,
@@ -412,11 +554,11 @@ async function getFormOptionLabels(category) {
   return rows.map((row) => row.label);
 }
 
-async function createFormOption(category, label, isActive = true) {
+async function createFormOption(category, label, isActive = true, labelEn = null) {
   const row = await get("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM form_options WHERE category = ?", [category]);
   return run(
-    "INSERT INTO form_options (category, label, sort_order, is_active, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-    [category, label, row.next_order, isActive ? 1 : 0]
+    "INSERT INTO form_options (category, label, label_en, sort_order, is_active, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+    [category, label, labelEn || null, row.next_order, isActive ? 1 : 0]
   );
 }
 
@@ -426,6 +568,10 @@ async function updateFormOption(id, fields = {}) {
   if (typeof fields.label === "string") {
     updates.push("label = ?");
     params.push(fields.label);
+  }
+  if (typeof fields.label_en === "string") {
+    updates.push("label_en = ?");
+    params.push(fields.label_en.trim() || null);
   }
   if (fields.sort_order !== undefined) {
     updates.push("sort_order = ?");
@@ -504,6 +650,21 @@ async function isValidDepartment(name) {
 }
 
 async function ensureDepartmentAdminTables() {
+  await run(`
+    CREATE TABLE IF NOT EXISTS department_assignments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      person_id VARCHAR(255) NOT NULL,
+      department_name VARCHAR(255) NOT NULL,
+      role_type VARCHAR(50) NOT NULL DEFAULT 'processor',
+      can_transfer_to TEXT DEFAULT NULL,
+      is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_person_department (person_id, department_name),
+      KEY idx_department_assignments_person_id (person_id),
+      KEY idx_department_assignments_department_name (department_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
   await run(`
     CREATE TABLE IF NOT EXISTS department_admins (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -621,7 +782,10 @@ async function hasPermission(personId, permissionCode) {
 
 async function getDepartmentAssignments(personId) {
   return all(
-    "SELECT * FROM department_assignments WHERE person_id = ? AND is_enabled = 1",
+    `SELECT dad.id, dad.department_name, da.role_type, da.is_enabled
+     FROM department_admins da
+     INNER JOIN department_admin_departments dad ON dad.admin_id = da.id
+     WHERE da.person_id = ? AND da.is_enabled = 1`,
     [personId]
   );
 }

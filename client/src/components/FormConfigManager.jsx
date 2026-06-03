@@ -7,8 +7,8 @@ const departmentTypes = ["职能处室", "教学科研机构"];
 export default function FormConfigManager({ view } = {}) {
   const [fields, setFields] = useState([]);
   const [departments, setDepartments] = useState([]);
-  const [fieldLabel, setFieldLabel] = useState("");
-  const [deptDraft, setDeptDraft] = useState({ name: "", type: departmentTypes[0] });
+  const [fieldDraft, setFieldDraft] = useState({ label: "", label_en: "" });
+  const [deptDraft, setDeptDraft] = useState({ name: "", name_en: "", type: departmentTypes[0] });
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState("");
   const [error, setError] = useState("");
@@ -41,12 +41,16 @@ export default function FormConfigManager({ view } = {}) {
   }
 
   async function addField() {
-    if (!fieldLabel.trim()) return;
+    if (!fieldDraft.label.trim()) return;
     setSavingKey("field:new");
     setError("");
     try {
-      await api.post("/admin/form-options", { category: "fields", label: fieldLabel.trim() });
-      setFieldLabel("");
+      await api.post("/admin/form-options", {
+        category: "fields",
+        label: fieldDraft.label.trim(),
+        label_en: fieldDraft.label_en.trim()
+      });
+      setFieldDraft({ label: "", label_en: "" });
       await load();
     } catch (err) {
       setError(err.response?.data?.message || "新增失败");
@@ -61,6 +65,7 @@ export default function FormConfigManager({ view } = {}) {
     try {
       await api.patch(`/admin/form-options/${item.id}`, {
         label: item.label.trim(),
+        label_en: (item.label_en || "").trim(),
         is_active: Boolean(item.is_active)
       });
       await load();
@@ -94,8 +99,12 @@ export default function FormConfigManager({ view } = {}) {
     setSavingKey("dept:new");
     setError("");
     try {
-      await api.post("/admin/departments", { name: deptDraft.name.trim(), type: deptDraft.type });
-      setDeptDraft({ name: "", type: departmentTypes[0] });
+      await api.post("/admin/departments", {
+        name: deptDraft.name.trim(),
+        name_en: deptDraft.name_en.trim(),
+        type: deptDraft.type
+      });
+      setDeptDraft({ name: "", name_en: "", type: departmentTypes[0] });
       await load();
     } catch (err) {
       setError(err.response?.data?.message || "新增失败");
@@ -110,6 +119,7 @@ export default function FormConfigManager({ view } = {}) {
     try {
       await api.patch(`/admin/departments/${item.id}`, {
         name: item.name.trim(),
+        name_en: (item.name_en || "").trim(),
         type: item.type,
         is_active: Boolean(item.is_active)
       });
@@ -153,11 +163,17 @@ export default function FormConfigManager({ view } = {}) {
             <p className="mt-1 text-sm text-ai-body">用于表单里的事项领域单选项。</p>
           </div>
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-            <div className="flex items-center gap-3">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
               <input
-                value={fieldLabel}
-                onChange={(e) => setFieldLabel(e.target.value)}
-                placeholder="新增事项领域"
+                value={fieldDraft.label}
+                onChange={(e) => setFieldDraft((draft) => ({ ...draft, label: e.target.value }))}
+                placeholder="新增事项领域（中文名称）"
+                className="soft-input h-10"
+              />
+              <input
+                value={fieldDraft.label_en}
+                onChange={(e) => setFieldDraft((draft) => ({ ...draft, label_en: e.target.value }))}
+                placeholder="英文页面显示名，例如 Academic Affairs"
                 className="soft-input h-10 flex-1"
               />
               <button type="button" onClick={addField} disabled={savingKey === "field:new"} className="primary-button h-10 px-4">
@@ -171,8 +187,9 @@ export default function FormConfigManager({ view } = {}) {
               <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
             ) : fields.length ? (
               fields.slice((fieldPage - 1) * pageSize, fieldPage * pageSize).map((item) => (
-                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_80px_92px] lg:items-center">
-                  <input value={item.label} onChange={(e) => updateField(item.id, { label: e.target.value })} className="soft-input h-10" />
+                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_80px_92px] lg:items-center">
+                  <input value={item.label} onChange={(e) => updateField(item.id, { label: e.target.value })} className="soft-input h-10" placeholder="中文名称" />
+                  <input value={item.label_en || ""} onChange={(e) => updateField(item.id, { label_en: e.target.value })} className="soft-input h-10" placeholder="英文页面显示名" />
                   <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
                     <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateField(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />
                     启用
@@ -207,12 +224,18 @@ export default function FormConfigManager({ view } = {}) {
             <p className="mt-1 text-sm text-ai-body">用于表单里的部门选择，分为职能处室和教学科研机构。</p>
           </div>
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-            <div className="flex items-center gap-3">
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem_auto]">
               <input
                 value={deptDraft.name}
                 onChange={(e) => setDeptDraft((d) => ({ ...d, name: e.target.value }))}
-                placeholder="新增部门"
-                className="soft-input h-10 flex-1"
+                placeholder="新增部门（中文名称）"
+                className="soft-input h-10"
+              />
+              <input
+                value={deptDraft.name_en}
+                onChange={(e) => setDeptDraft((d) => ({ ...d, name_en: e.target.value }))}
+                placeholder="英文页面显示名，例如 IT & Data Services"
+                className="soft-input h-10"
               />
               <select
                 value={deptDraft.type}
@@ -232,8 +255,9 @@ export default function FormConfigManager({ view } = {}) {
               <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
             ) : departments.length ? (
               departments.slice((deptPage - 1) * pageSize, deptPage * pageSize).map((item) => (
-                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_120px_80px_92px] lg:items-center">
-                  <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" />
+                <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_120px_80px_92px] lg:items-center">
+                  <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" placeholder="中文名称" />
+                  <input value={item.name_en || ""} onChange={(e) => updateDept(item.id, { name_en: e.target.value })} className="soft-input h-10" placeholder="英文页面显示名" />
                   <select value={item.type} onChange={(e) => updateDept(item.id, { type: e.target.value })} className="soft-input h-10">
                     {departmentTypes.map((t) => <option key={t} value={t}>{t}</option>)}
                   </select>

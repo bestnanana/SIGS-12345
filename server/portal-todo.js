@@ -65,6 +65,27 @@ function toCstDate(date) {
   return d.toISOString().replace('Z', '+08:00');
 }
 
+function parseTodoId(todoId) {
+  const raw = String(todoId || "");
+  if (!raw.startsWith(PORTAL_TODO_PREFIX)) {
+    return { ticketId: null, role: null };
+  }
+  const rest = raw.slice(PORTAL_TODO_PREFIX.length);
+  const [ticketIdStr, role] = rest.split("_");
+  const ticketId = Number(ticketIdStr);
+  if (!Number.isInteger(ticketId) || ticketId <= 0 || !role) {
+    return { ticketId: null, role: null };
+  }
+  return { ticketId, role };
+}
+
+function getTodoSiteUrl(ticketId, role) {
+  const normalizedRole = String(role || "");
+  return normalizedRole === "admin"
+    ? buildSiteUrl(`/cn/admin/tickets/${ticketId}`)
+    : buildSiteUrl(`/cn/tickets/${ticketId}`);
+}
+
 async function pushPortalTodo({ id, name, url, status = 'pending', startDate, principalPersonId }) {
   // 黑名单检查：黑名单中的人员不接收统一待办
   if (!principalPersonId) {
@@ -94,7 +115,7 @@ async function pushPortalTodo({ id, name, url, status = 'pending', startDate, pr
     },
     relationships: {
       kind: { data: { id: PORTAL_TODO_KIND_ID, type: 'portal_todo_list_kind' } },
-      principal: { data: { id: `${PORTAL_PERSON_PREFIX}${unionId}`, type: 'person' } }
+      principal: { data: { id: `${PORTAL_PERSON_PREFIX}${principalPersonId}`, type: 'person' } }
     }
   };
 
@@ -119,7 +140,20 @@ async function pushPortalTodo({ id, name, url, status = 'pending', startDate, pr
 }
 
 async function completePortalTodo(todoId, principalPersonId) {
-  return pushPortalTodo({ id: todoId, name: '-', status: 'done', principalPersonId });
+  const parsed = parseTodoId(todoId);
+  let name = "待您处理";
+  let url = null;
+  if (parsed.ticketId) {
+    try {
+      const ticket = await getDb().get("SELECT title FROM tickets WHERE id = ?", [parsed.ticketId]);
+      const title = ticket?.title ? `【${ticket.title}】-待您处理` : "待处理事项-待您处理";
+      name = title;
+      url = getTodoSiteUrl(parsed.ticketId, parsed.role);
+    } catch {
+      // fallback below if DB query fails
+    }
+  }
+  return pushPortalTodo({ id: todoId, name, url, status: 'done', principalPersonId });
 }
 
 module.exports = { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl, PORTAL_TODO_PREFIX, PORTAL_PERSON_PREFIX };

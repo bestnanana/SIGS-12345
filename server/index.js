@@ -693,7 +693,8 @@ function signUser(user, expiresIn) {
 
 function tokenFromRequest(req) {
   const header = req.headers.authorization || "";
-  return header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (header.startsWith("Bearer ")) return header.slice(7);
+  return req.query?.token ? String(req.query.token) : null;
 }
 
 async function auth(req, res, next) {
@@ -960,6 +961,30 @@ async function saveFiles(files, ticketId = null, replyId = null) {
   }
 }
 
+async function resolveSubmitterPersonId(submitterId, submitterUnionId = null) {
+  if (!submitterId && !submitterUnionId) return null;
+  if (!submitterUnionId) {
+    const unionUser = await get("SELECT union_id FROM users WHERE id = ?", [submitterId]);
+    submitterUnionId = unionUser?.union_id || null;
+  }
+  if (submitterUnionId) {
+    const datahubByUnion = await get("SELECT id FROM datahub_basic_persons WHERE union_id = ?", [submitterUnionId]);
+    if (datahubByUnion?.id) return datahubByUnion.id;
+  }
+  const datahubById = await get("SELECT id FROM datahub_basic_persons WHERE id = ?", [submitterId]);
+  return datahubById?.id || null;
+}
+
+async function completeSubmitterTodo(ticketId, submitterId, submitterUnionId) {
+  try {
+    const submitterPersonId = await resolveSubmitterPersonId(submitterId, submitterUnionId);
+    if (!submitterPersonId) return;
+    return await completePortalTodo(buildTodoId(ticketId, 'submitter'), submitterPersonId);
+  } catch (err) {
+    logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'submitter', message: err.message });
+  }
+}
+
 async function ticketDetails(id, viewer) {
   const ticket = await get(
     `SELECT t.*,
@@ -972,11 +997,12 @@ async function ticketDetails(id, viewer) {
     [id]
   );
   if (!ticket) return null;
-  if (!isAdminLike(viewer) && String(ticket.submitter_id) !== String(viewer.id)) return null;
+  const isSubmitter = String(ticket.submitter_id) === String(viewer.id);
+  if (!isAdminLike(viewer) && !isSubmitter) return null;
 
   // 权限判断：当前承办部门可处理，原始/历史经手部门仅查看，其余无权限
   let permission = 'view';
-  if (isAdminLike(viewer) && viewer.role !== "super_admin") {
+  if (isAdminLike(viewer) && viewer.role !== "super_admin" && !isSubmitter) {
     permission = await getTicketPermission(id, viewer);
     if (!permission) return null;
   } else if (isAdminLike(viewer)) {
@@ -1314,12 +1340,13 @@ app.get("/api/admin/form-options", auth, adminOnly, async (req, res) => {
 app.post("/api/admin/form-options", auth, adminOnly, async (req, res) => {
   const category = String(req.body.category || "").trim();
   const label = String(req.body.label || "").trim();
+  const labelEn = String(req.body.label_en || "").trim();
   if (!["fields", "departments"].includes(category)) {
     return res.status(400).json({ message: "无效配置分类" });
   }
   if (!label) return res.status(400).json({ message: "请填写配置名称" });
   try {
-    const result = await createFormOption(category, label, req.body.is_active !== false);
+    const result = await createFormOption(category, label, req.body.is_active !== false, labelEn);
     res.status(201).json({ id: result.insertId });
   } catch (error) {
     if (/unique/i.test(error.message || "")) {
@@ -1349,13 +1376,14 @@ app.get("/api/admin/departments", auth, adminOnly, async (req, res) => {
 
 app.post("/api/admin/departments", auth, adminOnly, async (req, res) => {
   const name = String(req.body.name || "").trim();
+  const nameEn = String(req.body.name_en || "").trim();
   const type = String(req.body.type || "").trim();
   if (!name) return res.status(400).json({ message: "请填写部门名称" });
   if (!["职能处室", "教学科研机构"].includes(type)) {
     return res.status(400).json({ message: "请选择有效的部门类型" });
   }
   try {
-    const result = await createDepartment(name, type, req.body.is_active !== false);
+    const result = await createDepartment(name, type, req.body.is_active !== false, nameEn);
     res.status(201).json({ id: result.insertId });
   } catch (error) {
     if (/unique/i.test(error.message || "")) {
@@ -1504,13 +1532,13 @@ try {
   // Notify admins in the target department + all super_admins + department_assignments
   const admins = await all(
     `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
-     FROM datahub_basic_persons p
+     FROM department_admins da
+     INNER JOIN datahub_basic_persons p ON p.id = da.person_id
      LEFT JOIN users u ON u.union_id = p.union_id
-     LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE p.role_id = 1
-        OR (p.role_id IN (2, 3) AND p.department = ?)
-        OR (da.id IS NOT NULL AND da.department_name = ?)`,
-    [targetDept, targetDept]
+     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
+     WHERE da.is_enabled = 1
+       AND (dad.department_name = ? OR da.role_type = 'super_admin')`,
+    [targetDept]
   );
   const displayDept = isUnknownDept ? DEFAULT_DEPT : department;
   for (const admin of admins) {
@@ -1519,16 +1547,19 @@ try {
        VALUES (?, ?, 'new_ticket', ?)`,
       [admin.notify_user_id, result.insertId, `新事项【${title}】已提交至${displayDept}，请及时处理。`]
     );
-    const targetUrl = `/cn/admin?ticketId=${result.insertId}&nid=${notifResult.insertId}`;
+    const targetUrl = `/cn/admin/tickets/${result.insertId}?nid=${notifResult.insertId}`;
     await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
     // Portal todo (fire-and-forget)
     if (admin.admin_person_id) {
       pushPortalTodo({
         id: buildTodoId(result.insertId, 'admin', admin.admin_person_id),
         name: `【${title}】-待您处理`,
-        url: buildSiteUrl(`/cn/admin?ticketId=${result.insertId}`),
+        url: buildSiteUrl(`/cn/admin/tickets/${result.insertId}`),
         principalPersonId: admin.admin_person_id
-      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message }));
+      }).catch(err => {
+        console.error('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message });
+        logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message });
+      });
     }
   }
 
@@ -1550,26 +1581,9 @@ try {
 });
 
 app.get("/api/tickets/:id", auth, async (req, res) => {
-  const details = await ticketDetails(req.params.id, req.user);
+  const viewer = await loadPerson(req.user.id);
+  const details = await ticketDetails(req.params.id, viewer || req.user);
   if (!details) return res.status(404).json({ message: "事项不存在" });
-
-  // When submitter views the ticket and there are replies or it's completed, complete their portal todo
-  if (String(details.submitter_id) === String(req.user.id)) {
-    const hasReplies = (details.replies && details.replies.length > 0) || details.status === 'completed';
-    if (hasReplies) {
-      const submitterPerson = await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [req.user.id]).catch(() => null);
-      const submitterUnionId = details.submitter_union_id;
-      const submitterPersonRow = submitterUnionId
-        ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterUnionId]).catch(() => null)
-        : submitterPerson;
-      if (submitterPersonRow?.id) {
-        const todoId = buildTodoId(req.params.id, 'submitter');
-        completePortalTodo(todoId, submitterPersonRow.id).catch(err =>
-          logger.warn('portal_todo_complete_failed', { ticket_id: req.params.id, type: 'submitter', message: err.message })
-        );
-      }
-    }
-  }
 
   res.json(details);
 });
@@ -1582,7 +1596,7 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
     return res.status(400).json({ message: "请选择 1-5 分满意度评分" });
   }
   if (comment.length > 500) return res.status(400).json({ message: "评价内容不能超过 500 字" });
-  const ticket = await get("SELECT id, submitter_id, status FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT id, submitter_id, submitter_union_id, status FROM tickets WHERE id = ?", [req.params.id]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
   if (String(ticket.submitter_id) !== String(req.user.id)) return res.status(403).json({ message: "只有事项发起人可以进行满意度评价" });
   if (ticket.status !== "completed") return res.status(400).json({ message: "事项处理完成后才可以评价" });
@@ -1593,6 +1607,7 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     [req.params.id, req.user.id, score, comment]
   );
+  completeSubmitterTodo(req.params.id, ticket.submitter_id, ticket.submitter_union_id);
   res.json({ ok: true });
 });
 
@@ -1608,12 +1623,20 @@ app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
       const deptNames = assignments.map(a => a.department_name);
       if (deptNames.length > 0) {
         const ph = deptNames.map(() => '?').join(',');
-        scope = `WHERE t.current_department IN (${ph})`;
-        params.push(...deptNames);
+        scope = `WHERE (
+          t.current_department IN (${ph})
+          OR t.original_department IN (${ph})
+          OR t.id IN (SELECT ticket_id FROM transfers WHERE from_department IN (${ph}) OR to_department IN (${ph}))
+        )`;
+        params.push(...deptNames, ...deptNames, ...deptNames, ...deptNames);
       }
     } else if (user?.department) {
-      scope = "WHERE t.current_department = ?";
-      params.push(user.department);
+      scope = `WHERE (
+        t.current_department = ?
+        OR t.original_department = ?
+        OR t.id IN (SELECT ticket_id FROM transfers WHERE from_department = ? OR to_department = ?)
+      )`;
+      params.push(user.department, user.department, user.department, user.department);
     }
   }
 
@@ -1638,7 +1661,11 @@ app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
   );
 
   const deptRows = await all(
-    `SELECT t.current_department AS department, COUNT(*) AS count FROM tickets t ${scope} GROUP BY t.current_department ORDER BY count DESC`,
+    `SELECT COALESCE(t.current_department, t.department, '未指定') AS department, COUNT(*) AS count
+     FROM tickets t
+     ${scope}
+     GROUP BY COALESCE(t.current_department, t.department, '未指定')
+     ORDER BY count DESC`,
     params
   );
 
@@ -1679,8 +1706,10 @@ app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
 
 app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   const user = await loadPerson(req.user.id);
-  const pageSize = Math.min(Number(req.query.pageSize || 30), 100);
-  const page = Math.max(Number(req.query.page || 1), 1);
+  const requestedPageSize = Number(req.query.pageSize);
+  const requestedPage = Number(req.query.page);
+  const pageSize = Math.min(Number.isFinite(requestedPageSize) && requestedPageSize > 0 ? requestedPageSize : 30, 100);
+  const page = Math.max(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1, 1);
   const offset = (page - 1) * pageSize;
   const isGlobalAdmin = user?.role === "super_admin";
 
@@ -1795,16 +1824,6 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
     // Complete portal todos
     const ticketId = req.params.id;
 
-    // Always complete submitter's todo when admin replies
-    const submitterPerson = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [ticket.submitter_id, ticket.submitter_id]);
-    const submitterDatahub = submitterPerson?.union_id
-      ? await get('SELECT id FROM datahub_basic_persons WHERE union_id = ?', [submitterPerson.union_id])
-      : await get('SELECT id FROM datahub_basic_persons WHERE id = ?', [ticket.submitter_id]);
-    if (submitterDatahub?.id) {
-      completePortalTodo(buildTodoId(ticketId, 'submitter'), submitterDatahub.id)
-        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, type: 'submitter', message: err.message }));
-    }
-
     // Complete the replying admin's own todo
     if (user.union_id || user.id) {
       const adminPersonId = user.union_id
@@ -1888,13 +1907,13 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
        VALUES (?, ?, 'transferred_in', ?)`,
       [admin.notify_user_id, req.params.id, `事项【${ticket.title}】已从${fromDept}转办至${to_department}，请及时处理。`]
     );
-    const targetUrl = `/cn/admin?ticketId=${req.params.id}&nid=${notifResult.insertId}`;
+    const targetUrl = `/cn/admin/tickets/${req.params.id}?nid=${notifResult.insertId}`;
     await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
     if (admin.admin_person_id) {
       pushPortalTodo({
         id: buildTodoId(req.params.id, 'admin', admin.admin_person_id),
         name: `【${ticket.title}】-待您处理`,
-        url: buildSiteUrl(`/cn/admin?ticketId=${req.params.id}`),
+        url: buildSiteUrl(`/cn/admin/tickets/${req.params.id}`),
         principalPersonId: admin.admin_person_id
       }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: req.params.id, person_id: admin.admin_person_id, message: err.message }));
     }
@@ -1934,7 +1953,8 @@ app.get("/api/attachments/:id/download", auth, async (req, res) => {
   }
   if (!ticketId) return res.status(400).json({ message: "附件未关联工单" });
 
-  const permission = await getTicketPermission(ticketId, req.user);
+  const viewer = await loadPerson(req.user.id);
+  const permission = await getTicketPermission(ticketId, viewer || req.user);
   if (!permission) return res.status(403).json({ message: "无权访问此附件" });
 
   const filePath = path.join(__dirname, attachment.file_path);
@@ -2509,6 +2529,24 @@ setInterval(async () => {
       await run("DELETE FROM attachments WHERE file_path = ?", [row.file_path]);
     }
   } catch (e) { /* ignore cleanup errors */ }
+}, 60 * 60 * 1000);
+
+setInterval(async () => {
+  try {
+    const rows = await all(
+      `SELECT t.id, t.submitter_id, t.submitter_union_id
+       FROM tickets t
+       LEFT JOIN satisfaction_surveys s ON s.ticket_id = t.id
+       WHERE t.status = 'completed'
+         AND s.id IS NULL
+         AND t.updated_at <= (NOW() - INTERVAL 24 HOUR)`
+    );
+    for (const row of rows) {
+      await completeSubmitterTodo(row.id, row.submitter_id, row.submitter_union_id);
+    }
+  } catch (e) {
+    logger.warn('auto_complete_submitter_todo_failed', { error: e?.message || String(e) });
+  }
 }, 60 * 60 * 1000);
 
 app.get("/api/public/typical-tickets", async (req, res) => {

@@ -195,6 +195,7 @@ function App() {
         <Route path="/tickets" element={isAdmin ? <Navigate to={`/${locale}/admin`} replace /> : <MyTicketsPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage user={effectiveUser} />} />
         <Route path="/typical" element={<TypicalIssuesPage />} />
+        <Route path="/admin/tickets/:id" element={isAdmin ? <AdminPage /> : <Navigate to={`/${locale}/`} replace />} />
         <Route path="/admin" element={isAdmin ? <AdminPage /> : <Navigate to={`/${locale}/`} replace />} />
         <Route path="/change-password" element={<ChangePasswordPage onSuccess={handlePasswordChanged} />} />
         <Route path="/local/login" element={<Navigate to={`/${locale}/`} replace />} />

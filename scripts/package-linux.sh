@@ -88,17 +88,12 @@ SSO_STATE_SECRET=please-change-me
 DATAHUB_BASIC_PERSON_URL=https://api.sigs.tsinghua.edu.cn/v1/basic/api_basic_person
 DATAHUB_API_KEY=5f2ezUP3dUWkgYiCLuqWGQ4p88ELwCMW
 DATAHUB_SERVICE_ID=jsjb
+DB_HOST=219.223.170.14
+DB_PORT=3306
+DB_USER=response_test
+DB_PASSWORD=Uxhq03H??P]axvWFx_}3
+DB_NAME=response_test
 EOF
-
-# 复制数据库（压缩）
-echo -e "${YELLOW}4. 压缩数据库...${NC}"
-if [ -f "server/data/app.db" ]; then
-  # 先 checkpoint WAL 日志
-  sqlite3 server/data/app.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
-  cp server/data/app.db "$DEPLOY_DIR/server/data/app.db"
-  # 压缩数据库
-  gzip "$DEPLOY_DIR/server/data/app.db"
-fi
 
 # 创建启动脚本
 cat > "$DEPLOY_DIR/start.sh" << 'STARTEOF'
@@ -123,12 +118,6 @@ fi
 # 获取脚本所在目录
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
-
-# 检查并解压数据库
-if [ -f "server/data/app.db.gz" ] && [ ! -f "server/data/app.db" ]; then
-  echo -e "${YELLOW}解压数据库...${NC}"
-  gunzip server/data/app.db.gz
-fi
 
 # 创建必要的目录
 mkdir -p server/uploads
@@ -301,7 +290,7 @@ pm2 status
 
 ## 数据库
 
-数据库文件位于 `server/data/app.db`，首次运行会自动初始化。
+系统统一使用远程 MySQL 数据库 `219.223.170.14/response_test`，首次运行会自动补齐必要表结构。
 
 ## 同步人员数据
 

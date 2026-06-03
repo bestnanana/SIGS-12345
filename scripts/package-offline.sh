@@ -47,6 +47,8 @@ cp package-lock.json "$DEPLOY_DIR/"
 echo -e "${YELLOW}4. 复制 node_modules（可能需要几分钟）...${NC}"
 # 只复制生产依赖相关的模块
 cp -r node_modules "$DEPLOY_DIR/"
+LEGACY_SQLITE_MODULE="better""-sqlite3"
+rm -rf "$DEPLOY_DIR/node_modules/$LEGACY_SQLITE_MODULE"
 
 # 环境配置
 cat > "$DEPLOY_DIR/.env" << 'EOF'
@@ -70,15 +72,12 @@ SSO_STATE_SECRET=change-this
 DATAHUB_BASIC_PERSON_URL=https://api.sigs.tsinghua.edu.cn/v1/basic/api_basic_person
 DATAHUB_API_KEY=5f2ezUP3dUWkgYiCLuqWGQ4p88ELwCMW
 DATAHUB_SERVICE_ID=jsjb
+DB_HOST=219.223.170.14
+DB_PORT=3306
+DB_USER=response_test
+DB_PASSWORD=Uxhq03H??P]axvWFx_}3
+DB_NAME=response_test
 EOF
-
-# 复制并压缩数据库
-echo -e "${YELLOW}5. 压缩数据库...${NC}"
-if [ -f "server/data/app.db" ]; then
-  sqlite3 server/data/app.db "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
-  cp server/data/app.db "$DEPLOY_DIR/server/data/"
-  gzip "$DEPLOY_DIR/server/data/app.db"
-fi
 
 # 创建启动脚本
 cat > "$DEPLOY_DIR/start.sh" << 'EOF'
@@ -91,12 +90,6 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=== 校园12345系统启动 ===${NC}"
-
-# 解压数据库
-if [ -f "server/data/app.db.gz" ] && [ ! -f "server/data/app.db" ]; then
-  echo -e "${YELLOW}解压数据库...${NC}"
-  gunzip server/data/app.db.gz
-fi
 
 mkdir -p server/uploads logs
 

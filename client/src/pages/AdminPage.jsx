@@ -1,20 +1,21 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Link2, Megaphone, PanelLeftClose, PanelLeftOpen, Paperclip, RefreshCw, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
-import { api, uploadConfig } from "../api";
+import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
+import { api, getToken, uploadConfig } from "../api";
 import { formatTime } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
 import PermissionManager from "../components/PermissionManager";
 import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
-import { LocaleLink, useLanguage, useStatusMap } from "../i18n";
+import { LocaleLink, useLanguage, useLocaleNavigate, useStatusMap } from "../i18n";
+import { useLocation, useParams } from "react-router-dom";
 
 const adminMenuItems = [
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
 ];
 const normalizeTicketStatus = (status) => (status === "completed" ? "completed" : "pending");
 
-function countBy(items, getKey) {
+function countBy(items, getKey, fallback = "未指定") {
   return items.reduce((acc, item) => {
-    const key = getKey(item) || "未指定";
+    const key = getKey(item) || fallback;
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
@@ -25,9 +26,23 @@ function formatPercent(value, total) {
   return `${Math.round((value / total) * 100)}%`;
 }
 
+function freshParams(params = {}) {
+  return { ...params, _ts: Date.now() };
+}
+
+function attachmentDownloadUrl(id) {
+  const token = getToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `/api/attachments/${id}/download${query}`;
+}
+
 export default function AdminPage() {
   const { t, language } = useLanguage();
   const dateLocale = language === "en" ? "en-US" : "zh-CN";
+  const navigate = useLocaleNavigate();
+  const location = useLocation();
+  const { id: routeTicketIdParam } = useParams();
+  const routeTicketId = Number(routeTicketIdParam);
   const fullStatusMap = useStatusMap();
   const statusMap = useMemo(() => ({
     pending: fullStatusMap.pending,
@@ -50,7 +65,6 @@ export default function AdminPage() {
   const [adminStatusFilter, setAdminStatusFilter] = useState("pending");
   const adminPageSize = 30;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 1280);
-  const [copyMsg, setCopyMsg] = useState("");
   const [expandedMenu, setExpandedMenu] = useState("tickets");
   const [showTicketModal, setShowTicketModal] = useState(false);
   const [transferDept, setTransferDept] = useState("");
@@ -59,7 +73,18 @@ export default function AdminPage() {
   const [departments, setDepartments] = useState([]);
   const [activeConfigView, setActiveConfigView] = useState("fields");
 
-  const selected = useMemo(() => tickets.find((item) => item.id === selectedId), [tickets, selectedId]);
+  function localizedError(err, fallbackKey) {
+    const fallback = t(fallbackKey);
+    const serverMessage = err?.response?.data?.message;
+    return language === "en" ? fallback : (serverMessage || fallback);
+  }
+
+  const selected = useMemo(() => {
+    const fromList = tickets.find((item) => item.id === selectedId);
+    if (fromList) return fromList;
+    if (detail && detail.ticket && Number(detail.ticket.id) === Number(selectedId)) return detail.ticket;
+    return null;
+  }, [detail, selectedId, tickets]);
   const canHandleSelected = selected && (
     user?.role === "super_admin" ||
     detail?.permission === 'handle' ||
@@ -79,9 +104,9 @@ export default function AdminPage() {
       statusCounts[status] = (statusCounts[status] || 0) + 1;
     });
 
-    const fieldEntries = Object.entries(countBy(tickets, (ticket) => ticket.field))
+    const fieldEntries = Object.entries(countBy(tickets, (ticket) => ticket.field, t("common.notSet")))
       .sort((a, b) => b[1] - a[1]);
-    const departmentEntries = Object.entries(countBy(tickets, (ticket) => ticket.current_department || ticket.department))
+    const departmentEntries = Object.entries(countBy(tickets, (ticket) => ticket.current_department || ticket.department, t("common.notSet")))
       .sort((a, b) => b[1] - a[1]);
     const satisfactionTickets = tickets.filter((ticket) => Number(ticket.satisfaction_score) > 0);
     const satisfactionScoreSum = satisfactionTickets.reduce((sum, ticket) => sum + Number(ticket.satisfaction_score || 0), 0);
@@ -107,7 +132,7 @@ export default function AdminPage() {
       satisfactionRate: formatPercent(satisfactionTickets.length, completedCount),
       satisfactionDistribution
     };
-  }, [statusMap, tickets, adminTotal]);
+  }, [statusMap, tickets, adminTotal, t]);
 
   async function loadMe() {
     const res = await api.get("/auth/me");
@@ -117,7 +142,7 @@ export default function AdminPage() {
 
   async function loadAnalytics() {
     try {
-      const res = await api.get("/admin/analytics");
+      const res = await api.get("/admin/analytics", { params: freshParams() });
       setServerStats(res.data);
     } catch {
       /* analytics fetch failed, fall back to client-side stats */
@@ -127,7 +152,9 @@ export default function AdminPage() {
   async function loadTickets(p = adminPage) {
     setLoading(true);
     try {
-      const res = await api.get("/admin/tickets", { params: { page: p, pageSize: adminPageSize } });
+      const res = await api.get("/admin/tickets", {
+        params: freshParams({ page: p, pageSize: adminPageSize })
+      });
       const data = res.data;
       if (data && Array.isArray(data.rows)) {
         setTickets(data.rows);
@@ -138,7 +165,7 @@ export default function AdminPage() {
         setAdminTotal(data.length);
         setError("");
       } else {
-        setError("后台事项接口返回异常，请确认后端已重启到最新版本。");
+        setError(t("admin.ticketApiInvalid"));
       }
       setSelectedId((current) => {
         if (data && Array.isArray(data.rows) && data.rows.length) return current || data.rows[0]?.id || null;
@@ -147,7 +174,7 @@ export default function AdminPage() {
       });
     } catch (err) {
       setTickets([]);
-      setError(err.response?.data?.message || "后台事项加载失败，请确认后端服务正在运行。");
+      setError(localizedError(err, "admin.ticketLoadFailed"));
     } finally {
       setLoading(false);
     }
@@ -158,7 +185,7 @@ export default function AdminPage() {
       setDetail(null);
       return;
     }
-    const res = await api.get(`/tickets/${id}`);
+    const res = await api.get(`/tickets/${id}`, { params: freshParams() });
     setDetail({
       ...res.data,
       transfers: Array.isArray(res.data?.transfers) ? res.data.transfers : [],
@@ -172,16 +199,17 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    // Support deep-link: ?ticketId=xxx&nid=xxx
-    const params = new URLSearchParams(window.location.search);
-    const ticketIdParam = params.get("ticketId");
+    // Support deep-link: /admin/tickets/:id or ?ticketId=xxx&nid=xxx
+    const params = new URLSearchParams(location.search);
+    const ticketIdParam = Number(params.get("ticketId"));
     const nidParam = params.get("nid");
-    if (ticketIdParam) {
-      const id = Number(ticketIdParam);
-      if (Number.isFinite(id)) {
-        setSelectedId(id);
-        setShowTicketModal(true);
-        // Remove params from URL without reloading
+    const routeTicketIdValid = Number.isFinite(routeTicketId) && routeTicketId > 0;
+    const queryTicketIdValid = Number.isFinite(ticketIdParam) && ticketIdParam > 0;
+    const openTicketId = routeTicketIdValid ? routeTicketId : (queryTicketIdValid ? ticketIdParam : null);
+    if (openTicketId) {
+      setSelectedId(openTicketId);
+      setShowTicketModal(true);
+      if (queryTicketIdValid) {
         const url = new URL(window.location.href);
         url.searchParams.delete("ticketId");
         url.searchParams.delete("nid");
@@ -191,6 +219,9 @@ export default function AdminPage() {
     // Mark notification as read
     if (nidParam) {
       api.patch(`/notifications/${nidParam}/read`, {}, { skipAuthExpiredHandler: true }).catch(() => {});
+      const url = new URL(window.location.href);
+      url.searchParams.delete("nid");
+      window.history.replaceState({}, "", url.toString());
     }
     loadMe();
     loadTickets();
@@ -205,7 +236,7 @@ export default function AdminPage() {
         setDepartments(allDepts);
       })
       .catch(() => {});
-  }, []);
+  }, [location.search, routeTicketId]);
 
   useEffect(() => {
     if (selectedId) {
@@ -249,6 +280,9 @@ export default function AdminPage() {
     setReply({ content: "", status: "completed" });
     setError("");
     setReplySuccess("");
+    if (Number.isFinite(routeTicketId) && routeTicketId > 0) {
+      navigate("/admin");
+    }
   }
 
   async function handleTransfer(e) {
@@ -262,7 +296,7 @@ export default function AdminPage() {
       await loadTickets();
       await loadDetail(selectedId);
     } catch (err) {
-      setError(err.response?.data?.message || "转办失败");
+      setError(localizedError(err, "admin.transferFailed"));
     } finally {
       setTransferring(false);
     }
@@ -295,28 +329,20 @@ export default function AdminPage() {
       console.log("[submitReply] success:", res.data);
       setReply({ ...reply, content: "" });
       setFiles([]);
-      setReplySuccess("处理结果已提交");
-      loadDetail(selectedId);
-      loadTickets();
+      setReplySuccess(t("admin.replySubmitted"));
+      await Promise.all([
+        loadDetail(selectedId),
+        loadTickets(adminPage)
+      ]);
     } catch (err) {
       console.error("[submitReply] error:", err);
-      setError(err.response?.data?.message || "回复提交失败");
+      setError(localizedError(err, "admin.replyFailed"));
     } finally {
       setSubmitting(false);
     }
   }
 
   const selectedStatus = selected ? statusMap[normalizeTicketStatus(selected.status)] || statusMap.pending : statusMap.pending;
-
-  const shareUrl = selected?.share_code ? `${window.location.origin}/api/public/ticket/${selected.share_code}` : "";
-
-  function copyShareUrl() {
-    if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl).then(() => {
-      setCopyMsg("已复制");
-      setTimeout(() => setCopyMsg(""), 2000);
-    }).catch(() => setCopyMsg("复制失败"));
-  }
 
   const adminTotalPages = Math.max(1, Math.ceil(adminTotal / adminPageSize));
 
@@ -325,43 +351,52 @@ export default function AdminPage() {
     setAdminPage(target);
     loadTickets(target);
   }
-  const currentHandlerText = selected?.current_department || selected?.department || "党政办";
+  const currentHandlerText = selected?.current_department || selected?.department || t("common.notSet");
+  const adminReplies = Array.isArray(detail?.replies) ? detail.replies : [];
+  const latestAdminReply = adminReplies.length ? adminReplies[adminReplies.length - 1] : null;
+  const replyAttachmentsByReplyId = useMemo(() => {
+    return (detail?.replyAttachments || []).reduce((acc, item) => {
+      acc[item.reply_id] = [...(acc[item.reply_id] || []), item];
+      return acc;
+    }, {});
+  }, [detail?.replyAttachments]);
   const sidebarWidthClass = sidebarCollapsed ? "grid-cols-[72px_minmax(0,1fr)]" : "grid-cols-[232px_minmax(0,1fr)]";
   const workflowSteps = selected
     ? [
       {
         key: "submit",
-        title: "提交事项",
+        title: t("admin.submitStep"),
         status: selected.status === "pending" ? "current" : "done",
         icon: ClipboardList,
         tone: "purple",
         lines: [
-          `提交人：${selected.submitter_name || "学生"}`,
-          `提交时间：${formatTime(selected.created_at, dateLocale)}`,
-          `学生通过平台提交事项，等待相关部门处理。`
+          `${t("admin.submitter")}：${selected.submitter_name || t("admin.student")}`,
+          `${t("admin.submittedAt")}：${formatTime(selected.created_at, dateLocale)}`,
+          t("admin.submittedToDepartment")
         ]
       },
       {
         key: "department",
-        title: "相关部门处理",
+        title: t("admin.departmentStep"),
         status: selected.status === "completed" ? "done" : "current",
         icon: FileCheck2,
         tone: "amber",
         lines: [
-          `申请选择部门：${selected.department || "未指定"}`,
-          `办理部门：${currentHandlerText}`,
-          selected.status === "completed" ? "相关部门已完成处理。" : "事项已提交，等待相关部门处理。"
-        ]
+          `${t("admin.selectedDepartment")}：${selected.department || t("common.notSet")}`,
+          `${t("admin.handlerDepartment")}：${currentHandlerText}`,
+          latestAdminReply?.content ? `${t("admin.departmentReplyLine")}：${latestAdminReply.content}` : null,
+          selected.status === "completed" ? t("admin.departmentCompleted") : t("admin.waitingDepartment")
+        ].filter(Boolean)
       },
       {
         key: "finish",
-        title: "处理完成",
+        title: t("admin.finishStep"),
         status: selected.status === "completed" ? "done" : "todo",
         icon: CheckCircle2,
         tone: "slate",
         lines: [
-          `完成时间：${selected.status === "completed" ? formatTime(selected.updated_at, dateLocale) : "—"}`,
-          selected.status === "completed" ? "事项办理完成，流程结束。" : "办理结果确认后进入最终状态。"
+          `${t("admin.completedAt")}：${selected.status === "completed" ? formatTime(selected.updated_at, dateLocale) : "—"}`,
+          selected.status === "completed" ? t("admin.flowFinished") : t("admin.finishPending")
         ]
       }
     ]
@@ -385,14 +420,14 @@ export default function AdminPage() {
             type="button"
             onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg"
-            title={sidebarCollapsed ? "展开菜单" : "收起菜单"}
+            title={sidebarCollapsed ? t("admin.expandMenu") : t("admin.collapseMenu")}
           >
             {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           </button>
         </div>
 
         <nav className="mt-3 space-y-2">
-          {/* 事项处理 - expandable */}
+          {/* Tickets - expandable */}
           <div>
             <button
               type="button"
@@ -400,7 +435,7 @@ export default function AdminPage() {
                 setExpandedMenu(expandedMenu === "tickets" ? "" : "tickets");
                 setActiveView("tickets");
               }}
-              title={sidebarCollapsed ? "事项处理" : undefined}
+              title={sidebarCollapsed ? t("admin.menuTickets") : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
                 activeView === "tickets" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
               } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
@@ -428,7 +463,7 @@ export default function AdminPage() {
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "pending" ? "bg-amber-500" : "bg-slate-300"}`} />
-                  待相关部门处理
+                  {t("admin.pendingStatus")}
                   {stats.statusCounts?.pending > 0 ? (
                     <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">{stats.statusCounts.pending}</span>
                   ) : null}
@@ -443,7 +478,7 @@ export default function AdminPage() {
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "completed" ? "bg-emerald-500" : "bg-slate-300"}`} />
-                  处理完成
+                  {t("admin.completedStatus")}
                   {stats.statusCounts?.completed > 0 ? (
                     <span className="ml-auto rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">{stats.statusCounts.completed}</span>
                   ) : null}
@@ -477,7 +512,7 @@ export default function AdminPage() {
             );
           })}
 
-          {/* 配置管理 - expandable */}
+          {/* Configuration - expandable */}
           <div>
             <button
               type="button"
@@ -485,7 +520,7 @@ export default function AdminPage() {
                 setExpandedMenu(expandedMenu === "config" ? "" : "config");
                 setActiveView("config");
               }}
-              title={sidebarCollapsed ? "配置管理" : undefined}
+              title={sidebarCollapsed ? t("admin.menuConfig") : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
                 activeView === "config" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
               } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
@@ -493,8 +528,8 @@ export default function AdminPage() {
               <Settings2 size={18} className="shrink-0" />
               {!sidebarCollapsed ? (
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold">配置管理</span>
-                  <span className={`mt-1 block text-xs leading-5 ${activeView === "config" ? "text-white/80" : "text-ai-muted"}`}>表单领域和部门配置</span>
+                  <span className="block truncate text-sm font-semibold">{t("admin.menuConfig")}</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "config" ? "text-white/80" : "text-ai-muted"}`}>{t("admin.menuConfigDesc")}</span>
                 </span>
               ) : null}
               {!sidebarCollapsed ? (
@@ -513,7 +548,7 @@ export default function AdminPage() {
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 rounded-full ${activeView === "config" && activeConfigView === "fields" ? "bg-ai-primary" : "bg-slate-300"}`} />
-                  事项领域
+                  {t("admin.configFields")}
                 </button>
                 <button
                   type="button"
@@ -525,7 +560,7 @@ export default function AdminPage() {
                   }`}
                 >
                   <span className={`h-1.5 w-1.5 rounded-full ${activeView === "config" && activeConfigView === "departments" ? "bg-ai-primary" : "bg-slate-300"}`} />
-                  部门配置
+                  {t("admin.configDepartments")}
                 </button>
               </div>
             ) : null}
@@ -535,7 +570,7 @@ export default function AdminPage() {
             <button
               type="button"
               onClick={() => setActiveView("permissions")}
-              title={sidebarCollapsed ? "授权管理" : undefined}
+              title={sidebarCollapsed ? t("admin.menuPermissions") : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
                 activeView === "permissions" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
               } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
@@ -543,8 +578,8 @@ export default function AdminPage() {
               <Shield size={18} className="shrink-0" />
               {!sidebarCollapsed ? (
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold">授权管理</span>
-                  <span className={`mt-1 block text-xs leading-5 ${activeView === "permissions" ? "text-white/80" : "text-ai-muted"}`}>部门管理员权限配置</span>
+                  <span className="block truncate text-sm font-semibold">{t("admin.menuPermissions")}</span>
+                  <span className={`mt-1 block text-xs leading-5 ${activeView === "permissions" ? "text-white/80" : "text-ai-muted"}`}>{t("admin.menuPermissionsDesc")}</span>
                 </span>
               ) : null}
             </button>
@@ -571,20 +606,12 @@ export default function AdminPage() {
             <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-4 py-3.5 sm:px-5">
               <div>
                 <div className="text-xl font-semibold tracking-tight text-ai-title">
-                  {adminStatusFilter === "pending" ? "待相关部门处理" : "处理完成"}
+                  {adminStatusFilter === "pending" ? t("admin.pendingStatus") : t("admin.completedStatus")}
                 </div>
                 <div className="mt-1 text-sm text-ai-body">
-                  {user?.department ? `${user.department}${t("admin.ticketQueue")}` : t("admin.viewAndReply")}
+                  {user?.department ? t("admin.departmentTicketQueue", { department: user.department }) : t("admin.viewAndReply")}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={loadTickets}
-                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-ai-border bg-white text-ai-body transition duration-200 hover:bg-ai-bg"
-                title={t("action.refresh")}
-              >
-                <RefreshCw size={16} />
-              </button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3 scrollbar-thin">
@@ -617,7 +644,7 @@ export default function AdminPage() {
                             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
                               <span>#{String(ticket.id).padStart(6, "0")}</span>
                               <span>{ticket.field}</span>
-                              <span>{ticket.current_department || "党政办"}</span>
+                              <span>{ticket.current_department || t("common.department")}</span>
                               <span>{ticket.submitter_name}</span>
                               <span>{formatTime(ticket.created_at, dateLocale)}</span>
                             </div>
@@ -631,7 +658,7 @@ export default function AdminPage() {
 
               {adminTotalPages > 1 && !loading && (
                 <div className="flex items-center justify-between gap-2 border-t border-ai-border px-3 py-3">
-                  <span className="text-xs text-ai-muted">{adminTotal} 项</span>
+                  <span className="text-xs text-ai-muted">{t("admin.itemsCount", { count: adminTotal })}</span>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => goAdminPage(adminPage - 1)}
@@ -674,18 +701,12 @@ export default function AdminPage() {
                 <h2 className="text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ai-body">
                   <span>#{String(selected.id).padStart(6, "0")}</span>
-                  <span>提交时间：{formatTime(selected.created_at, dateLocale)}</span>
-                  <span>提交人：{selected.submitter_name}</span>
-                  {selected.submitter_phone ? <span>联系方式：{selected.submitter_phone}</span> : null}
+                  <span>{t("admin.submittedAt")}：{formatTime(selected.created_at, dateLocale)}</span>
+                  <span>{t("admin.submitter")}：{selected.submitter_name}</span>
+                  {selected.submitter_phone ? <span>{t("admin.contact")}：{selected.submitter_phone}</span> : null}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {shareUrl ? (
-                  <button type="button" onClick={copyShareUrl} className="ghost-button h-9 gap-1.5 text-xs">
-                    <Link2 size={14} />
-                    {copyMsg || "复制链接"}
-                  </button>
-                ) : null}
                 <button onClick={closeTicketModal} className="flex h-9 w-9 items-center justify-center rounded-xl text-ai-muted hover:bg-ai-bg hover:text-ai-title">
                   <X size={18} />
                 </button>
@@ -707,10 +728,10 @@ export default function AdminPage() {
               {/* Attachments */}
               {detail?.attachments?.length > 0 ? (
                 <section>
-                  <h3 className="mb-2 text-sm font-semibold text-ai-title">附件</h3>
+                  <h3 className="mb-2 text-sm font-semibold text-ai-title">{t("admin.attachments")}</h3>
                   <div className="flex flex-wrap gap-2">
                     {detail.attachments.map(att => (
-                      <a key={att.id} href={`/api/attachments/${att.id}/download`} className="flex items-center gap-1.5 rounded-lg border border-ai-border bg-white px-3 py-2 text-xs text-ai-body transition hover:bg-ai-bg">
+                      <a key={att.id} href={attachmentDownloadUrl(att.id)} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 rounded-lg border border-ai-border bg-white px-3 py-2 text-xs text-ai-body transition hover:bg-ai-bg">
                         <Paperclip size={12} />
                         <span className="truncate max-w-[160px]">{att.original_name}</span>
                       </a>
@@ -730,28 +751,38 @@ export default function AdminPage() {
                 </div>
               </section>
 
-              {/* Reply History */}
-              {detail?.replies?.length > 0 ? (
-                <section>
-                  <h3 className="mb-2 text-sm font-semibold text-ai-title">处理记录</h3>
+              {/* Department Admin Replies */}
+              {adminReplies.length > 0 ? (
+                <section className="rounded-xl border border-ai-border bg-white p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-ai-title">
+                      <MessageSquare size={16} className="text-ai-primary" />
+                      {t("admin.departmentReply")}
+                    </h3>
+                    {latestAdminReply ? (
+                      <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                        {latestAdminReply.replier_name || `${latestAdminReply.department || currentHandlerText}${t("admin.replyAdminSuffix")}`} · {formatTime(latestAdminReply.created_at, dateLocale)}
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="space-y-3">
-                    {detail.replies.map((r, idx) => (
-                      <div key={r.id || idx} className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
-                        <div className="whitespace-pre-wrap text-sm leading-7 text-emerald-900">{r.content}</div>
-                        <div className="mt-2 text-xs text-emerald-700">
-                          {r.replier_name || r.department} · {formatTime(r.created_at, dateLocale)}
-                        </div>
-                        {detail.replyAttachments?.filter(a => a.reply_id === r.id)?.length > 0 ? (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {detail.replyAttachments.filter(a => a.reply_id === r.id).map(att => (
-                              <a key={att.id} href={`/api/attachments/${att.id}/download`} className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs text-emerald-700 ring-1 ring-emerald-200">
-                                <Paperclip size={10} />{att.original_name}
-                              </a>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
+                    {adminReplies.map((r, idx) => {
+                      const replyAttachments = replyAttachmentsByReplyId[r.id] || [];
+                      return (
+                        <article key={r.id || idx} className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+                          <div className="whitespace-pre-wrap text-sm leading-7 text-emerald-950">{r.content}</div>
+                          {replyAttachments.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {replyAttachments.map(att => (
+                                <a key={att.id} href={attachmentDownloadUrl(att.id)} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs text-emerald-700 ring-1 ring-emerald-200">
+                                  <Paperclip size={10} />{att.original_name}
+                                </a>
+                              ))}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
                   </div>
                 </section>
               ) : null}
@@ -759,10 +790,10 @@ export default function AdminPage() {
               {/* Reply Form (pending tickets only) */}
               {!isCompleted ? (
                 <form onSubmit={submitReply} className="rounded-xl border border-ai-border p-4">
-                  <h3 className="mb-3 text-sm font-semibold text-ai-title">处理信息</h3>
+                  <h3 className="mb-3 text-sm font-semibold text-ai-title">{t("admin.processingInfo")}</h3>
                   {!canHandleSelected ? (
                     <div className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
-                      该事项当前承办部门为 {currentHandlerText}，只能由该部门管理员处理。
+                      {t("admin.onlyCurrentDeptCanHandle", { department: currentHandlerText })}
                     </div>
                   ) : null}
                   <textarea
@@ -770,13 +801,13 @@ export default function AdminPage() {
                     onChange={(e) => setReply({ ...reply, content: e.target.value })}
                     className="soft-textarea min-h-24 w-full"
                     disabled={!canHandleSelected}
-                    placeholder="请填写处理结果说明..."
+                    placeholder={t("admin.replyPlaceholder")}
                     required
                   />
                   <div className="mt-3 flex items-center justify-between gap-3">
                     <label className={`flex items-center gap-2 rounded-xl border border-dashed border-ai-border px-3 py-2 text-sm text-ai-body transition ${canHandleSelected ? "cursor-pointer hover:border-ai-primary/40" : "cursor-not-allowed opacity-60"}`}>
                       <Paperclip size={16} />
-                      <span className="truncate">{files.length ? `${files.length} 个附件` : "上传附件"}</span>
+                      <span className="truncate">{files.length ? t("admin.filesCount", { count: files.length }) : t("admin.uploadAttachment")}</span>
                       <input
                         type="file"
                         multiple
@@ -788,7 +819,7 @@ export default function AdminPage() {
                     </label>
                     <button type="submit" disabled={submitting || !canHandleSelected} className="primary-button">
                       <SendHorizontal size={16} />
-                      {submitting ? "提交中..." : "提交处理结果"}
+                      {submitting ? t("admin.submitting") : t("admin.submitReplyResult")}
                     </button>
                   </div>
                   {replySuccess ? (
@@ -802,7 +833,7 @@ export default function AdminPage() {
                 <section className="rounded-xl border border-ai-border p-4">
                   <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ai-title">
                     <ArrowRightLeft size={16} />
-                    转办事项
+                    {t("admin.transferTicket")}
                   </h3>
                   <form onSubmit={handleTransfer} className="space-y-3">
                     <select
@@ -811,7 +842,7 @@ export default function AdminPage() {
                       className="soft-input h-10 w-full text-sm"
                       required
                     >
-                      <option value="">选择转办目标部门...</option>
+                      <option value="">{t("admin.chooseTransferDept")}</option>
                       {departments.filter(d => d !== (selected.current_department || selected.department)).map(d => (
                         <option key={d} value={d}>{d}</option>
                       ))}
@@ -820,11 +851,11 @@ export default function AdminPage() {
                       value={transferNote}
                       onChange={e => setTransferNote(e.target.value)}
                       className="soft-textarea min-h-16 w-full"
-                      placeholder="转办说明（选填）..."
+                      placeholder={t("admin.transferNotePlaceholder")}
                     />
                     <button type="submit" disabled={transferring || !transferDept} className="ghost-button h-10 w-full justify-center gap-2 border-amber-200 text-amber-700 hover:bg-amber-50">
                       <ArrowRightLeft size={14} />
-                      {transferring ? "转办中..." : "确认转办"}
+                      {transferring ? t("admin.transferring") : t("admin.confirmTransfer")}
                     </button>
                   </form>
                 </section>
@@ -835,7 +866,7 @@ export default function AdminPage() {
             <aside className="space-y-4">
               {/* Workflow */}
               <section className="rounded-xl border border-ai-border p-4">
-                <h3 className="mb-3 text-sm font-semibold text-ai-title">事项流转流程</h3>
+                <h3 className="mb-3 text-sm font-semibold text-ai-title">{t("admin.workflow")}</h3>
                 <div className="relative">
                   {workflowSteps.map((step, index) => {
                     const StepIcon = step.icon;
@@ -875,7 +906,7 @@ export default function AdminPage() {
               {/* Transfer History */}
               {detail?.transfers?.length > 0 ? (
                 <section className="rounded-xl border border-ai-border p-4">
-                  <h3 className="mb-3 text-sm font-semibold text-ai-title">转办记录</h3>
+                  <h3 className="mb-3 text-sm font-semibold text-ai-title">{t("admin.transferRecords")}</h3>
                   <div className="space-y-2">
                     {detail.transfers.map((tr, idx) => (
                       <div key={idx} className="flex items-start gap-2 text-xs">
@@ -894,23 +925,23 @@ export default function AdminPage() {
 
               {/* Satisfaction */}
               <section className="rounded-xl border border-ai-border p-4">
-                <h3 className="mb-3 text-sm font-semibold text-ai-title">满意度调查</h3>
+                <h3 className="mb-3 text-sm font-semibold text-ai-title">{t("admin.satisfaction")}</h3>
                 {detail?.satisfaction ? (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2.5 text-amber-800 ring-1 ring-amber-100">
-                      <span className="text-xs font-semibold">评分</span>
+                      <span className="text-xs font-semibold">{t("admin.score")}</span>
                       <span className="flex items-center gap-1 text-sm font-semibold">
                         <Star size={14} fill="currentColor" />
                         {detail.satisfaction.score} / 5
                       </span>
                     </div>
                     <div className="rounded-xl bg-ai-bg px-3 py-2.5 text-xs leading-6 text-ai-body">
-                      {detail.satisfaction.comment || "用户未填写文字评价。"}
+                      {detail.satisfaction.comment || t("admin.noSatisfactionComment")}
                     </div>
                   </div>
                 ) : (
                   <div className="rounded-xl bg-ai-bg px-3 py-3 text-xs text-ai-body">
-                    {selected.status === "completed" ? "等待发起人提交满意度评价。" : "事项完成后将开放评价。"}
+                    {selected.status === "completed" ? t("admin.waitingSatisfaction") : t("admin.satisfactionAfterCompleted")}
                   </div>
                 )}
               </section>
