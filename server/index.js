@@ -1012,8 +1012,7 @@ async function notifyCurrentDepartmentAdmins(ticket, message, notificationType =
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE p.role_id = 1
-        OR (p.role_id IN (2, 3) AND p.department = ?)
+     WHERE (p.role_id IN (2, 3) AND p.department = ?)
         OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [department, department]
   );
@@ -1977,14 +1976,15 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   );
   await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
 
-  // Notify admins in the target department + all super_admins + department_assignments
+  // Notify admins in the target department + department assignments.
+  // Super admins keep global handling permission, but portal todos are only pushed
+  // for departments explicitly assigned to them in department_assignments.
   const admins = await all(
     `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE p.role_id = 1
-        OR (p.role_id IN (2, 3) AND p.department = ?)
+     WHERE (p.role_id IN (2, 3) AND p.department = ?)
         OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [to_department, to_department]
   );
@@ -2011,8 +2011,7 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
     `SELECT DISTINCT p.id AS admin_person_id
      FROM datahub_basic_persons p
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE p.role_id = 1
-        OR (p.role_id IN (2, 3) AND p.department = ?)
+     WHERE (p.role_id IN (2, 3) AND p.department = ?)
         OR (da.id IS NOT NULL AND da.department_name = ?)`,
     [fromDept, fromDept]
   );
@@ -2105,11 +2104,15 @@ app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req,
 // 获取当前用户的管理部门
 app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
   const person = await loadPerson(req.user.id);
+  const assignments = await getDepartmentAssignments(String(req.user.id));
   if (person?.role === 'super_admin') {
-    return res.json({ departments: [], role_type: null, is_super_admin: true });
+    return res.json({
+      departments: assignments.map(a => a.department_name),
+      role_type: assignments[0]?.role_type || null,
+      is_super_admin: true
+    });
   }
 
-  const assignments = await getDepartmentAssignments(String(req.user.id));
   if (assignments.length === 0) {
     return res.json({ departments: [], role_type: null, is_super_admin: false });
   }
@@ -2462,7 +2465,7 @@ app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdmi
     person_id: current.person_id,
     role: 'super_admin',
     role_id: role.id,
-    managed_departments: []
+    managed_departments: allAssignments.map(a => a.department_name)
   };
 
   await run(
@@ -2475,7 +2478,6 @@ app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdmi
       [current.union_id]
     );
   }
-  await run("DELETE FROM department_assignments WHERE person_id = ?", [current.person_id]);
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
      VALUES (?, ?, 'promote_super_admin', ?, ?)`,
