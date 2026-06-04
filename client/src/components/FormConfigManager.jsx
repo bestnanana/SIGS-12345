@@ -1,10 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Save, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../api";
+import { useLanguage } from "../i18n";
 
 const departmentTypes = ["职能处室", "教学科研机构"];
+const departmentTypeLabels = {
+  "职能处室": "Administrative Offices",
+  "教学科研机构": "Teaching and Research Units"
+};
 
 export default function FormConfigManager({ view } = {}) {
+  const { t, language } = useLanguage();
   const [fields, setFields] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [fieldDraft, setFieldDraft] = useState({ label: "", label_en: "" });
@@ -27,7 +33,7 @@ export default function FormConfigManager({ view } = {}) {
       setFields(Array.isArray(fieldRes.data?.fields) ? fieldRes.data.fields : []);
       setDepartments(Array.isArray(deptRes.data) ? deptRes.data : []);
     } catch (err) {
-      setError(err.response?.data?.message || "配置加载失败");
+      setError(err.response?.data?.message || t("admin.configLoadFailed"));
     } finally {
       setLoading(false);
     }
@@ -53,7 +59,7 @@ export default function FormConfigManager({ view } = {}) {
       setFieldDraft({ label: "", label_en: "" });
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "新增失败");
+      setError(err.response?.data?.message || t("admin.createFailed"));
     } finally {
       setSavingKey("");
     }
@@ -70,7 +76,7 @@ export default function FormConfigManager({ view } = {}) {
       });
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "保存失败");
+      setError(err.response?.data?.message || t("admin.saveFailed"));
     } finally {
       setSavingKey("");
     }
@@ -83,7 +89,7 @@ export default function FormConfigManager({ view } = {}) {
       await api.delete(`/admin/form-options/${id}`);
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "删除失败");
+      setError(err.response?.data?.message || t("admin.deleteFailed"));
     } finally {
       setSavingKey("");
     }
@@ -107,7 +113,7 @@ export default function FormConfigManager({ view } = {}) {
       setDeptDraft({ name: "", name_en: "", type: departmentTypes[0] });
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "新增失败");
+      setError(err.response?.data?.message || t("admin.createFailed"));
     } finally {
       setSavingKey("");
     }
@@ -125,7 +131,7 @@ export default function FormConfigManager({ view } = {}) {
       });
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "保存失败");
+      setError(err.response?.data?.message || t("admin.saveFailed"));
     } finally {
       setSavingKey("");
     }
@@ -138,7 +144,7 @@ export default function FormConfigManager({ view } = {}) {
       await api.delete(`/admin/departments/${id}`);
       await load();
     } catch (err) {
-      setError(err.response?.data?.message || "删除失败");
+      setError(err.response?.data?.message || t("admin.deleteFailed"));
     } finally {
       setSavingKey("");
     }
@@ -159,54 +165,54 @@ export default function FormConfigManager({ view } = {}) {
         {showFields ? (
         <section className="app-card overflow-hidden p-0">
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-            <h2 className="text-xl font-semibold text-ai-title">事项领域</h2>
-            <p className="mt-1 text-sm text-ai-body">用于表单里的事项领域单选项。</p>
+            <h2 className="text-xl font-semibold text-ai-title">{t("admin.configFields")}</h2>
+            <p className="mt-1 text-sm text-ai-body">{t("admin.configFieldDesc")}</p>
           </div>
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
             <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
               <input
                 value={fieldDraft.label}
                 onChange={(e) => setFieldDraft((draft) => ({ ...draft, label: e.target.value }))}
-                placeholder="新增事项领域（中文名称）"
+                placeholder={t("admin.newFieldPlaceholder")}
                 className="soft-input h-10"
               />
               <input
                 value={fieldDraft.label_en}
                 onChange={(e) => setFieldDraft((draft) => ({ ...draft, label_en: e.target.value }))}
-                placeholder="英文页面显示名，例如 Academic Affairs"
+                placeholder={t("admin.enDisplayPlaceholder")}
                 className="soft-input h-10 flex-1"
               />
               <button type="button" onClick={addField} disabled={savingKey === "field:new"} className="primary-button h-10 px-4">
                 <Plus size={16} />
-                添加
+                {t("action.add")}
               </button>
             </div>
           </div>
           <div className="divide-y divide-ai-border">
             {loading ? (
-              <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
+              <div className="px-6 py-8 text-sm text-ai-body">{t("common.loading")}</div>
             ) : fields.length ? (
               fields.slice((fieldPage - 1) * pageSize, fieldPage * pageSize).map((item) => (
                 <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_80px_92px] lg:items-center">
-                  <input value={item.label} onChange={(e) => updateField(item.id, { label: e.target.value })} className="soft-input h-10" placeholder="中文名称" />
-                  <input value={item.label_en || ""} onChange={(e) => updateField(item.id, { label_en: e.target.value })} className="soft-input h-10" placeholder="英文页面显示名" />
+                  <input value={item.label} onChange={(e) => updateField(item.id, { label: e.target.value })} className="soft-input h-10" placeholder={t("admin.chineseName")} />
+                  <input value={item.label_en || ""} onChange={(e) => updateField(item.id, { label_en: e.target.value })} className="soft-input h-10" placeholder={t("admin.englishDisplayName")} />
                   <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
                     <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateField(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />
-                    启用
+                    {t("admin.enabled")}
                   </label>
                   <div className="flex items-center justify-end gap-2">
-                    <button type="button" onClick={() => saveField(item)} disabled={savingKey === `field:${item.id}`} className="secondary-button h-10 w-10 px-0" title="保存"><Save size={16} /></button>
-                    <button type="button" onClick={() => removeField(item.id)} disabled={savingKey === `field:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title="删除"><Trash2 size={16} /></button>
+                    <button type="button" onClick={() => saveField(item)} disabled={savingKey === `field:${item.id}`} className="secondary-button h-10 w-10 px-0" title={t("action.save")}><Save size={16} /></button>
+                    <button type="button" onClick={() => removeField(item.id)} disabled={savingKey === `field:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title={t("action.delete")}><Trash2 size={16} /></button>
                   </div>
                 </div>
               ))
             ) : (
-              <div className="px-6 py-8 text-sm text-ai-body">暂无配置</div>
+              <div className="px-6 py-8 text-sm text-ai-body">{t("admin.noConfig")}</div>
             )}
           </div>
           {fields.length > pageSize ? (
             <div className="flex items-center justify-between border-t border-ai-border px-4 py-3 text-sm text-ai-body">
-              <span className="text-xs text-ai-muted">共 {fields.length} 项</span>
+              <span className="text-xs text-ai-muted">{t("common.items", { count: fields.length })}</span>
               <div className="flex items-center gap-1">
                 <button onClick={() => setFieldPage(p => p - 1)} disabled={fieldPage <= 1} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronLeft size={14} /></button>
                 <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{fieldPage}/{Math.ceil(fields.length / pageSize)}</span>
@@ -220,21 +226,21 @@ export default function FormConfigManager({ view } = {}) {
         {showDepts ? (
         <section className="app-card overflow-hidden p-0">
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
-            <h2 className="text-xl font-semibold text-ai-title">部门</h2>
-            <p className="mt-1 text-sm text-ai-body">用于表单里的部门选择，分为职能处室和教学科研机构。</p>
+            <h2 className="text-xl font-semibold text-ai-title">{t("admin.configDepartments")}</h2>
+            <p className="mt-1 text-sm text-ai-body">{t("admin.configDeptDesc")}</p>
           </div>
           <div className="border-b border-ai-border px-4 py-4 sm:px-5">
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_9rem_auto]">
               <input
                 value={deptDraft.name}
                 onChange={(e) => setDeptDraft((d) => ({ ...d, name: e.target.value }))}
-                placeholder="新增部门（中文名称）"
+                placeholder={t("admin.newDeptPlaceholder")}
                 className="soft-input h-10"
               />
               <input
                 value={deptDraft.name_en}
                 onChange={(e) => setDeptDraft((d) => ({ ...d, name_en: e.target.value }))}
-                placeholder="英文页面显示名，例如 IT & Data Services"
+                placeholder={t("admin.enDeptDisplayPlaceholder")}
                 className="soft-input h-10"
               />
               <select
@@ -242,42 +248,42 @@ export default function FormConfigManager({ view } = {}) {
                 onChange={(e) => setDeptDraft((d) => ({ ...d, type: e.target.value }))}
                 className="soft-input h-10 w-36"
               >
-                {departmentTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                {departmentTypes.map((type) => <option key={type} value={type}>{language === "en" ? departmentTypeLabels[type] : type}</option>)}
               </select>
               <button type="button" onClick={addDept} disabled={savingKey === "dept:new"} className="primary-button h-10 px-4">
                 <Plus size={16} />
-                添加
+                {t("action.add")}
               </button>
             </div>
           </div>
           <div className="divide-y divide-ai-border">
             {loading ? (
-              <div className="px-6 py-8 text-sm text-ai-body">加载中...</div>
+              <div className="px-6 py-8 text-sm text-ai-body">{t("common.loading")}</div>
             ) : departments.length ? (
               departments.slice((deptPage - 1) * pageSize, deptPage * pageSize).map((item) => (
                 <div key={item.id} className="grid gap-3 px-4 py-4 sm:px-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_120px_80px_92px] lg:items-center">
-                  <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" placeholder="中文名称" />
-                  <input value={item.name_en || ""} onChange={(e) => updateDept(item.id, { name_en: e.target.value })} className="soft-input h-10" placeholder="英文页面显示名" />
+                  <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" placeholder={t("admin.chineseName")} />
+                  <input value={item.name_en || ""} onChange={(e) => updateDept(item.id, { name_en: e.target.value })} className="soft-input h-10" placeholder={t("admin.englishDisplayName")} />
                   <select value={item.type} onChange={(e) => updateDept(item.id, { type: e.target.value })} className="soft-input h-10">
-                    {departmentTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                    {departmentTypes.map((type) => <option key={type} value={type}>{language === "en" ? departmentTypeLabels[type] : type}</option>)}
                   </select>
                   <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
                     <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateDept(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />
-                    启用
+                    {t("admin.enabled")}
                   </label>
                   <div className="flex items-center justify-end gap-2">
-                    <button type="button" onClick={() => saveDept(item)} disabled={savingKey === `dept:${item.id}`} className="secondary-button h-10 w-10 px-0" title="保存"><Save size={16} /></button>
-                    <button type="button" onClick={() => removeDept(item.id)} disabled={savingKey === `dept:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title="删除"><Trash2 size={16} /></button>
+                    <button type="button" onClick={() => saveDept(item)} disabled={savingKey === `dept:${item.id}`} className="secondary-button h-10 w-10 px-0" title={t("action.save")}><Save size={16} /></button>
+                    <button type="button" onClick={() => removeDept(item.id)} disabled={savingKey === `dept:${item.id}`} className="ghost-button h-10 w-10 px-0 text-rose-600 hover:bg-rose-50" title={t("action.delete")}><Trash2 size={16} /></button>
                   </div>
                 </div>
               ))
             ) : (
-              <div className="px-6 py-8 text-sm text-ai-body">暂无配置</div>
+              <div className="px-6 py-8 text-sm text-ai-body">{t("admin.noConfig")}</div>
             )}
           </div>
           {departments.length > pageSize ? (
             <div className="flex items-center justify-between border-t border-ai-border px-4 py-3 text-sm text-ai-body">
-              <span className="text-xs text-ai-muted">共 {departments.length} 项</span>
+              <span className="text-xs text-ai-muted">{t("common.items", { count: departments.length })}</span>
               <div className="flex items-center gap-1">
                 <button onClick={() => setDeptPage(p => p - 1)} disabled={deptPage <= 1} className="rounded-lg p-1.5 transition hover:bg-ai-bg disabled:opacity-30"><ChevronLeft size={14} /></button>
                 <span className="min-w-[3rem] text-center text-xs font-medium text-ai-title">{deptPage}/{Math.ceil(departments.length / pageSize)}</span>
@@ -290,11 +296,11 @@ export default function FormConfigManager({ view } = {}) {
       </div>
 
       {showFields && showDepts ? (
-        <div className="text-sm text-ai-muted">当前共 {totalCount} 项配置（{fields.length} 个领域，{departments.length} 个部门）。</div>
+        <div className="text-sm text-ai-muted">{t("admin.totalConfigs", { total: totalCount, fields: fields.length, departments: departments.length })}</div>
       ) : showFields ? (
-        <div className="text-sm text-ai-muted">当前共 {fields.length} 个事项领域。</div>
+        <div className="text-sm text-ai-muted">{t("admin.totalFields", { count: fields.length })}</div>
       ) : (
-        <div className="text-sm text-ai-muted">当前共 {departments.length} 个部门。</div>
+        <div className="text-sm text-ai-muted">{t("admin.totalDepartments", { count: departments.length })}</div>
       )}
     </div>
   );

@@ -15,15 +15,15 @@ export default function ChangePasswordPage({ onSuccess }) {
     setError("");
 
     if (!form.old_password || !form.new_password) {
-      setError("请填写旧密码和新密码");
+      setError(t("password.validationRequired"));
       return;
     }
     if (form.new_password.length < 6) {
-      setError("新密码至少 6 位");
+      setError(t("password.validationLength"));
       return;
     }
     if (form.new_password !== form.confirm_password) {
-      setError("两次输入的新密码不一致");
+      setError(t("password.validationMismatch"));
       return;
     }
 
@@ -38,7 +38,7 @@ export default function ChangePasswordPage({ onSuccess }) {
         if (onSuccess) onSuccess();
       }, 1500);
     } catch (err) {
-      setError(err.response?.data?.message || "修改密码失败");
+      setError(err.response?.data?.message || t("password.changeFailed"));
       setLoading(false);
     }
   }
@@ -50,8 +50,8 @@ export default function ChangePasswordPage({ onSuccess }) {
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-green-500 text-white shadow-lg">
             <CheckCircle2 size={32} />
           </div>
-          <div className="text-lg font-semibold text-gray-800">密码修改成功</div>
-          <div className="text-sm text-gray-500">正在进入系统...</div>
+          <div className="text-lg font-semibold text-gray-800">{t("password.success")}</div>
+          <div className="text-sm text-gray-500">{t("password.entering")}</div>
         </div>
       </div>
     );
@@ -61,14 +61,14 @@ export default function ChangePasswordPage({ onSuccess }) {
     <div className="flex min-h-screen items-center justify-center bg-[#f8f8fb]">
       <div className="w-full max-w-[420px] rounded-3xl border border-white/80 bg-white/90 p-8 shadow-2xl backdrop-blur-2xl">
         <div className="mb-6">
-          <div className="text-sm font-semibold text-purple-600">安全提示</div>
-          <h2 className="mt-2 text-2xl font-bold text-gray-900">请修改初始密码</h2>
-          <p className="mt-2 text-sm text-gray-500">首次登录需要修改密码后才能继续使用</p>
+          <div className="text-sm font-semibold text-purple-600">{t("password.securityNotice")}</div>
+          <h2 className="mt-2 text-2xl font-bold text-gray-900">{t("password.title")}</h2>
+          <p className="mt-2 text-sm text-gray-500">{t("password.desc")}</p>
         </div>
 
         <form onSubmit={handleSubmit}>
           <label className="mb-4 block">
-            <span className="mb-1.5 block text-sm font-medium text-gray-700">旧密码</span>
+            <span className="mb-1.5 block text-sm font-medium text-gray-700">{t("password.old")}</span>
             <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3 focus-within:border-purple-400 focus-within:ring-2 focus-within:ring-purple-100">
               <LockKeyhole size={16} className="text-gray-400" />
               <input
@@ -83,7 +83,7 @@ export default function ChangePasswordPage({ onSuccess }) {
           </label>
 
           <label className="mb-4 block">
-            <span className="mb-1.5 block text-sm font-medium text-gray-700">新密码</span>
+            <span className="mb-1.5 block text-sm font-medium text-gray-700">{t("password.new")}</span>
             <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3 focus-within:border-purple-400 focus-within:ring-2 focus-within:ring-purple-100">
               <LockKeyhole size={16} className="text-gray-400" />
               <input
@@ -98,7 +98,7 @@ export default function ChangePasswordPage({ onSuccess }) {
           </label>
 
           <label className="mb-5 block">
-            <span className="mb-1.5 block text-sm font-medium text-gray-700">确认新密码</span>
+            <span className="mb-1.5 block text-sm font-medium text-gray-700">{t("password.confirm")}</span>
             <div className="flex items-center rounded-xl border border-gray-200 bg-white px-3 focus-within:border-purple-400 focus-within:ring-2 focus-within:ring-purple-100">
               <LockKeyhole size={16} className="text-gray-400" />
               <input
@@ -121,7 +121,7 @@ export default function ChangePasswordPage({ onSuccess }) {
             disabled={loading}
             className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-purple-600 text-sm font-semibold text-white shadow-md transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "修改中..." : "修改密码"}
+            {loading ? t("password.changing") : t("password.submit")}
             <ArrowRight size={16} />
           </button>
         </form>

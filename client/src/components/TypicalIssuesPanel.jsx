@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { ArrowRight, Megaphone, MessageSquareText } from "lucide-react";
 import { api } from "../api";
-import { formatTime } from "../constants";
+import { displayFieldName, formatTime } from "../constants";
 import { LocaleLink, useLanguage } from "../i18n";
 
 export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
@@ -26,13 +26,13 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
           setError("");
         } else {
           setItems([]);
-          setError("典型问题接口返回异常，请确认后端已重启到最新版本。");
+          setError(t("typical.apiInvalid"));
         }
       })
       .catch(() => {
         if (ignore) return;
         setItems([]);
-        setError("暂时无法获取典型问题，请确认后端服务正在运行。");
+        setError(t("typical.loadFailed"));
       })
       .finally(() => {
         if (!ignore) setLoading(false);
@@ -41,7 +41,7 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [t]);
 
   const visibleItems = typeof limit === "number" ? items.slice(0, limit) : items;
 
@@ -83,7 +83,7 @@ export default function TypicalIssuesPanel({ limit, showViewAll = false }) {
                 <div className="min-w-0">
                   <h3 className="break-words text-lg font-semibold text-ai-title">{item.title}</h3>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ai-body">
-                    <span>{t("common.field")}：{item.field}</span>
+                    <span>{t("common.field")}：{displayFieldName(item.field, language)}</span>
                     <span>{t("common.department")}：{item.department}</span>
                     <span>{t("common.publishedAt")}：{formatTime(item.published_at, dateLocale)}</span>
                   </div>

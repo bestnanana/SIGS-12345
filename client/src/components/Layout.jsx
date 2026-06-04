@@ -115,6 +115,9 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   const roleLabel = isAdminLike
     ? (user.is_dept_admin && user.role === "user" ? t("role.dept_admin") : t(`role.${user.role}`))
     : t("role.user");
+  const userUnionId = user.union_id || user.unionId || user.person_union_id || "";
+  const userDepartment = user.department || user.person_department || user.department_name || "";
+  const hasUserDepartment = userDepartment && userDepartment !== t("common.notSet");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
   const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison" || actualUser.is_dept_admin;
   const isAdminArea = isAdminLike && stripLocale(location.pathname).startsWith("/admin");
@@ -203,12 +206,12 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                       {notifLoading ? (
                         <div className="px-4 py-8 text-center text-sm text-ai-muted">
                           <div className="mx-auto mb-2 h-5 w-5 animate-spin rounded-full border-2 border-ai-primary border-t-transparent" />
-                          加载中...
+                          {t("common.loading")}
                         </div>
                       ) : notifications.length === 0 ? (
                         <div className="px-4 py-8 text-center text-sm text-ai-muted">
                           <Bell size={24} className="mx-auto mb-2 opacity-30" />
-                          暂无通知
+                          {t("common.none")}
                         </div>
                       ) : (
                         notifications.map((item) => (
@@ -243,7 +246,6 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                 </div>
                 <div className="hidden text-left leading-tight sm:block">
                   <div className="text-[13px] font-medium text-white">{user.name}</div>
-                  <div className="mt-0.5 text-[10px] text-white/55">{roleLabel}</div>
                 </div>
                 <ChevronDown size={12} className="hidden text-white/55 transition-transform duration-300 sm:block" style={{ transform: userMenuOpen ? 'rotate(180deg)' : 'rotate(0)' }} />
               </button>
@@ -252,7 +254,8 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
                 <div className="motion-popover absolute right-0 mt-2 w-56 overflow-hidden rounded-xl border border-ai-border bg-white shadow-soft-lg">
                   <div className="border-b border-ai-border bg-gradient-to-r from-ai-primary/5 to-transparent px-4 py-3">
                     <div className="truncate text-sm font-semibold text-ai-title">{user.name}</div>
-                    <div className="mt-0.5 text-xs text-ai-muted">{roleLabel}</div>
+                    {userUnionId ? <div className="mt-1 truncate text-xs text-ai-muted">{userUnionId}</div> : null}
+                    {hasUserDepartment ? <div className="mt-0.5 truncate text-xs text-ai-muted">{userDepartment}</div> : null}
                   </div>
 
                   {isActualAdmin && (

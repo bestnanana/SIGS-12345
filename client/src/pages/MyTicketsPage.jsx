@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Eye, FilePlus2, RefreshCw } from "lucide-react";
 import { api } from "../api";
-import { formatTime } from "../constants";
+import { displayFieldName, formatTime } from "../constants";
 import { LocaleLink, toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
 
 export default function MyTicketsPage() {
@@ -52,11 +52,11 @@ export default function MyTicketsPage() {
         setTotal(data.length);
         setError("");
       } else {
-        setError("事项接口返回异常，请确认后端已重启到最新版本。");
+        setError(t("tickets.apiInvalid"));
       }
     } catch (err) {
       setRows([]);
-      setError(err.response?.data?.message || "事项加载失败，请确认后端服务正在运行。");
+      setError(err.response?.data?.message || t("tickets.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -70,7 +70,7 @@ export default function MyTicketsPage() {
 
   useEffect(() => {
     load(1);
-  }, []);
+  }, [t]);
 
   return (
     <div className="app-card overflow-hidden p-0">
@@ -144,7 +144,6 @@ export default function MyTicketsPage() {
                       <article key={ticket.id} className="grid gap-4 px-5 py-4 transition duration-200 hover:bg-[#F7F7FB] lg:grid-cols-[minmax(0,1fr)_180px_96px] lg:items-center">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold text-ai-primary">#{String(ticket.id).padStart(6, "0")}</span>
                             <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${group.meta.badgeClassName || group.meta.className}`}>
                               <span className={`h-1.5 w-1.5 rounded-full ${group.meta.dotClassName || "bg-current"}`} />
                               {group.meta.label}
@@ -152,7 +151,7 @@ export default function MyTicketsPage() {
                           </div>
                           <h3 className="mt-2 truncate text-sm font-semibold text-ai-title">{ticket.title}</h3>
                           <div className="mt-1 text-xs text-ai-muted">
-                            {ticket.field} · {t("common.department")}：{ticket.department || t("common.notAssigned")}
+                            {displayFieldName(ticket.field, language)} · {t("common.department")}：{ticket.department || t("common.notAssigned")}
                           </div>
                         </div>
                         <div className="text-sm text-ai-body">{formatTime(ticket.created_at, dateLocale)}</div>

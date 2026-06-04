@@ -1,11 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Clock3, Copy, Download, Link2, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api, serverOrigin } from "../api";
 import { formatTime } from "../constants";
 import { useLocaleNavigate, useLanguage, useUserStatusMap, toUserStatusKey } from "../i18n";
 
-function AttachmentList({ items, emptyText = "暂无附件" }) {
+function AttachmentList({ items, emptyText }) {
   if (!items?.length) return <div className="text-sm text-slate-500">{emptyText}</div>;
   return (
     <div className="space-y-2">
@@ -44,7 +44,10 @@ export default function TicketDetailPage() {
   const [survey, setSurvey] = useState({ score: 5, comment: "" });
   const [surveySaving, setSurveySaving] = useState(false);
   const [surveyMessage, setSurveyMessage] = useState("");
-  const [copyMsg, setCopyMsg] = useState("");
+  const [resolution, setResolution] = useState({ choice: "", content: "" });
+  const [resolutionSaving, setResolutionSaving] = useState(false);
+  const [resolutionMessage, setResolutionMessage] = useState("");
+  const satisfactionRef = useRef(null);
 
   async function load() {
     setLoading(true);
@@ -92,10 +95,10 @@ export default function TicketDetailPage() {
       {
         key: `submitted-${ticket.id}`,
         type: "submitted",
-        title: "提交事项",
+        title: t("detail.submittedStep"),
         time: ticket.created_at,
-        person: ticket.is_anonymous ? "匿名提交" : ticket.submitter_name || "学生",
-        detail: `提交至 ${ticket.department || "未指定"}，事项已进入办理流程。`
+        person: ticket.is_anonymous ? t("detail.anonymousSubmitter") : ticket.submitter_name || t("detail.student"),
+        detail: t("detail.submittedToDept", { department: ticket.department || t("detail.unassignedDept") })
       }
     ];
 
@@ -104,15 +107,58 @@ export default function TicketDetailPage() {
         key: `reply-${reply.id}`,
         type: "reply",
         replyId: reply.id,
-        title: "管理员回复",
+        title: t("detail.adminReply"),
         time: reply.created_at,
-        person: reply.replier_name || `${reply.department}管理员`,
+        person: reply.replier_name || t("detail.departmentAdmin", { department: reply.department || "" }),
         detail: reply.content
       });
     });
 
+    (data.followups || []).forEach((followup) => {
+      events.push({
+        key: `followup-${followup.id}`,
+        type: "followup",
+        title: t("detail.submitterFollowup"),
+        time: followup.created_at,
+        person: followup.submitter_name || ticket.submitter_name || t("detail.submitterPerson"),
+        detail: followup.content
+      });
+    });
+
     return events.sort(sortByTime);
-  }, [data]);
+  }, [data, t]);
+
+  async function confirmResolved() {
+    setResolutionSaving(true);
+    setResolutionMessage("");
+    try {
+      await api.post(`/tickets/${id}/resolution`, { resolved: true });
+      setResolution({ choice: "yes", content: "" });
+      setResolutionMessage(t("detail.resolvedSuccess"));
+      await load();
+      setTimeout(() => satisfactionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    } catch (err) {
+      setResolutionMessage(err.response?.data?.message || t("detail.resolveFailed"));
+    } finally {
+      setResolutionSaving(false);
+    }
+  }
+
+  async function submitUnresolved(e) {
+    e.preventDefault();
+    if (!resolution.content.trim()) return;
+    setResolutionSaving(true);
+    setResolutionMessage("");
+    try {
+      await api.post(`/tickets/${id}/resolution`, { resolved: false, content: resolution.content.trim() });
+      setResolutionMessage(t("detail.followupSubmitted"));
+      await load();
+    } catch (err) {
+      setResolutionMessage(err.response?.data?.message || t("detail.followupFailed"));
+    } finally {
+      setResolutionSaving(false);
+    }
+  }
 
   async function submitSatisfaction(e) {
     e.preventDefault();
@@ -120,10 +166,10 @@ export default function TicketDetailPage() {
     setSurveyMessage("");
     try {
       await api.post(`/tickets/${id}/satisfaction`, survey);
-      setSurveyMessage("满意度评价已提交");
+      setSurveyMessage(t("detail.satisfactionSubmitted"));
       await load();
     } catch (err) {
-      setSurveyMessage(err.response?.data?.message || "满意度评价提交失败");
+      setSurveyMessage(err.response?.data?.message || t("detail.satisfactionFailed"));
     } finally {
       setSurveySaving(false);
     }
@@ -145,21 +191,10 @@ export default function TicketDetailPage() {
   const replies = Array.isArray(data.replies) ? data.replies : [];
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const latestReply = replies.length ? replies[replies.length - 1] : null;
-  const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
-  const shareUrl = data?.ticket?.share_code
-    ? `${window.location.origin}/api/public/ticket/${data.ticket.share_code}`
-    : "";
-
-  function copyShareUrl() {
-    if (!shareUrl) return;
-    navigator.clipboard.writeText(shareUrl).then(() => {
-      setCopyMsg("已复制");
-      setTimeout(() => setCopyMsg(""), 2000);
-    }).catch(() => {});
-  }
-
   const isCompleted = ticket.status === "completed";
-
+  const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
+  const needsResolutionConfirm = isCompleted && replies.length > 0 && !data.satisfaction;
+  const resolutionConfirmed = ticket.resolution_status === "resolved" || ticket.resolution_status === "rated";
   return (
     <div className="space-y-6">
       <div className="app-card overflow-hidden p-0">
@@ -169,12 +204,6 @@ export default function TicketDetailPage() {
               <ArrowLeft size={16} />
               {t("action.back")}
             </button>
-            {shareUrl ? (
-              <button onClick={copyShareUrl} className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-ai-primary ring-1 ring-ai-primary/30 transition duration-200 hover:bg-ai-primary/5">
-                <Link2 size={14} />
-                {copyMsg || "复制分享链接"}
-              </button>
-            ) : null}
           </div>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -236,12 +265,12 @@ export default function TicketDetailPage() {
                 <div>
                   <div className="text-sm font-semibold text-ai-title">{t("detail.replyStatus")}</div>
                   <div className="mt-2 text-base font-semibold text-ai-title">
-                    {replies.length ? `已回复 ${replies.length} 次` : "尚未回复"}
+                    {replies.length ? t("detail.repliedCount", { count: replies.length }) : t("detail.notReplied")}
                   </div>
                   <div className="mt-1 text-xs text-ai-muted">
                     {latestReply
-                      ? `最近回复：${latestReply.replier_name || latestReply.department} · ${formatTime(latestReply.created_at, dateLocale)}`
-                      : "当前等待承办部门回复"}
+                      ? t("detail.latestReply", { person: latestReply.replier_name || latestReply.department, time: formatTime(latestReply.created_at, dateLocale) })
+                      : t("detail.waitingReply")}
                   </div>
                 </div>
               </div>
@@ -271,11 +300,11 @@ export default function TicketDetailPage() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold text-ai-title">{event.title}</div>
-                        <div className="mt-1 text-xs text-ai-muted">经办：{event.person}</div>
+                        <div className="mt-1 text-xs text-ai-muted">{t("detail.handler", { person: event.person })}</div>
                       </div>
                       {isReply ? (
                         <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-                          已回复
+                          {t("detail.replied")}
                         </span>
                       ) : null}
                     </div>
@@ -293,23 +322,92 @@ export default function TicketDetailPage() {
         </div>
       </section>
 
-      {isCompleted ? (
+      {needsResolutionConfirm ? (
         <section className="app-card">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="font-semibold text-ai-title">{t("detail.resolutionQuestion")}</div>
+              <div className="mt-1 text-sm text-ai-body">
+                {t("detail.resolutionDesc")}
+              </div>
+            </div>
+            {resolutionConfirmed ? (
+              <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                {t("detail.confirmedResolved")}
+              </span>
+            ) : null}
+          </div>
+
+          {!resolutionConfirmed ? (
+            <div className="mt-5 space-y-4">
+              <div className="flex flex-wrap gap-3">
+                <button type="button" onClick={confirmResolved} disabled={resolutionSaving} className="primary-button">
+                  <CheckCircle2 size={16} />
+                  {t("detail.yesResolved")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResolution((current) => ({ ...current, choice: "no" }))}
+                  disabled={resolutionSaving}
+                  className="ghost-button border-amber-200 text-amber-700 hover:bg-amber-50"
+                >
+                  <MessageSquare size={16} />
+                  {t("detail.noUnresolved")}
+                </button>
+              </div>
+
+              {resolution.choice === "no" ? (
+                <form onSubmit={submitUnresolved} className="space-y-3 rounded-2xl border border-amber-100 bg-amber-50/60 p-4">
+                  <label className="block">
+                    <span className="mb-2 block text-sm font-medium text-amber-900">{t("detail.unresolvedLabel")}</span>
+                    <textarea
+                      value={resolution.content}
+                      onChange={(e) => setResolution((current) => ({ ...current, content: e.target.value }))}
+                      className="soft-textarea min-h-24 w-full bg-white"
+                      maxLength={1000}
+                      placeholder={t("detail.unresolvedPlaceholder")}
+                      required
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-xs text-amber-800">{t("detail.reopenHint")}</div>
+                    <button type="submit" disabled={resolutionSaving || !resolution.content.trim()} className="primary-button">
+                      <SendHorizontal size={16} />
+                      {resolutionSaving ? t("action.submitting") : t("detail.submitFollowup")}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mt-4 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 ring-1 ring-emerald-100">
+              {t("detail.continueSatisfaction")}
+            </div>
+          )}
+
+          {resolutionMessage ? (
+            <div className="mt-4 rounded-2xl bg-ai-bg px-4 py-3 text-sm text-ai-body ring-1 ring-ai-border">{resolutionMessage}</div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {isCompleted ? (
+        <section ref={satisfactionRef} className="app-card scroll-mt-24">
           <form onSubmit={submitSatisfaction} className="space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <div className="font-semibold text-ai-title">满意度调查</div>
-                <div className="mt-1 text-sm text-ai-body">请对本事项的办理过程和结果进行评分，评价将用于后台服务改进分析。</div>
+                <div className="font-semibold text-ai-title">{t("detail.satisfactionTitle")}</div>
+                <div className="mt-1 text-sm text-ai-body">{t("detail.satisfactionDesc")}</div>
               </div>
               {data.satisfaction ? (
                 <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
-                  已评价 · {data.satisfaction.score} 分
+                  {t("detail.ratedScore", { score: data.satisfaction.score })}
                 </span>
               ) : null}
             </div>
 
             <div>
-              <div className="mb-2 text-sm font-medium text-ai-body">满意度评分</div>
+              <div className="mb-2 text-sm font-medium text-ai-body">{t("detail.satisfactionScore")}</div>
               <div className="flex flex-wrap gap-2">
                 {[1, 2, 3, 4, 5].map((score) => {
                   const active = Number(survey.score) >= score;
@@ -324,35 +422,35 @@ export default function TicketDetailPage() {
                       className={`flex h-11 w-11 items-center justify-center rounded-xl border transition duration-200 ${
                         active ? "border-amber-300 bg-amber-50 text-amber-500" : "border-ai-border bg-white text-ai-muted hover:bg-ai-bg"
                       }`}
-                      title={`${score} 分`}
-                      aria-label={`${score} 分`}
+                      title={t("detail.scoreLabelFull", { score })}
+                      aria-label={t("detail.scoreLabelFull", { score })}
                     >
                       <Star size={18} fill={active ? "currentColor" : "none"} />
                     </button>
                   );
                 })}
-                <span className="flex h-11 items-center px-2 text-sm font-semibold text-ai-title">{survey.score} / 5 分</span>
+                <span className="flex h-11 items-center px-2 text-sm font-semibold text-ai-title">{t("detail.scoreValue", { score: survey.score })}</span>
               </div>
             </div>
 
             <label className="block">
-              <span className="mb-2 block text-sm font-medium text-ai-body">评价说明</span>
+              <span className="mb-2 block text-sm font-medium text-ai-body">{t("detail.commentLabel")}</span>
               <textarea
                 value={survey.comment}
                 onChange={(e) => setSurvey((current) => ({ ...current, comment: e.target.value }))}
                 className="soft-textarea min-h-24 w-full"
                 maxLength={500}
                 readOnly={Boolean(data.satisfaction)}
-                placeholder="可填写对办理效率、沟通体验、处理结果的意见。"
+                placeholder={t("detail.commentPlaceholder")}
               />
             </label>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-ai-muted">{surveyMessage || (data.satisfaction ? "满意度评价已提交，不能再次修改。" : "评价提交后不能修改，请确认后提交。")}</div>
+              <div className="text-xs text-ai-muted">{surveyMessage || (data.satisfaction ? t("detail.satisfactionLocked") : t("detail.satisfactionSubmitHint"))}</div>
               {!data.satisfaction ? (
                 <button type="submit" disabled={surveySaving} className="primary-button">
                   <SendHorizontal size={16} />
-                  {surveySaving ? "提交中..." : "提交评价"}
+                  {surveySaving ? t("action.submitting") : t("detail.submitRating")}
                 </button>
               ) : null}
             </div>

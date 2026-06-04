@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
 import { api, getToken, uploadConfig } from "../api";
-import { formatTime } from "../constants";
+import { displayFieldName, formatTime } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
 import PermissionManager from "../components/PermissionManager";
 import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
@@ -104,7 +104,7 @@ export default function AdminPage() {
       statusCounts[status] = (statusCounts[status] || 0) + 1;
     });
 
-    const fieldEntries = Object.entries(countBy(tickets, (ticket) => ticket.field, t("common.notSet")))
+    const fieldEntries = Object.entries(countBy(tickets, (ticket) => displayFieldName(ticket.field, language), t("common.notSet")))
       .sort((a, b) => b[1] - a[1]);
     const departmentEntries = Object.entries(countBy(tickets, (ticket) => ticket.current_department || ticket.department, t("common.notSet")))
       .sort((a, b) => b[1] - a[1]);
@@ -353,6 +353,7 @@ export default function AdminPage() {
   }
   const currentHandlerText = selected?.current_department || selected?.department || t("common.notSet");
   const adminReplies = Array.isArray(detail?.replies) ? detail.replies : [];
+  const submitterFollowups = Array.isArray(detail?.followups) ? detail.followups : [];
   const latestAdminReply = adminReplies.length ? adminReplies[adminReplies.length - 1] : null;
   const replyAttachmentsByReplyId = useMemo(() => {
     return (detail?.replyAttachments || []).reduce((acc, item) => {
@@ -642,8 +643,7 @@ export default function AdminPage() {
                               </span>
                             </div>
                             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
-                              <span>#{String(ticket.id).padStart(6, "0")}</span>
-                              <span>{ticket.field}</span>
+                              <span>{displayFieldName(ticket.field, language)}</span>
                               <span>{ticket.current_department || t("common.department")}</span>
                               <span>{ticket.submitter_name}</span>
                               <span>{formatTime(ticket.created_at, dateLocale)}</span>
@@ -700,7 +700,6 @@ export default function AdminPage() {
               <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
                 <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ai-body">
-                  <span>#{String(selected.id).padStart(6, "0")}</span>
                   <span>{t("admin.submittedAt")}：{formatTime(selected.created_at, dateLocale)}</span>
                   <span>{t("admin.submitter")}：{selected.submitter_name}</span>
                   {selected.submitter_phone ? <span>{t("admin.contact")}：{selected.submitter_phone}</span> : null}
@@ -735,6 +734,25 @@ export default function AdminPage() {
                         <Paperclip size={12} />
                         <span className="truncate max-w-[160px]">{att.original_name}</span>
                       </a>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {submitterFollowups.length > 0 ? (
+                <section className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-950">
+                    <MessageSquare size={16} />
+                    {t("admin.submitterFollowups")}
+                  </h3>
+                  <div className="space-y-3">
+                    {submitterFollowups.map((item) => (
+                      <article key={item.id} className="rounded-xl bg-white p-3 text-sm leading-7 text-amber-950 ring-1 ring-amber-100">
+                        <div className="mb-1 text-xs font-semibold text-amber-700">
+                          {(item.submitter_name || selected.submitter_name || t("admin.submitter"))} · {formatTime(item.created_at, dateLocale)}
+                        </div>
+                        <div className="whitespace-pre-wrap">{item.content}</div>
+                      </article>
                     ))}
                   </div>
                 </section>

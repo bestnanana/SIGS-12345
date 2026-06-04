@@ -1,4 +1,20 @@
-export const fields = ["教务", "人事", "学工", "科研", "后勤", "信息化", "其他", "国际学生学者"];
+export const fields = ["教务", "人事", "学工", "科研", "后勤", "信息化", "其他", "For international students & scholars"];
+
+export const fieldEnglishNames = {
+  "教务": "Academic Affairs",
+  "人事": "Human Resources",
+  "学工": "Student Affairs",
+  "科研": "Research",
+  "后勤": "Logistics",
+  "信息化": "Information Technology",
+  "其他": "Other",
+  "For international students & scholars": "For international students & scholars"
+};
+
+export function displayFieldName(field, language = "zh") {
+  if (language === "en") return fieldEnglishNames[field] || field;
+  return field;
+}
 
 export const departments = ["信息中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
 

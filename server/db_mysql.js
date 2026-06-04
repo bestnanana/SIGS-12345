@@ -151,6 +151,8 @@ async function initDb() {
       submitter_role VARCHAR(64) DEFAULT NULL,
       submitter_department VARCHAR(191) DEFAULT NULL,
       status VARCHAR(32) DEFAULT 'pending',
+      resolution_status VARCHAR(32) DEFAULT NULL,
+      resolution_confirmed_at TIMESTAMP NULL,
       current_department VARCHAR(64) DEFAULT '党政办',
       current_handler_id VARCHAR(191) DEFAULT NULL,
       is_published TINYINT(1) DEFAULT 0,
@@ -211,6 +213,18 @@ async function initDb() {
       status VARCHAR(32) DEFAULT 'active',
       KEY idx_transfers_ticket_id (ticket_id),
       KEY idx_transfers_operator_id (operator_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS ticket_followups (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticket_id BIGINT NOT NULL,
+      content TEXT NOT NULL,
+      submitter_id VARCHAR(191) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_ticket_followups_ticket_id (ticket_id),
+      KEY idx_ticket_followups_submitter_id (submitter_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
 
@@ -329,6 +343,8 @@ async function initDb() {
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_role VARCHAR(64) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_department VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN current_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
+  try { await ensureColumn("tickets", "resolution_status", "VARCHAR(32) DEFAULT NULL"); } catch {}
+  try { await ensureColumn("tickets", "resolution_confirmed_at", "TIMESTAMP NULL"); } catch {}
   try { await run("ALTER TABLE transfers ADD COLUMN from_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE transfers ADD COLUMN to_handler_id VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE satisfaction_surveys ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"); } catch {}
@@ -433,13 +449,23 @@ async function seedDefaultFormOptions() {
   const count = await get("SELECT COUNT(*) AS count FROM form_options");
   if ((count?.count || 0) > 0) return;
   const seeds = {
-    fields: ["教务","人事","学工","科研","后勤","信息化","其他","国际学生学者"],
+    fields: [
+      ["教务", "Academic Affairs"],
+      ["人事", "Human Resources"],
+      ["学工", "Student Affairs"],
+      ["科研", "Research"],
+      ["后勤", "Logistics"],
+      ["信息化", "Information Technology"],
+      ["其他", "Other"],
+      ["For international students & scholars", "For international students & scholars"]
+    ],
   };
-  for (const [category, labels] of Object.entries(seeds)) {
-    for (let i=0;i<labels.length;i++) {
+  for (const [category, options] of Object.entries(seeds)) {
+    for (let i=0;i<options.length;i++) {
+      const [label, labelEn] = options[i];
       await run(
-        "INSERT INTO form_options (category, label, sort_order, is_active) VALUES (?, ?, ?, 1)",
-        [category, labels[i], i]
+        "INSERT INTO form_options (category, label, label_en, sort_order, is_active) VALUES (?, ?, ?, ?, 1)",
+        [category, label, labelEn, i]
       );
     }
   }
@@ -666,27 +692,6 @@ async function ensureDepartmentAdminTables() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
   await run(`
-    CREATE TABLE IF NOT EXISTS department_admins (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      person_id VARCHAR(191) NOT NULL,
-      role_type VARCHAR(32) NOT NULL DEFAULT 'admin',
-      is_enabled TINYINT(1) NOT NULL DEFAULT 1,
-      allowed_transfer_targets TEXT DEFAULT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_dept_admin_person (person_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS department_admin_departments (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      admin_id BIGINT NOT NULL,
-      department_name VARCHAR(191) NOT NULL,
-      FOREIGN KEY (admin_id) REFERENCES department_admins(id) ON DELETE CASCADE,
-      UNIQUE KEY uniq_admin_dept (admin_id, department_name)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  `);
-  await run(`
     CREATE TABLE IF NOT EXISTS permission_audit_log (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       operator_id VARCHAR(191) NOT NULL,
@@ -702,7 +707,7 @@ async function ensureDepartmentAdminTables() {
 async function disableAdminsForInactivePersons() {
   const toDisable = await all(
     `SELECT da.id, da.person_id, p.name, p.status
-     FROM department_admins da
+     FROM department_assignments da
      JOIN datahub_basic_persons p ON p.id = da.person_id
      WHERE da.is_enabled = 1 AND p.status = '0'`
   );
@@ -710,12 +715,12 @@ async function disableAdminsForInactivePersons() {
   let count = 0;
   for (const admin of toDisable) {
     const managedDepts = await all(
-      'SELECT department_name FROM department_admin_departments WHERE admin_id = ?',
-      [admin.id]
+      'SELECT department_name FROM department_assignments WHERE person_id = ? AND is_enabled = 1',
+      [admin.person_id]
     );
     const beforeState = { person_id: admin.person_id, is_enabled: 1, managed_departments: managedDepts.map(d => d.department_name) };
 
-    await run('UPDATE department_admins SET is_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [admin.id]);
+    await run('UPDATE department_assignments SET is_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE person_id = ?', [admin.person_id]);
 
     const afterState = { ...beforeState, is_enabled: 0 };
     await run(
@@ -782,10 +787,9 @@ async function hasPermission(personId, permissionCode) {
 
 async function getDepartmentAssignments(personId) {
   return all(
-    `SELECT dad.id, dad.department_name, da.role_type, da.is_enabled
-     FROM department_admins da
-     INNER JOIN department_admin_departments dad ON dad.admin_id = da.id
-     WHERE da.person_id = ? AND da.is_enabled = 1`,
+    `SELECT id, department_name, role_type, is_enabled
+     FROM department_assignments
+     WHERE person_id = ? AND is_enabled = 1`,
     [personId]
   );
 }

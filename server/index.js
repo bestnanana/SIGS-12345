@@ -698,6 +698,35 @@ function tokenFromRequest(req) {
 }
 
 async function auth(req, res, next) {
+  const token = tokenFromRequest(req);
+  if (token) {
+    try {
+      req.user = jwt.verify(token, jwtSecret);
+      logger.info("auth_ok_jwt", {
+        request_id: req.requestId,
+        method: req.method,
+        path: req.path,
+        user_id: req.user.id
+      });
+      return next();
+    } catch (error) {
+      const expired = error.name === "TokenExpiredError";
+      logger.warn("auth_fail_jwt_invalid", {
+        request_id: req.requestId,
+        method: req.method,
+        path: req.path,
+        error_name: error.name,
+        error_message: error.message,
+        token_prefix: token.slice(0, 20)
+      });
+      res.status(401).json({
+        code: expired ? "TOKEN_EXPIRED" : "TOKEN_INVALID",
+        message: expired ? "登录已过期，请重新登录" : "登录已失效，请重新登录"
+      });
+      return;
+    }
+  }
+
   const session = req.session || await loadSession(req, res);
   if (session?.loginUser) {
     req.session = session;
@@ -711,7 +740,6 @@ async function auth(req, res, next) {
     return next();
   }
 
-  const token = tokenFromRequest(req);
   if (!token) {
     logger.warn("auth_fail_no_token", {
       request_id: req.requestId,
@@ -722,30 +750,6 @@ async function auth(req, res, next) {
       session_has_user: Boolean(session?.loginUser)
     });
     return res.status(401).json({ code: "TOKEN_MISSING", message: "请先登录" });
-  }
-  try {
-    req.user = jwt.verify(token, jwtSecret);
-    logger.info("auth_ok_jwt", {
-      request_id: req.requestId,
-      method: req.method,
-      path: req.path,
-      user_id: req.user.id
-    });
-    next();
-  } catch (error) {
-    const expired = error.name === "TokenExpiredError";
-    logger.warn("auth_fail_jwt_invalid", {
-      request_id: req.requestId,
-      method: req.method,
-      path: req.path,
-      error_name: error.name,
-      error_message: error.message,
-      token_prefix: token.slice(0, 20)
-    });
-    res.status(401).json({
-      code: expired ? "TOKEN_EXPIRED" : "TOKEN_INVALID",
-      message: expired ? "登录已过期，请重新登录" : "登录已失效，请重新登录"
-    });
   }
 }
 
@@ -985,6 +989,53 @@ async function completeSubmitterTodo(ticketId, submitterId, submitterUnionId) {
   }
 }
 
+async function pushSubmitterTodo(ticket, nameSuffix = "请确认处理结果") {
+  try {
+    const submitterPersonId = await resolveSubmitterPersonId(ticket.submitter_id, ticket.submitter_union_id);
+    if (!submitterPersonId) return;
+    return await pushPortalTodo({
+      id: buildTodoId(ticket.id, 'submitter'),
+      name: `【${ticket.title}】-${nameSuffix}`,
+      url: buildSiteUrl(`/cn/tickets/${ticket.id}`),
+      principalPersonId: submitterPersonId
+    });
+  } catch (err) {
+    logger.warn('portal_todo_push_failed', { ticket_id: ticket.id, type: 'submitter', message: err.message });
+  }
+}
+
+async function notifyCurrentDepartmentAdmins(ticket, message, notificationType = "submitter_followup") {
+  const department = ticket.current_department || ticket.department;
+  if (!department) return;
+  const admins = await all(
+    `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
+     FROM datahub_basic_persons p
+     LEFT JOIN users u ON u.union_id = p.union_id
+     LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+     WHERE p.role_id = 1
+        OR (p.role_id IN (2, 3) AND p.department = ?)
+        OR (da.id IS NOT NULL AND da.department_name = ?)`,
+    [department, department]
+  );
+  for (const admin of admins) {
+    const notifResult = await run(
+      `INSERT INTO notifications (user_id, ticket_id, type, message)
+       VALUES (?, ?, ?, ?)`,
+      [admin.notify_user_id, ticket.id, notificationType, message]
+    );
+    const targetUrl = `/cn/admin/tickets/${ticket.id}?nid=${notifResult.insertId}`;
+    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+    if (admin.admin_person_id) {
+      pushPortalTodo({
+        id: buildTodoId(ticket.id, 'admin', admin.admin_person_id),
+        name: `【${ticket.title}】-待您处理`,
+        url: buildSiteUrl(`/cn/admin/tickets/${ticket.id}`),
+        principalPersonId: admin.admin_person_id
+      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: ticket.id, person_id: admin.admin_person_id, message: err.message }));
+    }
+  }
+}
+
 async function ticketDetails(id, viewer) {
   const ticket = await get(
     `SELECT t.*,
@@ -1030,6 +1081,15 @@ async function ticketDetails(id, viewer) {
      JOIN replies r ON r.id = a.reply_id
      WHERE r.ticket_id = ?
      ORDER BY a.uploaded_at ASC`,
+    [id]
+  );
+  const followups = await all(
+    `SELECT f.*, COALESCE(dp.name, u.name) AS submitter_name
+     FROM ticket_followups f
+     LEFT JOIN datahub_basic_persons dp ON dp.id = f.submitter_id
+     LEFT JOIN users u ON u.id = f.submitter_id
+     WHERE f.ticket_id = ?
+     ORDER BY f.created_at ASC`,
     [id]
   );
   const satisfaction = await get(
@@ -1084,6 +1144,7 @@ async function ticketDetails(id, viewer) {
     replies,
     attachments,
     replyAttachments,
+    followups,
     transfers,
     currentHandler: publicHandler(currentHandler),
     satisfaction: satisfaction || null,
@@ -1223,8 +1284,12 @@ app.post("/api/auth/change-password", auth, async (req, res) => {
 });
 
 app.get("/sso/authorize-url", ssoLimiter, (req, res) => {
+  const authorizeUrl = ssoAuthorizeUrl(req, res);
+  if (req.query?.redirect === "1") {
+    return res.redirect(302, authorizeUrl);
+  }
   res.json({
-    authorize_url: ssoAuthorizeUrl(req, res),
+    authorize_url: authorizeUrl,
     response_type: "code",
     client_id: ssoClientId,
     redirect_uri: ssoRedirectUri
@@ -1529,39 +1594,12 @@ try {
   );
   await saveFiles(req.files, result.insertId, null);
 
-  // Notify admins in the target department + all super_admins + department_assignments
-  const admins = await all(
-    `SELECT DISTINCT COALESCE(u.id, p.id) AS notify_user_id, p.id AS admin_person_id
-     FROM department_admins da
-     INNER JOIN datahub_basic_persons p ON p.id = da.person_id
-     LEFT JOIN users u ON u.union_id = p.union_id
-     LEFT JOIN department_admin_departments dad ON dad.admin_id = da.id
-     WHERE da.is_enabled = 1
-       AND (dad.department_name = ? OR da.role_type = 'super_admin')`,
-    [targetDept]
-  );
   const displayDept = isUnknownDept ? DEFAULT_DEPT : department;
-  for (const admin of admins) {
-    const notifResult = await run(
-      `INSERT INTO notifications (user_id, ticket_id, type, message)
-       VALUES (?, ?, 'new_ticket', ?)`,
-      [admin.notify_user_id, result.insertId, `新事项【${title}】已提交至${displayDept}，请及时处理。`]
-    );
-    const targetUrl = `/cn/admin/tickets/${result.insertId}?nid=${notifResult.insertId}`;
-    await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
-    // Portal todo (fire-and-forget)
-    if (admin.admin_person_id) {
-      pushPortalTodo({
-        id: buildTodoId(result.insertId, 'admin', admin.admin_person_id),
-        name: `【${title}】-待您处理`,
-        url: buildSiteUrl(`/cn/admin/tickets/${result.insertId}`),
-        principalPersonId: admin.admin_person_id
-      }).catch(err => {
-        console.error('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message });
-        logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, person_id: admin.admin_person_id, message: err.message });
-      });
-    }
-  }
+  await notifyCurrentDepartmentAdmins(
+    { id: result.insertId, title, department: targetDept, current_department: targetDept },
+    `新事项【${title}】已提交至${displayDept}，请及时处理。`,
+    "new_ticket"
+  );
 
   // Portal todo for submitter
   if (submitterDatahubRow?.id) {
@@ -1607,8 +1645,50 @@ app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     [req.params.id, req.user.id, score, comment]
   );
+  await run(
+    "UPDATE tickets SET resolution_status = 'rated', resolution_confirmed_at = COALESCE(resolution_confirmed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [req.params.id]
+  );
   completeSubmitterTodo(req.params.id, ticket.submitter_id, ticket.submitter_union_id);
   res.json({ ok: true });
+});
+
+app.post("/api/tickets/:id/resolution", auth, async (req, res) => {
+  const ticket = await get(
+    "SELECT id, title, submitter_id, submitter_union_id, department, current_department, status FROM tickets WHERE id = ?",
+    [req.params.id]
+  );
+  if (!ticket) return res.status(404).json({ message: "事项不存在" });
+  if (String(ticket.submitter_id) !== String(req.user.id)) return res.status(403).json({ message: "只能确认自己的事项" });
+  if (ticket.status !== "completed") return res.status(400).json({ message: "事项尚未处理完成，暂不能确认结果" });
+
+  const resolved = req.body?.resolved === true || req.body?.resolved === "true" || req.body?.resolved === "yes";
+  if (resolved) {
+    await run(
+      "UPDATE tickets SET resolution_status = 'resolved', resolution_confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [req.params.id]
+    );
+    return res.json({ ok: true, next: "satisfaction" });
+  }
+
+  const content = String(req.body?.content || "").trim();
+  if (!content) return res.status(400).json({ message: "请填写未解决的问题说明" });
+
+  await run(
+    "INSERT INTO ticket_followups (ticket_id, content, submitter_id) VALUES (?, ?, ?)",
+    [req.params.id, content, req.user.id]
+  );
+  await run(
+    "UPDATE tickets SET status = 'pending', resolution_status = 'unresolved', resolution_confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [req.params.id]
+  );
+  await notifyCurrentDepartmentAdmins(
+    ticket,
+    `提交人反馈事项【${ticket.title}】尚未解决，并补充了新的问题说明，请继续处理。`,
+    "submitter_followup"
+  );
+  completeSubmitterTodo(req.params.id, ticket.submitter_id, ticket.submitter_union_id);
+  res.status(201).json({ ok: true });
 });
 
 app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
@@ -1796,7 +1876,7 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
     const { content, status } = req.body;
     if (!content) return res.status(400).json({ message: "请填写回复内容" });
     const user = await loadPerson(req.user.id);
-    const ticket = await get("SELECT id, title, submitter_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
+    const ticket = await get("SELECT id, title, submitter_id, submitter_union_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
     if (!ticket) return res.status(404).json({ message: "事项不存在" });
     const permission = await getTicketPermission(req.params.id, user);
     if (permission !== 'handle') {
@@ -1808,7 +1888,11 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
       [req.params.id, content, req.user.id, user.department]
     );
     await saveFiles(req.files, null, result.insertId);
-    await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status || "completed", req.params.id]);
+    const nextStatus = status || "completed";
+    await run(
+      "UPDATE tickets SET status = ?, resolution_status = ?, resolution_confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [nextStatus, nextStatus === "completed" ? "pending_confirm" : null, req.params.id]
+    );
 
     // Notify the ticket submitter
     if (ticket.submitter_id) {
@@ -1819,6 +1903,9 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
       );
       const targetUrl = `/cn/tickets/${req.params.id}?nid=${notifResult.insertId}`;
       await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+      if (nextStatus === "completed") {
+        pushSubmitterTodo(ticket, "请确认处理结果并评价服务");
+      }
     }
 
     // Complete portal todos
@@ -1970,6 +2057,10 @@ app.get("/api/attachments/:id/download", auth, async (req, res) => {
 // 搜索可授权的人员（同时搜索 datahub_basic_persons 和 users 表）
 app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req, res) => {
   const keyword = String(req.query.keyword || '').trim();
+  const departmentNames = String(req.query.department_names || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
   const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
   const page = Math.max(Number(req.query.page || 1), 1);
   const offset = (page - 1) * pageSize;
@@ -1977,12 +2068,19 @@ app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req,
   const like = keyword ? `%${keyword}%` : '%';
   const notInAuth = "NOT IN (SELECT DISTINCT person_id FROM department_assignments)";
 
-  // 查 datahub_basic_persons，限院外人员和教职员，排除离职和无效人员
+  // 查 datahub_basic_persons，限在职院外人员/教职员
   let where = `WHERE p.type IN ('院外人员', '教职员', 'faculty') 
-    AND (p.status IS NULL OR p.status NOT IN ('0', 'false', 'departure', 'abandon_employee', 'die'))
+    AND (
+      (p.type = '教职员' AND p.status = 'on_the_job')
+      OR (p.type IN ('院外人员', 'faculty') AND p.status = 'true')
+    )
     AND p.is_active = 1
     AND p.id ${notInAuth}`;
   const params = [];
+  if (departmentNames.length > 0) {
+    where += ` AND p.department IN (${departmentNames.map(() => "?").join(",")})`;
+    params.push(...departmentNames);
+  }
   if (keyword) {
     where += " AND (p.union_id LIKE ? OR p.name LIKE ? OR p.department LIKE ?)";
     params.push(like, like, like);
@@ -2030,16 +2128,24 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
   if (!person_id || !role_type || !Array.isArray(department_names) || department_names.length === 0) {
     return res.status(400).json({ message: '请填写完整授权信息（person_id, department_names, role_type）' });
   }
-  if (!['admin', 'observer'].includes(role_type)) {
-    return res.status(400).json({ message: '角色类型无效，仅支持 admin 或 observer' });
+  if (role_type !== 'admin') {
+    return res.status(400).json({ message: '角色类型无效，仅支持部门管理员' });
   }
 
-  // 检查人员是否存在（仅 datahub_basic_persons，限院外人员/教职员）
+  // 检查人员是否存在（与搜索接口保持一致：院外人员/教职员/faculty）
   const person = await get(
-    "SELECT id, union_id, name, department, type FROM datahub_basic_persons WHERE id = ? AND type IN ('院外人员', '教职员')",
+    `SELECT id, union_id, name, department, type
+     FROM datahub_basic_persons
+     WHERE id = ?
+       AND type IN ('院外人员', '教职员', 'faculty')
+       AND (
+         (type = '教职员' AND status = 'on_the_job')
+         OR (type IN ('院外人员', 'faculty') AND status = 'true')
+       )
+       AND is_active = 1`,
     [person_id]
   );
-  if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限院外人员、教职员）' });
+  if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限在职院外人员、在职教职员）' });
 
   // 验证 department_names 中的部门必须存在于 departments 表且 is_active=1
   for (const dept of department_names) {
@@ -2108,7 +2214,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
     const like = `%${keyword}%`;
     params.push(like, like, like, like);
   }
-  if (roleType && ['admin', 'observer'].includes(roleType)) {
+  if (roleType && roleType === 'admin') {
     conditions.push("da.role_type = ?");
     params.push(roleType);
   }
@@ -2239,7 +2345,7 @@ app.put("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
   // 构建更新语句
   const updates = [];
   const params = [];
-  if (role_type && ['admin', 'observer'].includes(role_type)) {
+  if (role_type && role_type === 'admin') {
     updates.push('role_type = ?');
     params.push(role_type);
   }
@@ -2327,6 +2433,53 @@ app.patch("/api/admin/department-admins/:id/toggle", auth, superAdminOnly, async
       JSON.stringify({ is_enabled: current.is_enabled }),
       JSON.stringify({ is_enabled: is_enabled ? 1 : 0 })
     ]
+  );
+
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdminOnly, async (req, res) => {
+  const current = await get(
+    `SELECT da.*, p.name AS person_name, p.union_id
+     FROM department_assignments da
+     LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
+     WHERE da.id = ?`,
+    [req.params.id]
+  );
+  if (!current) return res.status(404).json({ message: '授权记录不存在' });
+
+  const role = await getRoleByCode('super_admin');
+  if (!role) return res.status(500).json({ message: '超级管理员角色未初始化' });
+
+  const allAssignments = await getDepartmentAssignments(current.person_id);
+  const beforeState = {
+    person_id: current.person_id,
+    person_name: current.person_name,
+    role_type: current.role_type,
+    managed_departments: allAssignments.map(a => a.department_name)
+  };
+  const afterState = {
+    person_id: current.person_id,
+    role: 'super_admin',
+    role_id: role.id,
+    managed_departments: []
+  };
+
+  await run(
+    "UPDATE datahub_basic_persons SET role = 'super_admin', role_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [role.id, current.person_id]
+  );
+  if (current.union_id) {
+    await run(
+      "UPDATE users SET role = 'super_admin' WHERE union_id = ?",
+      [current.union_id]
+    );
+  }
+  await run("DELETE FROM department_assignments WHERE person_id = ?", [current.person_id]);
+  await run(
+    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+     VALUES (?, ?, 'promote_super_admin', ?, ?)`,
+    [req.user.id, current.person_id, JSON.stringify(beforeState), JSON.stringify(afterState)]
   );
 
   res.json({ ok: true });

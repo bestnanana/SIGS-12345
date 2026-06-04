@@ -24,11 +24,11 @@ export default function HomePage({ user }) {
         const data = res.data;
         const list = data && Array.isArray(data.rows) ? data.rows : Array.isArray(data) ? data : [];
         setTickets(list);
-        setTicketsError(list.length > 0 || (data && Array.isArray(data.rows)) || Array.isArray(data) ? "" : "事项接口返回异常，请稍后重试。");
+        setTicketsError(list.length > 0 || (data && Array.isArray(data.rows)) || Array.isArray(data) ? "" : t("home.ticketApiInvalid"));
       } catch (err) {
         if (ignore) return;
         setTickets([]);
-        setTicketsError(err.response?.data?.message || "暂时无法加载我发起的事项。");
+        setTicketsError(err.response?.data?.message || t("home.ticketLoadFailed"));
       } finally {
         if (!ignore) setLoadingTickets(false);
       }
@@ -38,7 +38,7 @@ export default function HomePage({ user }) {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [t]);
 
   const unresolvedTickets = useMemo(
     () => tickets.filter((ticket) => toUserStatusKey(ticket.status) === "pending"),
@@ -121,7 +121,7 @@ export default function HomePage({ user }) {
               <CheckCircle2 size={22} />
             </div>
             <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-600 ring-1 ring-green-200">
-              已完成
+              {t("home.completed")}
             </span>
           </div>
           <div className="mt-4 text-3xl font-bold tracking-tight text-ai-title">
@@ -132,7 +132,7 @@ export default function HomePage({ user }) {
             )}
           </div>
           <p className="mt-3 text-sm text-ai-muted">
-            {loadingTickets ? t("common.loading") : `完成率 ${tickets.length > 0 ? Math.round((completedTickets.length / tickets.length) * 100) : 0}%`}
+            {loadingTickets ? t("common.loading") : t("home.completionRate", { rate: tickets.length > 0 ? Math.round((completedTickets.length / tickets.length) * 100) : 0 })}
           </p>
         </div>
       </section>
@@ -179,9 +179,6 @@ export default function HomePage({ user }) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-ai-muted">
-                        #{String(ticket.id).padStart(6, "0")}
-                      </span>
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${status.badgeClassName || status.className}`}>
                         <span className={`h-1 w-1 rounded-full ${status.dotClassName || "bg-current"}`} />
                         {status.label}

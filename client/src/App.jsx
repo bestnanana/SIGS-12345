@@ -70,19 +70,12 @@ function App() {
 
     const token = getToken();
     if (!token) {
-      // No token → fetch SSO authorize URL and redirect
+      // No token: clear any stale identity and let the backend redirect to SSO directly.
+      clearAuthStorage();
+      setUser(null);
+      setViewRole("");
       setLoading(false);
-      fetch(`/sso/authorize-url?locale=${locale}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.authorize_url) {
-            window.location.href = data.authorize_url;
-          }
-        })
-        .catch(() => {
-          // Fallback to direct redirect
-          window.location.href = `/sso/authorize-url?locale=${locale}`;
-        });
+      window.location.replace(`/sso/authorize-url?locale=${locale}&redirect=1`);
       return () => { ignore = true; };
     }
 
