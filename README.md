@@ -1,6 +1,6 @@
 # SIGS接诉即办 - SIGS Prompt Complaint
 
-React 18 + Tailwind CSS 3 + Node.js + Express + SQLite(sql.js) + Minimax API 的校园诉求办理演示系统。
+React 18 + Tailwind CSS 3 + Node.js + Express + 远程 MySQL + Minimax API 的校园诉求办理系统。
 
 ## 启动
 
@@ -73,4 +73,4 @@ SSO_REDIRECT_URI=http://localhost:3001/oauth2
 - 事项详情：提交内容、附件预览、官方回复、官方附件、点赞/点踩/收藏
 - 后台管理：部门事项队列、状态更新、转办、使用智能建议快速回复、上传官方附件
 - 典型问题发布：管理员可将事项发布到公开展示页
-- SQLite 文件持久化：`server/data/app.db`
+- 远程 MySQL 数据库存储：后端统一通过 `server/db_mysql.js` 连接 `219.223.170.14` 的 `response_test` 数据库

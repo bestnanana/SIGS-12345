@@ -167,7 +167,7 @@ export default function TicketFormPage({ user }) {
       Object.entries(form).forEach(([key, value]) => data.append(key, String(value)));
       files.forEach((file) => data.append("attachments", file));
       const res = await api.post("/tickets", data, uploadConfig);
-      navigate(`/tickets/${res.data.id}`);
+      navigate(`/tickets/${res.data.ticket_code || res.data.id}`);
     } catch (err) {
       setError(err.response?.data?.message || copy.submitFailed);
     } finally {

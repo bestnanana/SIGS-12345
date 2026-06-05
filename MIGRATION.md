@@ -11,11 +11,13 @@
 4. 前端地址：`http://localhost:5173`
 5. 后端地址：`http://localhost:3001`
 
-## 已包含数据
-- 当前 SQLite(sql.js) 数据库已包含：`server/data/app.db`
-- 如有上传附件，已包含：`server/uploads/`
+## 数据库说明
+- 系统已统一使用远程 MySQL：`219.223.170.14:3306/response_test`
+- 后端数据库访问统一从 `server/db_mysql.js` 进入。
+- 部署包不再包含本地 SQLite/sql.js 数据库文件。
+- 如有上传附件，仍使用：`server/uploads/`
 
 ## 注意
 - 未包含 `node_modules`，请在新电脑重新执行 `npm install`。
 - 未包含 `.git`、日志文件、npm 缓存和数据库备份目录。
-- 数据库已加保护逻辑：已有 `server/data/app.db` 时，后端启动不会自动迁移、种子同步或覆盖数据库文件。
+- 请通过 `.env` 配置 `DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`，不要恢复本地 SQLite/sql.js 数据库路径。

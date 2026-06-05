@@ -29,7 +29,6 @@ echo -e "${YELLOW}3. 复制文件...${NC}"
 
 # 服务器端代码
 cp -r server "$DEPLOY_DIR/"
-mkdir -p "$DEPLOY_DIR/server/data"
 mkdir -p "$DEPLOY_DIR/server/uploads"
 
 # 前端构建产物
@@ -47,8 +46,6 @@ cp package-lock.json "$DEPLOY_DIR/"
 echo -e "${YELLOW}4. 复制 node_modules（可能需要几分钟）...${NC}"
 # 只复制生产依赖相关的模块
 cp -r node_modules "$DEPLOY_DIR/"
-LEGACY_SQLITE_MODULE="better""-sqlite3"
-rm -rf "$DEPLOY_DIR/node_modules/$LEGACY_SQLITE_MODULE"
 
 # 环境配置
 cat > "$DEPLOY_DIR/.env" << 'EOF'

@@ -16,6 +16,10 @@ export function displayFieldName(field, language = "zh") {
   return field;
 }
 
+export function ticketRouteId(ticket) {
+  return ticket?.ticket_code || ticket?.id;
+}
+
 export const departments = ["信息中心", "党政办", "学工办", "培养处", "财务办", "人事办"];
 
 export const statusMap = {

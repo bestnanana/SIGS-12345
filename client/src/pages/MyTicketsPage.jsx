@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Eye, FilePlus2, RefreshCw } from "lucide-react";
 import { api } from "../api";
-import { displayFieldName, formatTime } from "../constants";
+import { displayFieldName, formatTime, ticketRouteId } from "../constants";
 import { LocaleLink, toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
 
 export default function MyTicketsPage() {
@@ -155,7 +155,7 @@ export default function MyTicketsPage() {
                           </div>
                         </div>
                         <div className="text-sm text-ai-body">{formatTime(ticket.created_at, dateLocale)}</div>
-                        <LocaleLink to={`/tickets/${ticket.id}`} className="inline-flex items-center gap-1 text-sm font-medium text-ai-primary hover:brightness-110">
+                        <LocaleLink to={`/tickets/${ticketRouteId(ticket)}`} className="inline-flex items-center gap-1 text-sm font-medium text-ai-primary hover:brightness-110">
                           <Eye size={16} />
                           {t("action.viewDetails")}
                         </LocaleLink>

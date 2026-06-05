@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
 import { api, getToken, uploadConfig } from "../api";
-import { displayFieldName, formatTime } from "../constants";
+import { displayFieldName, formatTime, ticketRouteId } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
 import PermissionManager from "../components/PermissionManager";
 import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
@@ -42,7 +42,7 @@ export default function AdminPage() {
   const navigate = useLocaleNavigate();
   const location = useLocation();
   const { id: routeTicketIdParam } = useParams();
-  const routeTicketId = Number(routeTicketIdParam);
+  const routeTicketId = routeTicketIdParam || "";
   const fullStatusMap = useStatusMap();
   const statusMap = useMemo(() => ({
     pending: fullStatusMap.pending,
@@ -80,9 +80,9 @@ export default function AdminPage() {
   }
 
   const selected = useMemo(() => {
-    const fromList = tickets.find((item) => item.id === selectedId);
+    const fromList = tickets.find((item) => String(ticketRouteId(item)) === String(selectedId) || String(item.id) === String(selectedId));
     if (fromList) return fromList;
-    if (detail && detail.ticket && Number(detail.ticket.id) === Number(selectedId)) return detail.ticket;
+    if (detail && detail.ticket && (String(ticketRouteId(detail.ticket)) === String(selectedId) || String(detail.ticket.id) === String(selectedId))) return detail.ticket;
     return null;
   }, [detail, selectedId, tickets]);
   const canHandleSelected = selected && (
@@ -168,8 +168,8 @@ export default function AdminPage() {
         setError(t("admin.ticketApiInvalid"));
       }
       setSelectedId((current) => {
-        if (data && Array.isArray(data.rows) && data.rows.length) return current || data.rows[0]?.id || null;
-        if (Array.isArray(data) && data.length) return current || data[0]?.id || null;
+        if (data && Array.isArray(data.rows) && data.rows.length) return current || ticketRouteId(data.rows[0]) || null;
+        if (Array.isArray(data) && data.length) return current || ticketRouteId(data[0]) || null;
         return current || null;
       });
     } catch (err) {
@@ -201,10 +201,10 @@ export default function AdminPage() {
   useEffect(() => {
     // Support deep-link: /admin/tickets/:id or ?ticketId=xxx&nid=xxx
     const params = new URLSearchParams(location.search);
-    const ticketIdParam = Number(params.get("ticketId"));
+    const ticketIdParam = params.get("ticketId") || "";
     const nidParam = params.get("nid");
-    const routeTicketIdValid = Number.isFinite(routeTicketId) && routeTicketId > 0;
-    const queryTicketIdValid = Number.isFinite(ticketIdParam) && ticketIdParam > 0;
+    const routeTicketIdValid = Boolean(routeTicketId);
+    const queryTicketIdValid = Boolean(ticketIdParam);
     const openTicketId = routeTicketIdValid ? routeTicketId : (queryTicketIdValid ? ticketIdParam : null);
     if (openTicketId) {
       setSelectedId(openTicketId);
@@ -262,7 +262,7 @@ export default function AdminPage() {
   }, [activeView]);
 
   function chooseTicket(ticket) {
-    setSelectedId(ticket.id);
+    setSelectedId(ticketRouteId(ticket));
     setReply({
       department: user?.department || ticket.current_department || "党政办",
       content: "",
@@ -280,7 +280,7 @@ export default function AdminPage() {
     setReply({ content: "", status: "completed" });
     setError("");
     setReplySuccess("");
-    if (Number.isFinite(routeTicketId) && routeTicketId > 0) {
+    if (routeTicketId) {
       navigate("/admin");
     }
   }
@@ -303,9 +303,10 @@ export default function AdminPage() {
   }
 
   async function togglePublish(ticket) {
-    await api.patch(`/admin/tickets/${ticket.id}/publish`, { is_published: !ticket.is_published });
+    const id = ticketRouteId(ticket);
+    await api.patch(`/admin/tickets/${id}/publish`, { is_published: !ticket.is_published });
     await loadTickets();
-    await loadDetail(ticket.id);
+    await loadDetail(id);
   }
 
   async function submitReply(e) {

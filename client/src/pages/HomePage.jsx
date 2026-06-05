@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AlertCircle, ArrowRight, ClipboardList, FileText, Clock, CheckCircle2 } from "lucide-react";
 import { api } from "../api";
 import TypicalIssuesPanel from "../components/TypicalIssuesPanel";
-import { formatTime } from "../constants";
+import { formatTime, ticketRouteId } from "../constants";
 import { LocaleLink, toUserStatusKey, useLanguage, useUserStatusMap } from "../i18n";
 
 export default function HomePage({ user }) {
@@ -173,7 +173,7 @@ export default function HomePage({ user }) {
               return (
                 <LocaleLink
                   key={ticket.id}
-                  to={`/tickets/${ticket.id}`}
+                  to={`/tickets/${ticketRouteId(ticket)}`}
                   className="group flex items-center justify-between rounded-xl border border-ai-border bg-white p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-ai-primary/20 hover:shadow-card-hover"
                   style={{ animationDelay: `${index * 50}ms` }}
                 >

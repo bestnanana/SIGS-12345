@@ -767,9 +767,11 @@ function isAdminLike(user) {
  * null     — 无权限
  */
 async function getTicketPermission(ticketId, viewer) {
+  const resolvedTicketId = await resolveTicketId(ticketId);
+  if (!resolvedTicketId) return null;
   const ticket = await get(
     'SELECT id, original_department, current_department, department, submitter_id FROM tickets WHERE id = ?',
-    [ticketId]
+    [resolvedTicketId]
   );
   if (!ticket) return null;
 
@@ -795,7 +797,7 @@ async function getTicketPermission(ticketId, viewer) {
 
       const inTransferChain = await get(
         `SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department IN (${managedNames.map(() => '?').join(',')}) OR to_department IN (${managedNames.map(() => '?').join(',')})) LIMIT 1`,
-        [ticketId, ...managedNames, ...managedNames]
+        [resolvedTicketId, ...managedNames, ...managedNames]
       );
       if (inTransferChain) return 'view';
     }
@@ -808,7 +810,7 @@ async function getTicketPermission(ticketId, viewer) {
 
       const inTransferChain = await get(
         'SELECT 1 FROM transfers WHERE ticket_id = ? AND (from_department = ? OR to_department = ?) LIMIT 1',
-        [ticketId, dept, dept]
+        [resolvedTicketId, dept, dept]
       );
       if (inTransferChain) return 'view';
     }
@@ -955,6 +957,46 @@ function mapTicket(row) {
   };
 }
 
+function ticketPublicId(ticket) {
+  return ticket?.ticket_code || ticket?.id;
+}
+
+function formatTicketDatePart(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${pick("year")}${pick("month")}${pick("day")}`;
+}
+
+function randomTicketCodePart(length = 6) {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = crypto.randomBytes(length);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
+async function generateTicketCode(createdAt = new Date()) {
+  const datePart = formatTicketDatePart(createdAt);
+  for (let i = 0; i < 12; i += 1) {
+    const code = `SIGS-${datePart}-${randomTicketCodePart(6)}`;
+    const existing = await get("SELECT id FROM tickets WHERE ticket_code = ?", [code]);
+    if (!existing) return code;
+  }
+  return `SIGS-${datePart}-${randomTicketCodePart(8)}`;
+}
+
+async function resolveTicketId(identifier) {
+  const raw = String(identifier || "").trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return raw;
+  const row = await get("SELECT id FROM tickets WHERE ticket_code = ?", [raw]);
+  return row?.id || null;
+}
+
 async function saveFiles(files, ticketId = null, replyId = null) {
   for (const file of files || []) {
     await run(
@@ -996,7 +1038,7 @@ async function pushSubmitterTodo(ticket, nameSuffix = "请确认处理结果") {
     return await pushPortalTodo({
       id: buildTodoId(ticket.id, 'submitter'),
       name: `【${ticket.title}】-${nameSuffix}`,
-      url: buildSiteUrl(`/cn/tickets/${ticket.id}`),
+      url: buildSiteUrl(`/cn/tickets/${ticketPublicId(ticket)}`),
       principalPersonId: submitterPersonId
     });
   } catch (err) {
@@ -1022,13 +1064,13 @@ async function notifyCurrentDepartmentAdmins(ticket, message, notificationType =
        VALUES (?, ?, ?, ?)`,
       [admin.notify_user_id, ticket.id, notificationType, message]
     );
-    const targetUrl = `/cn/admin/tickets/${ticket.id}?nid=${notifResult.insertId}`;
+    const targetUrl = `/cn/admin/tickets/${ticketPublicId(ticket)}?nid=${notifResult.insertId}`;
     await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
     if (admin.admin_person_id) {
       pushPortalTodo({
         id: buildTodoId(ticket.id, 'admin', admin.admin_person_id),
         name: `【${ticket.title}】-待您处理`,
-        url: buildSiteUrl(`/cn/admin/tickets/${ticket.id}`),
+        url: buildSiteUrl(`/cn/admin/tickets/${ticketPublicId(ticket)}`),
         principalPersonId: admin.admin_person_id
       }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: ticket.id, person_id: admin.admin_person_id, message: err.message }));
     }
@@ -1036,6 +1078,8 @@ async function notifyCurrentDepartmentAdmins(ticket, message, notificationType =
 }
 
 async function ticketDetails(id, viewer) {
+  const ticketId = await resolveTicketId(id);
+  if (!ticketId) return null;
   const ticket = await get(
     `SELECT t.*,
             COALESCE(dp.name, u.name) AS submitter_name,
@@ -1044,7 +1088,7 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
      LEFT JOIN users u ON u.id = t.submitter_id
      WHERE t.id = ?`,
-    [id]
+    [ticketId]
   );
   if (!ticket) return null;
   const isSubmitter = String(ticket.submitter_id) === String(viewer.id);
@@ -1053,7 +1097,7 @@ async function ticketDetails(id, viewer) {
   // 权限判断：当前承办部门可处理，原始/历史经手部门仅查看，其余无权限
   let permission = 'view';
   if (isAdminLike(viewer) && viewer.role !== "super_admin" && !isSubmitter) {
-    permission = await getTicketPermission(id, viewer);
+    permission = await getTicketPermission(ticketId, viewer);
     if (!permission) return null;
   } else if (isAdminLike(viewer)) {
     permission = 'handle';
@@ -1071,16 +1115,16 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN users u ON u.id = r.replier_id
      WHERE r.ticket_id = ?
      ORDER BY r.created_at ASC`,
-    [id]
+    [ticketId]
   );
-  const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [id]);
+  const attachments = await all("SELECT * FROM attachments WHERE ticket_id = ? ORDER BY uploaded_at ASC", [ticketId]);
   const replyAttachments = await all(
     `SELECT a.*
      FROM attachments a
      JOIN replies r ON r.id = a.reply_id
      WHERE r.ticket_id = ?
      ORDER BY a.uploaded_at ASC`,
-    [id]
+    [ticketId]
   );
   const followups = await all(
     `SELECT f.*, COALESCE(dp.name, u.name) AS submitter_name
@@ -1089,7 +1133,7 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN users u ON u.id = f.submitter_id
      WHERE f.ticket_id = ?
      ORDER BY f.created_at ASC`,
-    [id]
+    [ticketId]
   );
   const satisfaction = await get(
     `SELECT s.*, COALESCE(dp.name, u.name) AS user_name
@@ -1097,7 +1141,7 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN datahub_basic_persons dp ON dp.id = s.user_id
      LEFT JOIN users u ON u.id = s.user_id
      WHERE s.ticket_id = ?`,
-    [id]
+    [ticketId]
   );
   const deptName = ticket.current_department || ticket.department || "党政办";
   const currentHandler = await get(
@@ -1135,7 +1179,7 @@ async function ticketDetails(id, viewer) {
      )
      WHERE tr.ticket_id = ?
      ORDER BY tr.created_at ASC`,
-    [id]
+    [ticketId]
   );
 
   return {
@@ -1585,17 +1629,18 @@ try {
   const submitterRole = req.user.role || 'user';
   const submitterDepartment = req.user.department || null;
 
+  const ticketCode = await generateTicketCode();
   const shareCode = crypto.randomBytes(12).toString("base64url");
   const result = await run(
-    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, submitter_union_id, submitter_person_id, submitter_name, submitter_phone, submitter_role, submitter_department, status, share_code)
-     VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, submitterUnionId, submitterPersonId, submitterName, submitterPhone, submitterRole, submitterDepartment, shareCode]
+    `INSERT INTO tickets (title, field, unit_type, department, current_department, original_department, content, is_anonymous, submitter_id, submitter_union_id, submitter_person_id, submitter_name, submitter_phone, submitter_role, submitter_department, status, ticket_code, share_code)
+     VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    [title, field, targetDept, targetDept, targetDept, content, is_anonymous === "true" ? 1 : 0, req.user.id, submitterUnionId, submitterPersonId, submitterName, submitterPhone, submitterRole, submitterDepartment, ticketCode, shareCode]
   );
   await saveFiles(req.files, result.insertId, null);
 
   const displayDept = isUnknownDept ? DEFAULT_DEPT : department;
   await notifyCurrentDepartmentAdmins(
-    { id: result.insertId, title, department: targetDept, current_department: targetDept },
+    { id: result.insertId, ticket_code: ticketCode, title, department: targetDept, current_department: targetDept },
     `新事项【${title}】已提交至${displayDept}，请及时处理。`,
     "new_ticket"
   );
@@ -1605,12 +1650,12 @@ try {
     pushPortalTodo({
       id: buildTodoId(result.insertId, 'submitter'),
       name: `【${title}】-待您处理`,
-      url: buildSiteUrl(`/cn/tickets/${result.insertId}`),
+      url: buildSiteUrl(`/cn/tickets/${ticketCode}`),
       principalPersonId: submitterDatahubRow.id
     }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: result.insertId, type: 'submitter', message: err.message }));
   }
 
-  res.status(201).json({ id: result.insertId, share_code: shareCode });
+  res.status(201).json({ id: result.insertId, ticket_code: ticketCode, share_code: shareCode });
 } catch (err) {
   console.error('POST /api/tickets error:', err);
   res.status(500).json({ message: "提交失败: " + err.message });
@@ -1627,35 +1672,39 @@ app.get("/api/tickets/:id", auth, async (req, res) => {
 
 
 app.post("/api/tickets/:id/satisfaction", auth, async (req, res) => {
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
   const score = Number(req.body?.score);
   const comment = String(req.body?.comment || "").trim();
   if (!Number.isInteger(score) || score < 1 || score > 5) {
     return res.status(400).json({ message: "请选择 1-5 分满意度评分" });
   }
   if (comment.length > 500) return res.status(400).json({ message: "评价内容不能超过 500 字" });
-  const ticket = await get("SELECT id, submitter_id, submitter_union_id, status FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT id, ticket_code, submitter_id, submitter_union_id, status FROM tickets WHERE id = ?", [ticketId]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
   if (String(ticket.submitter_id) !== String(req.user.id)) return res.status(403).json({ message: "只有事项发起人可以进行满意度评价" });
   if (ticket.status !== "completed") return res.status(400).json({ message: "事项处理完成后才可以评价" });
-  const existingSurvey = await get("SELECT id FROM satisfaction_surveys WHERE ticket_id = ?", [req.params.id]);
+  const existingSurvey = await get("SELECT id FROM satisfaction_surveys WHERE ticket_id = ?", [ticketId]);
   if (existingSurvey) return res.status(409).json({ message: "该事项已提交满意度评价，不能重复评价" });
   await run(
     `INSERT INTO satisfaction_surveys (ticket_id, user_id, score, comment, updated_at)
      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [req.params.id, req.user.id, score, comment]
+    [ticketId, req.user.id, score, comment]
   );
   await run(
     "UPDATE tickets SET resolution_status = 'rated', resolution_confirmed_at = COALESCE(resolution_confirmed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    [req.params.id]
+    [ticketId]
   );
-  completeSubmitterTodo(req.params.id, ticket.submitter_id, ticket.submitter_union_id);
+  completeSubmitterTodo(ticketId, ticket.submitter_id, ticket.submitter_union_id);
   res.json({ ok: true });
 });
 
 app.post("/api/tickets/:id/resolution", auth, async (req, res) => {
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
   const ticket = await get(
-    "SELECT id, title, submitter_id, submitter_union_id, department, current_department, status FROM tickets WHERE id = ?",
-    [req.params.id]
+    "SELECT id, ticket_code, title, submitter_id, submitter_union_id, department, current_department, status FROM tickets WHERE id = ?",
+    [ticketId]
   );
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
   if (String(ticket.submitter_id) !== String(req.user.id)) return res.status(403).json({ message: "只能确认自己的事项" });
@@ -1665,7 +1714,7 @@ app.post("/api/tickets/:id/resolution", auth, async (req, res) => {
   if (resolved) {
     await run(
       "UPDATE tickets SET resolution_status = 'resolved', resolution_confirmed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [req.params.id]
+      [ticketId]
     );
     return res.json({ ok: true, next: "satisfaction" });
   }
@@ -1675,18 +1724,18 @@ app.post("/api/tickets/:id/resolution", auth, async (req, res) => {
 
   await run(
     "INSERT INTO ticket_followups (ticket_id, content, submitter_id) VALUES (?, ?, ?)",
-    [req.params.id, content, req.user.id]
+    [ticketId, content, req.user.id]
   );
   await run(
     "UPDATE tickets SET status = 'pending', resolution_status = 'unresolved', resolution_confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    [req.params.id]
+    [ticketId]
   );
   await notifyCurrentDepartmentAdmins(
     ticket,
     `提交人反馈事项【${ticket.title}】尚未解决，并补充了新的问题说明，请继续处理。`,
     "submitter_followup"
   );
-  completeSubmitterTodo(req.params.id, ticket.submitter_id, ticket.submitter_union_id);
+  completeSubmitterTodo(ticketId, ticket.submitter_id, ticket.submitter_union_id);
   res.status(201).json({ ok: true });
 });
 
@@ -1872,25 +1921,27 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
 
 app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attachments", 8), async (req, res) => {
   try {
+    const ticketId = await resolveTicketId(req.params.id);
+    if (!ticketId) return res.status(404).json({ message: "事项不存在" });
     const { content, status } = req.body;
     if (!content) return res.status(400).json({ message: "请填写回复内容" });
     const user = await loadPerson(req.user.id);
-    const ticket = await get("SELECT id, title, submitter_id, submitter_union_id, current_department FROM tickets WHERE id = ?", [req.params.id]);
+    const ticket = await get("SELECT id, ticket_code, title, submitter_id, submitter_union_id, current_department FROM tickets WHERE id = ?", [ticketId]);
     if (!ticket) return res.status(404).json({ message: "事项不存在" });
-    const permission = await getTicketPermission(req.params.id, user);
+    const permission = await getTicketPermission(ticketId, user);
     if (permission !== 'handle') {
       return res.status(403).json({ message: "您所在的部门当前不是承办部门，无法处理此事项" });
     }
     if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
     const result = await run(
       "INSERT INTO replies (ticket_id, content, replier_id, department) VALUES (?, ?, ?, ?)",
-      [req.params.id, content, req.user.id, user.department]
+      [ticketId, content, req.user.id, user.department]
     );
     await saveFiles(req.files, null, result.insertId);
     const nextStatus = status || "completed";
     await run(
       "UPDATE tickets SET status = ?, resolution_status = ?, resolution_confirmed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [nextStatus, nextStatus === "completed" ? "pending_confirm" : null, req.params.id]
+      [nextStatus, nextStatus === "completed" ? "pending_confirm" : null, ticketId]
     );
 
     // Notify the ticket submitter
@@ -1898,9 +1949,9 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
       const notifResult = await run(
         `INSERT INTO notifications (user_id, ticket_id, type, message)
          VALUES (?, ?, 'replied', ?)`,
-        [ticket.submitter_id, req.params.id, `您的事项【${ticket.title}】已有新的处理回复。`]
+        [ticket.submitter_id, ticketId, `您的事项【${ticket.title}】已有新的处理回复。`]
       );
-      const targetUrl = `/cn/tickets/${req.params.id}?nid=${notifResult.insertId}`;
+      const targetUrl = `/cn/tickets/${ticketPublicId(ticket)}?nid=${notifResult.insertId}`;
       await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
       if (nextStatus === "completed") {
         pushSubmitterTodo(ticket, "请确认处理结果并评价服务");
@@ -1908,8 +1959,6 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
     }
 
     // Complete portal todos
-    const ticketId = req.params.id;
-
     // Complete the replying admin's own todo
     if (user.union_id || user.id) {
       const adminPersonId = user.union_id
@@ -1929,26 +1978,30 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
 });
 
 app.patch("/api/admin/tickets/:id/status", auth, adminOnly, async (req, res) => {
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
   const { status } = req.body;
   if (!["pending", "completed"].includes(status)) return res.status(400).json({ message: "无效状态" });
   const user = await loadPerson(req.user.id);
-  const ticket = await get("SELECT current_department FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT current_department FROM tickets WHERE id = ?", [ticketId]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  const permission = await getTicketPermission(req.params.id, user);
+  const permission = await getTicketPermission(ticketId, user);
   if (permission !== 'handle') {
     return res.status(403).json({ message: "只有当前承办部门管理员可以更新状态" });
   }
-  await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status, req.params.id]);
+  await run("UPDATE tickets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [status, ticketId]);
   res.json({ ok: true });
 });
 
 app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) => {
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
   const { to_department, note } = req.body;
   if (!(await isValidDepartment(to_department))) return res.status(400).json({ message: "请选择有效转办部门" });
   const user = await loadPerson(req.user.id);
-  const ticket = await get("SELECT id, title, current_department FROM tickets WHERE id = ?", [req.params.id]);
+  const ticket = await get("SELECT id, ticket_code, title, current_department FROM tickets WHERE id = ?", [ticketId]);
   if (!ticket) return res.status(404).json({ message: "事项不存在" });
-  const permission = await getTicketPermission(req.params.id, user);
+  const permission = await getTicketPermission(ticketId, user);
   if (permission !== 'handle') {
     return res.status(403).json({ message: "只能由当前承办部门转办事项" });
   }
@@ -1967,14 +2020,14 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   // 将上一条转办记录标记为 superseded
   await run(
     "UPDATE transfers SET status = 'superseded' WHERE ticket_id = ? AND status = 'active'",
-    [req.params.id]
+    [ticketId]
   );
 
   await run(
     "INSERT INTO transfers (ticket_id, from_department, to_department, operator_id, note, status) VALUES (?, ?, ?, ?, ?, 'active')",
-    [req.params.id, fromDept, to_department, req.user.id, note || ""]
+    [ticketId, fromDept, to_department, req.user.id, note || ""]
   );
-  await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, req.params.id]);
+  await run("UPDATE tickets SET current_department = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [to_department, ticketId]);
 
   // Notify admins in the target department + department assignments.
   // Super admins keep global handling permission, but portal todos are only pushed
@@ -1992,17 +2045,17 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
     const notifResult = await run(
       `INSERT INTO notifications (user_id, ticket_id, type, message)
        VALUES (?, ?, 'transferred_in', ?)`,
-      [admin.notify_user_id, req.params.id, `事项【${ticket.title}】已从${fromDept}转办至${to_department}，请及时处理。`]
+      [admin.notify_user_id, ticketId, `事项【${ticket.title}】已从${fromDept}转办至${to_department}，请及时处理。`]
     );
-    const targetUrl = `/cn/admin/tickets/${req.params.id}?nid=${notifResult.insertId}`;
+    const targetUrl = `/cn/admin/tickets/${ticketPublicId(ticket)}?nid=${notifResult.insertId}`;
     await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
     if (admin.admin_person_id) {
       pushPortalTodo({
-        id: buildTodoId(req.params.id, 'admin', admin.admin_person_id),
+        id: buildTodoId(ticketId, 'admin', admin.admin_person_id),
         name: `【${ticket.title}】-待您处理`,
-        url: buildSiteUrl(`/cn/admin/tickets/${req.params.id}`),
+        url: buildSiteUrl(`/cn/admin/tickets/${ticketPublicId(ticket)}`),
         principalPersonId: admin.admin_person_id
-      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: req.params.id, person_id: admin.admin_person_id, message: err.message }));
+      }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: ticketId, person_id: admin.admin_person_id, message: err.message }));
     }
   }
 
@@ -2017,8 +2070,8 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
   );
   for (const admin of oldDeptAdmins) {
     if (admin.admin_person_id) {
-      completePortalTodo(buildTodoId(req.params.id, 'admin', admin.admin_person_id), admin.admin_person_id)
-        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: req.params.id, person_id: admin.admin_person_id, message: err.message }));
+      completePortalTodo(buildTodoId(ticketId, 'admin', admin.admin_person_id), admin.admin_person_id)
+        .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, person_id: admin.admin_person_id, message: err.message }));
     }
   }
 
@@ -2652,19 +2705,23 @@ app.delete("/api/admin/local-accounts/:id", auth, superAdminOnly, async (req, re
 });
 
 app.patch("/api/admin/tickets/:id/publish", auth, adminOnly, async (req, res) => {
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
   const { is_published } = req.body;
   await run(
     `UPDATE tickets
      SET is_published = ?, published_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END, updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
-    [is_published ? 1 : 0, is_published ? 1 : 0, req.params.id]
+    [is_published ? 1 : 0, is_published ? 1 : 0, ticketId]
   );
   res.json({ ok: true });
 });
 
 app.delete("/api/admin/tickets/:id", auth, adminOnly, async (req, res) => {
-  const files = await all("SELECT file_path FROM attachments WHERE ticket_id = ?", [req.params.id]);
-  await run("DELETE FROM tickets WHERE id = ?", [req.params.id]);
+  const ticketId = await resolveTicketId(req.params.id);
+  if (!ticketId) return res.status(404).json({ message: "事项不存在" });
+  const files = await all("SELECT file_path FROM attachments WHERE ticket_id = ?", [ticketId]);
+  await run("DELETE FROM tickets WHERE id = ?", [ticketId]);
   for (const file of files) {
     try { fs.unlinkSync(path.join(uploadDir, path.basename(file.file_path))); } catch (e) { /* ignore */ }
   }

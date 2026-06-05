@@ -35,7 +35,7 @@ echo -e "${YELLOW}3. 复制必要文件...${NC}"
 
 # 复制服务器端代码
 cp -r server "$DEPLOY_DIR/"
-mkdir -p "$DEPLOY_DIR/server/data"
+mkdir -p "$DEPLOY_DIR/server/uploads"
 
 # 复制前端构建产物
 if [ -d "dist" ]; then

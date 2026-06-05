@@ -160,6 +160,7 @@ async function initDb() {
       ai_category VARCHAR(191),
       ai_suggestion TEXT,
       original_department VARCHAR(64) DEFAULT NULL,
+      ticket_code VARCHAR(64) DEFAULT NULL,
       share_code VARCHAR(64) DEFAULT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -335,6 +336,8 @@ async function initDb() {
   try { await run("ALTER TABLE tickets ADD COLUMN original_department VARCHAR(64) DEFAULT NULL"); } catch {}
   try { await run("UPDATE tickets SET original_department = department WHERE original_department IS NULL"); } catch {}
   try { await run("ALTER TABLE transfers ADD COLUMN status VARCHAR(32) DEFAULT 'active'"); } catch {}
+  try { await ensureColumn("tickets", "ticket_code", "VARCHAR(64) DEFAULT NULL"); } catch {}
+  try { await run("CREATE UNIQUE INDEX uniq_tickets_ticket_code ON tickets(ticket_code)"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN share_code VARCHAR(64) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_union_id VARCHAR(191) DEFAULT NULL"); } catch {}
   try { await run("ALTER TABLE tickets ADD COLUMN submitter_person_id VARCHAR(191) DEFAULT NULL"); } catch {}
