@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { api, serverOrigin } from "../api";
+import { api } from "../api";
 import { formatTime } from "../constants";
 import { useLocaleNavigate, useLanguage, useUserStatusMap, toUserStatusKey } from "../i18n";
 
@@ -12,7 +12,7 @@ function AttachmentList({ items, emptyText }) {
       {items.map((item) => (
         <a
           key={item.id}
-          href={`${serverOrigin}${item.file_path}`}
+          href={`/api/attachments/${item.id}/download`}
           target="_blank"
           rel="noreferrer"
           className="flex items-center justify-between rounded-xl border border-ai-border bg-ai-bg px-3 py-2 text-sm transition duration-200 hover:border-ai-primary/30"

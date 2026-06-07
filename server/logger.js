@@ -68,6 +68,20 @@ function requestId() {
   return crypto.randomBytes(8).toString("hex");
 }
 
+function sanitizeUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl, "http://local");
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (/token|secret|password|authorization/i.test(key)) {
+        url.searchParams.set(key, "[REDACTED]");
+      }
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
 function requestLogger(req, res, next) {
   req.requestId = req.headers["x-request-id"] || requestId();
   const start = Date.now();
@@ -79,7 +93,7 @@ function requestLogger(req, res, next) {
     writeLog(level, "http_request", {
       request_id: req.requestId,
       method: req.method,
-      path: req.originalUrl || req.url,
+      path: sanitizeUrl(req.originalUrl || req.url),
       status: res.statusCode,
       duration_ms: durationMs,
       user_id: req.user?.id,

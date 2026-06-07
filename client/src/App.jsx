@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { AUTH_EXPIRED_EVENT, api, clearAuthStorage, getToken, getAuthSource, setToken } from "./api";
+import { AUTH_EXPIRED_EVENT, api, clearAuthStorage, getToken, setToken } from "./api";
 import Layout from "./components/Layout";
 import AdminPage from "./pages/AdminPage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
@@ -33,6 +33,15 @@ function readSavedUser() {
   }
 }
 
+function pathWithoutLocale(pathname) {
+  return pathname.replace(/^\/(?:cn|en)/, "") || "/";
+}
+
+function isLocalLoginPath(pathname) {
+  const pathNoLocale = pathWithoutLocale(pathname);
+  return pathNoLocale === "/local/login" || pathname.endsWith("/local/login");
+}
+
 function App() {
   const { t } = useLanguage();
   const { locale } = useLocale();
@@ -44,23 +53,35 @@ function App() {
   const location = useLocation();
   const navigate = useLocaleNavigate();
 
+  function redirectToSso() {
+    setLoading(true);
+    window.location.replace(`/sso/authorize-url?locale=${locale}&redirect=1`);
+  }
+
+  const expireAuthState = useCallback((message) => {
+    clearAuthStorage();
+    setUser(null);
+    setViewRole("");
+    setAuthMessage(message || "登录已失效，请重新登录");
+  }, []);
+
   useEffect(() => {
     function handleAuthExpired(event) {
-      clearAuthStorage();
-      setUser(null);
-      setViewRole("");
-      setAuthMessage(event.detail?.message || "登录已失效，请重新登录");
-      setLoading(false);
+      expireAuthState(event.detail?.message);
+      if (isLocalLoginPath(location.pathname)) {
+        setLoading(false);
+      } else {
+        redirectToSso();
+      }
     }
 
     window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
-  }, []);
+  }, [expireAuthState, location.pathname, locale]);
 
   useEffect(() => {
     let ignore = false;
-    const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
-    const isLocalLogin = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
+    const isLocalLogin = isLocalLoginPath(location.pathname);
 
     // /local/login page: don't redirect, let user log in
     if (isLocalLogin) {
@@ -71,11 +92,8 @@ function App() {
     const token = getToken();
     if (!token) {
       // No token: clear any stale identity and let the backend redirect to SSO directly.
-      clearAuthStorage();
-      setUser(null);
-      setViewRole("");
-      setLoading(false);
-      window.location.replace(`/sso/authorize-url?locale=${locale}&redirect=1`);
+      expireAuthState("");
+      redirectToSso();
       return () => { ignore = true; };
     }
 
@@ -91,16 +109,14 @@ function App() {
       })
       .catch(() => {
         if (ignore) return;
-        clearAuthStorage();
-        setUser(null);
-        setViewRole("");
-        setAuthMessage("登录已失效，请重新登录");
+        expireAuthState("登录已失效，请重新登录");
+        redirectToSso();
       })
       .finally(() => {
         if (!ignore) setLoading(false);
       });
     return () => { ignore = true; };
-  }, [location.pathname]);
+  }, [expireAuthState, location.pathname, locale]);
 
   function handleLogin(payload) {
     setToken(payload.token, payload.authSource);
@@ -163,12 +179,10 @@ function App() {
   }
 
   if (!user) {
-    const pathNoLocale = location.pathname.replace(/^\/(?:cn|en)/, "") || "/";
-    const isLocalLogin = pathNoLocale === "/local/login" || location.pathname.endsWith("/local/login");
+    const isLocalLogin = isLocalLoginPath(location.pathname);
     if (isLocalLogin) {
       return <LoginPage onLogin={handleLogin} authMessage={authMessage} />;
     }
-    // Should have been redirected to SSO by now; show loading
     return <div className="flex min-h-screen items-center justify-center text-tsinghua-700">{t("common.loading")}</div>;
   }
 

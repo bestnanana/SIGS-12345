@@ -29,10 +29,15 @@ echo -e "${YELLOW}3. 复制文件...${NC}"
 
 # 服务器端代码
 cp -r server "$DEPLOY_DIR/"
+rm -rf "$DEPLOY_DIR/server/data" "$DEPLOY_DIR/server/logs" "$DEPLOY_DIR/server/uploads"
 mkdir -p "$DEPLOY_DIR/server/uploads"
 
 # 前端构建产物
-[ -d "dist" ] && cp -r dist "$DEPLOY_DIR/"
+if [ -d "client/dist" ]; then
+  cp -r client/dist "$DEPLOY_DIR/dist"
+elif [ -d "dist" ]; then
+  cp -r dist "$DEPLOY_DIR/"
+fi
 
 # 脚本
 mkdir -p "$DEPLOY_DIR/scripts"
@@ -67,13 +72,15 @@ SSO_STATE_COOKIE_NAME=campus.oauth_state
 SSO_STATE_MAX_AGE_MS=600000
 SSO_STATE_SECRET=change-this
 DATAHUB_BASIC_PERSON_URL=https://api.sigs.tsinghua.edu.cn/v1/basic/api_basic_person
-DATAHUB_API_KEY=5f2ezUP3dUWkgYiCLuqWGQ4p88ELwCMW
+DATAHUB_API_KEY=your-datahub-api-key
 DATAHUB_SERVICE_ID=jsjb
 DB_HOST=219.223.170.14
 DB_PORT=3306
 DB_USER=response_test
-DB_PASSWORD=Uxhq03H??P]axvWFx_}3
+DB_PASSWORD=your-db-password
 DB_NAME=response_test
+PORTAL_TODO_API_KEY=your-portal-todo-api-key
+PORTAL_TODO_SERVICE_ID=QX1oRe
 EOF
 
 # 创建启动脚本

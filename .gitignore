@@ -1,5 +1,6 @@
 node_modules/
 dist/
+client/dist/
 .tools/
 .npm-cache/
 .env
@@ -7,8 +8,14 @@ dist/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+data.db
 server/data/*.db
+server/data/*.db-*
 server/data/*.lock
 server/data/backups/
 server/logs/
 server/uploads/
+deploy-packages/
+outputs/
+*.tar.gz
+*.pptx

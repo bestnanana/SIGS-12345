@@ -2,6 +2,14 @@ const mysql = require('mysql2/promise');
 
 let pool;
 
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
+}
+
 function getPool() {
   if (!pool) {
     const url = process.env.DATABASE_URL;
@@ -12,7 +20,7 @@ function getPool() {
         host: process.env.DB_HOST || '219.223.170.14',
         port: Number(process.env.DB_PORT || 3306),
         user: process.env.DB_USER || 'response_test',
-        password: process.env.DB_PASSWORD || 'Uxhq03H??P]axvWFx_}3',
+        password: requireEnv('DB_PASSWORD'),
         database: process.env.DB_NAME || 'response_test',
         waitForConnections: true,
         connectionLimit: 10,

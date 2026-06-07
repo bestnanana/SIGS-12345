@@ -1,15 +1,15 @@
--- 数据库迁移脚本
+-- MySQL 数据库迁移脚本
 -- 用于升级 users 表结构和数据修复
 
 -- 1. 添加新字段（如果不存在）
 -- password_hash 字段
-ALTER TABLE users ADD COLUMN password_hash TEXT;
+ALTER TABLE users ADD COLUMN password_hash VARCHAR(191) DEFAULT NULL;
 
 -- is_active 字段
-ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1;
+ALTER TABLE users ADD COLUMN is_active TINYINT(1) DEFAULT 1;
 
 -- must_change_password 字段
-ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0;
+ALTER TABLE users ADD COLUMN must_change_password TINYINT(1) DEFAULT 0;
 
 -- 2. 迁移旧密码数据
 UPDATE users SET password_hash = password WHERE password_hash IS NULL AND password IS NOT NULL;
@@ -20,7 +20,7 @@ UPDATE users SET is_active = 1 WHERE username = 'superadmin';
 UPDATE users SET must_change_password = 1 WHERE username = 'superadmin' AND (password_hash IS NULL OR password_hash = '');
 
 -- 4. 确保 datahub_basic_persons 中有 superadmin 记录
-INSERT OR IGNORE INTO datahub_basic_persons (id, union_id, name, type, department, role, role_id, auth_source, is_active, raw_json)
+INSERT IGNORE INTO datahub_basic_persons (id, union_id, name, type, department, role, role_id, auth_source, is_active, raw_json)
 SELECT 'local_superadmin', 'local_superadmin', '超级管理员', '教职员', '党政办公室', 'super_admin', r.id, 'local', 1, '{}'
 FROM roles r WHERE r.code = 'super_admin'
 AND NOT EXISTS (SELECT 1 FROM datahub_basic_persons WHERE union_id = 'local_superadmin');

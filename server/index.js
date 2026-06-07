@@ -95,7 +95,6 @@ const upload = multer({
 app.use(cors());
 app.use(logger.requestLogger);
 app.use(express.json());
-app.use("/uploads", express.static(uploadDir));
 
 const distPath = path.join(__dirname, "..", "client", "dist");
 app.use(express.static(distPath, { index: false }));
@@ -609,7 +608,6 @@ function isPublicRoute(req) {
   return (
     pathname.startsWith("/api/") ||
     pathname.startsWith("/assets/") ||
-    pathname.startsWith("/uploads/") ||
     pathname === "/favicon.ico" ||
     pathname === "/tsinghua-sigs-logo.png" ||
     pathname === "/sigs-prompt-logo.svg"
@@ -694,7 +692,7 @@ function signUser(user, expiresIn) {
 function tokenFromRequest(req) {
   const header = req.headers.authorization || "";
   if (header.startsWith("Bearer ")) return header.slice(7);
-  return req.query?.token ? String(req.query.token) : null;
+  return null;
 }
 
 async function auth(req, res, next) {
@@ -843,7 +841,7 @@ async function loadPerson(id) {
     // 2.1 自动创建 datahub_basic_persons 影子记录（避免登录失败）
     const localRole = await getRoleByCode('user');
     await run(
-      `INSERT OR IGNORE INTO datahub_basic_persons (id, union_id, name, type, department, role_id, auth_source, is_active, raw_json)
+      `INSERT IGNORE INTO datahub_basic_persons (id, union_id, name, type, department, role_id, auth_source, is_active, raw_json)
        VALUES (?, ?, ?, ?, ?, ?, 'local', 1, '{}')`,
       [user.union_id, user.union_id, user.username, '未知', '未分配', localRole?.id || null]
     );
@@ -1617,17 +1615,36 @@ try {
   if (!isUnknownDept && !(await isValidDepartment(targetDept))) return res.status(400).json({ message: "请选择有效部门" });
   if (phone) await run("UPDATE datahub_basic_persons SET phone = ? WHERE id = ?", [phone, req.user.id]);
 
-  // Look up submitter's person info for storing on ticket
-  const submitterPersonRow = await get('SELECT union_id FROM users WHERE id = ? UNION SELECT id FROM datahub_basic_persons WHERE id = ? LIMIT 1', [req.user.id, req.user.id]).catch(() => null);
-  const submitterDatahubRow = submitterPersonRow?.union_id
-    ? await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE union_id = ?', [submitterPersonRow.union_id])
-    : await get('SELECT id, union_id, name FROM datahub_basic_persons WHERE id = ?', [req.user.id]);
+  // Look up submitter's person info for storing on ticket and portal todos.
+  let submitterDatahubRow = await get(
+    `SELECT id, union_id, name, phone, department, role
+     FROM datahub_basic_persons
+     WHERE id = ? OR union_id = ?
+     LIMIT 1`,
+    [req.user.id, req.user.union_id || req.user.id]
+  );
+  let submitterUserRow = null;
+  if (!submitterDatahubRow) {
+    submitterUserRow = await get(
+      "SELECT id, union_id, name, phone, department, role FROM users WHERE id = ? OR union_id = ? LIMIT 1",
+      [req.user.id, req.user.id]
+    ).catch(() => null);
+    if (submitterUserRow?.union_id) {
+      submitterDatahubRow = await get(
+        `SELECT id, union_id, name, phone, department, role
+         FROM datahub_basic_persons
+         WHERE union_id = ?
+         LIMIT 1`,
+        [submitterUserRow.union_id]
+      );
+    }
+  }
   const submitterUnionId = req.user.union_id || submitterDatahubRow?.union_id || null;
   const submitterPersonId = submitterDatahubRow?.id || req.user.id;
   const submitterName = req.user.name || submitterDatahubRow?.name || null;
-  const submitterPhone = req.user.phone || null;
-  const submitterRole = req.user.role || 'user';
-  const submitterDepartment = req.user.department || null;
+  const submitterPhone = req.user.phone || submitterDatahubRow?.phone || submitterUserRow?.phone || null;
+  const submitterRole = req.user.role || submitterDatahubRow?.role || submitterUserRow?.role || 'user';
+  const submitterDepartment = req.user.department || submitterDatahubRow?.department || submitterUserRow?.department || null;
 
   const ticketCode = await generateTicketCode();
   const shareCode = crypto.randomBytes(12).toString("base64url");
@@ -2096,7 +2113,7 @@ app.get("/api/attachments/:id/download", auth, async (req, res) => {
   const permission = await getTicketPermission(ticketId, viewer || req.user);
   if (!permission) return res.status(403).json({ message: "无权访问此附件" });
 
-  const filePath = path.join(__dirname, attachment.file_path);
+  const filePath = path.join(uploadDir, path.basename(attachment.file_path));
   if (!fs.existsSync(filePath)) return res.status(404).json({ message: "文件不存在" });
 
   res.setHeader('Content-Type', attachment.file_type);
@@ -2636,7 +2653,7 @@ app.post("/api/admin/local-accounts", auth, superAdminOnly, async (req, res) => 
   }
 
   // 检查 person_id 是否存在
-  const person = await get("SELECT id, union_id FROM datahub_basic_persons WHERE id = ?", [person_id]);
+  const person = await get("SELECT id, union_id, name FROM datahub_basic_persons WHERE id = ?", [person_id]);
   if (!person) {
     return res.status(404).json({ message: "人员不存在" });
   }
@@ -2650,10 +2667,11 @@ app.post("/api/admin/local-accounts", auth, superAdminOnly, async (req, res) => 
   // 密码哈希
   const passwordHash = await bcrypt.hash(password, 10);
   const enabledValue = is_active !== undefined ? (is_active ? 1 : 0) : 1;
+  const displayName = person.name || username;
 
   const result = await run(
-    "INSERT INTO users (username, password_hash, union_id, is_active) VALUES (?, ?, ?, ?)",
-    [username, passwordHash, person.union_id, enabledValue]
+    "INSERT INTO users (username, password, password_hash, name, union_id, is_active) VALUES (?, ?, ?, ?, ?, ?)",
+    [username, passwordHash, passwordHash, displayName, person.union_id, enabledValue]
   );
 
   res.status(201).json({ ok: true, id: result.insertId });

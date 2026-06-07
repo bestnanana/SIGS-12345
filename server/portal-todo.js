@@ -1,11 +1,4 @@
 const PORTAL_TODO_URL = 'https://api-test.sigs.tsinghua.edu.cn:6690/v1/sync/portal_todo_list';
-const PORTAL_TODO_HEADERS = {
-  'Authorization-Type': 'Apikey',
-  'Authorization': process.env.PORTAL_TODO_API_KEY || 'xppae4Tcr7YFI1h2UG4rHQ5ooX0dzuzs',
-  'ServiceId': process.env.PORTAL_TODO_SERVICE_ID || 'QX1oRe',
-  'Accept': 'application/vnd.api+json',
-  'Content-Type': 'application/json'
-};
 const PORTAL_TODO_KIND_ID = 'jsjb';
 const PORTAL_TODO_PREFIX = '028d0a7edb_';
 const PORTAL_PERSON_PREFIX = 'syncperson_';
@@ -35,6 +28,19 @@ function getDb() {
   return dbModule;
 }
 
+function portalTodoHeaders() {
+  const apiKey = process.env.PORTAL_TODO_API_KEY;
+  const serviceId = process.env.PORTAL_TODO_SERVICE_ID;
+  if (!apiKey || !serviceId) return null;
+  return {
+    'Authorization-Type': 'Apikey',
+    'Authorization': apiKey,
+    'ServiceId': serviceId,
+    'Accept': 'application/vnd.api+json',
+    'Content-Type': 'application/json'
+  };
+}
+
 // 检查人员是否在白名单中（通过 person_id 查询 union_id）
 async function getPersonUnionId(personId) {
   try {
@@ -44,12 +50,6 @@ async function getPersonUnionId(personId) {
   } catch {
     return null;
   }
-}
-
-async function isPersonAllowed(personId) {
-  const unionId = await getPersonUnionId(personId);
-  if (!unionId) return false;
-  return PORTAL_TODO_WHITELIST.has(unionId);
 }
 
 function buildSiteUrl(path) {
@@ -87,6 +87,11 @@ function getTodoSiteUrl(ticketId, role) {
 }
 
 async function pushPortalTodo({ id, name, url, status = 'pending', startDate, principalPersonId }) {
+  const headers = portalTodoHeaders();
+  if (!headers) {
+    return null;
+  }
+
   // 黑名单检查：黑名单中的人员不接收统一待办
   if (!principalPersonId) {
     return null; // 没有 personId，跳过
@@ -124,7 +129,7 @@ async function pushPortalTodo({ id, name, url, status = 'pending', startDate, pr
   try {
     const res = await fetch(PORTAL_TODO_URL, {
       method: 'PUT',
-      headers: PORTAL_TODO_HEADERS,
+      headers,
       body: JSON.stringify(body),
       signal: controller.signal
     });

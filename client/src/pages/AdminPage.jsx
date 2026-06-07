@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
-import { api, getToken, uploadConfig } from "../api";
+import { api } from "../api";
 import { displayFieldName, formatTime, ticketRouteId } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
 import PermissionManager from "../components/PermissionManager";
@@ -31,9 +31,7 @@ function freshParams(params = {}) {
 }
 
 function attachmentDownloadUrl(id) {
-  const token = getToken();
-  const query = token ? `?token=${encodeURIComponent(token)}` : "";
-  return `/api/attachments/${id}/download${query}`;
+  return `/api/attachments/${id}/download`;
 }
 
 export default function AdminPage() {

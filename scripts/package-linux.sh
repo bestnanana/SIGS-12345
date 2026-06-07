@@ -26,7 +26,9 @@ mkdir -p "$DEPLOY_DIR"
 echo -e "${YELLOW}2. 构建前端...${NC}"
 npm run build 2>/dev/null || {
   echo "前端构建失败，使用已有的构建产物..."
-  if [ -d "dist" ]; then
+  if [ -d "client/dist" ]; then
+    cp -r client/dist "$DEPLOY_DIR/dist"
+  elif [ -d "dist" ]; then
     cp -r dist "$DEPLOY_DIR/"
   fi
 }
@@ -35,13 +37,14 @@ echo -e "${YELLOW}3. 复制必要文件...${NC}"
 
 # 复制服务器端代码
 cp -r server "$DEPLOY_DIR/"
+rm -rf "$DEPLOY_DIR/server/data" "$DEPLOY_DIR/server/logs" "$DEPLOY_DIR/server/uploads"
 mkdir -p "$DEPLOY_DIR/server/uploads"
 
 # 复制前端构建产物
-if [ -d "dist" ]; then
-  cp -r dist "$DEPLOY_DIR/"
-elif [ -d "client/dist" ]; then
+if [ -d "client/dist" ]; then
   cp -r client/dist "$DEPLOY_DIR/dist"
+elif [ -d "dist" ]; then
+  cp -r dist "$DEPLOY_DIR/"
 fi
 
 # 复制脚本
@@ -86,13 +89,15 @@ SSO_STATE_SECRET=please-change-me
 
 # Datahub 配置
 DATAHUB_BASIC_PERSON_URL=https://api.sigs.tsinghua.edu.cn/v1/basic/api_basic_person
-DATAHUB_API_KEY=5f2ezUP3dUWkgYiCLuqWGQ4p88ELwCMW
+DATAHUB_API_KEY=your-datahub-api-key
 DATAHUB_SERVICE_ID=jsjb
 DB_HOST=219.223.170.14
 DB_PORT=3306
 DB_USER=response_test
-DB_PASSWORD=Uxhq03H??P]axvWFx_}3
+DB_PASSWORD=your-db-password
 DB_NAME=response_test
+PORTAL_TODO_API_KEY=your-portal-todo-api-key
+PORTAL_TODO_SERVICE_ID=QX1oRe
 EOF
 
 # 创建启动脚本
