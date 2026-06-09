@@ -24,6 +24,7 @@ const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
 const { pushPortalTodo, completePortalTodo, buildTodoId, buildSiteUrl } = require("./portal-todo");
 const logger = require("./logger");
+const { contentDispositionFilename, normalizeOriginalFilename } = require("./filename-utils");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -768,7 +769,7 @@ async function getTicketPermission(ticketId, viewer) {
   const resolvedTicketId = await resolveTicketId(ticketId);
   if (!resolvedTicketId) return null;
   const ticket = await get(
-    'SELECT id, original_department, current_department, department, submitter_id FROM tickets WHERE id = ?',
+    'SELECT id, original_department, current_department, department, submitter_id, is_published FROM tickets WHERE id = ?',
     [resolvedTicketId]
   );
   if (!ticket) return null;
@@ -816,6 +817,7 @@ async function getTicketPermission(ticketId, viewer) {
 
   // 提交者本人可查看（管理员已检查过部门权限，此处为兜底）
   if (String(ticket.submitter_id) === String(viewer.id)) return 'view';
+  if (Number(ticket.is_published) === 1) return 'view';
 
   return null;
 }
@@ -955,6 +957,14 @@ function mapTicket(row) {
   };
 }
 
+function mapAttachment(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    original_name: normalizeOriginalFilename(row.original_name)
+  };
+}
+
 function ticketPublicId(ticket) {
   return ticket?.ticket_code || ticket?.id;
 }
@@ -1000,7 +1010,7 @@ async function saveFiles(files, ticketId = null, replyId = null) {
     await run(
       `INSERT INTO attachments (ticket_id, reply_id, filename, original_name, file_path, file_size, file_type)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [ticketId, replyId, file.filename, file.originalname, `/uploads/${file.filename}`, file.size, file.mimetype]
+      [ticketId, replyId, file.filename, normalizeOriginalFilename(file.originalname), `/uploads/${file.filename}`, file.size, file.mimetype]
     );
   }
 }
@@ -1090,18 +1100,21 @@ async function ticketDetails(id, viewer) {
   );
   if (!ticket) return null;
   const isSubmitter = String(ticket.submitter_id) === String(viewer.id);
-  if (!isAdminLike(viewer) && !isSubmitter) return null;
+  const canViewPublished = Number(ticket.is_published) === 1;
+  if (!isAdminLike(viewer) && !isSubmitter && !canViewPublished) return null;
 
   // 权限判断：当前承办部门可处理，原始/历史经手部门仅查看，其余无权限
   let permission = 'view';
-  if (isAdminLike(viewer) && viewer.role !== "super_admin" && !isSubmitter) {
+  if (canViewPublished && !isAdminLike(viewer) && !isSubmitter) {
+    permission = "view";
+  } else if (isAdminLike(viewer) && viewer.role !== "super_admin" && !isSubmitter) {
     permission = await getTicketPermission(ticketId, viewer);
     if (!permission) return null;
   } else if (isAdminLike(viewer)) {
     permission = 'handle';
   }
 
-  if (isAdminLike(viewer) && ticket.is_anonymous) {
+  if ((isAdminLike(viewer) || (canViewPublished && !isSubmitter)) && ticket.is_anonymous) {
     ticket.submitter_name = "匿名";
     ticket.submitter_phone = "";
   }
@@ -1183,8 +1196,8 @@ async function ticketDetails(id, viewer) {
   return {
     ticket: mapTicket(ticket),
     replies,
-    attachments,
-    replyAttachments,
+    attachments: attachments.map(mapAttachment),
+    replyAttachments: replyAttachments.map(mapAttachment),
     followups,
     transfers,
     currentHandler: publicHandler(currentHandler),
@@ -2117,7 +2130,7 @@ app.get("/api/attachments/:id/download", auth, async (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).json({ message: "文件不存在" });
 
   res.setHeader('Content-Type', attachment.file_type);
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(attachment.original_name)}"`);
+  res.setHeader('Content-Disposition', contentDispositionFilename(attachment.original_name));
   res.sendFile(filePath);
 });
 
@@ -2835,7 +2848,7 @@ app.get("/api/public/ticket/:shareCode", async (req, res) => {
     [ticket.id]
   );
 
-  res.json({ ticket: mapTicket(ticket), replies, attachments, transfers });
+  res.json({ ticket: mapTicket(ticket), replies, attachments: attachments.map(mapAttachment), transfers });
 });
 
 app.get("/:locale/local/login", (req, res) => {

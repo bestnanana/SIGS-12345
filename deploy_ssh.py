@@ -5,26 +5,46 @@ It must not create, read, or depend on any local SQLite/sql.js database file.
 """
 
 import paramiko
+import os
+import sys
 
 
-REMOTE_HOST = "219.223.170.20"
-REMOTE_USER = "cy"
-REMOTE_PASSWORD = "c@Xx503y"
-REMOTE_APP_DIR = "/home/cy/campus-12345/current"
+REMOTE_HOST = os.getenv("DEPLOY_HOST", "219.223.170.20")
+REMOTE_USER = os.getenv("DEPLOY_USER", "cy")
+REMOTE_APP_DIR = os.getenv("REMOTE_APP_DIR", "/home/cy/campus-12345/current")
+
+
+def require_env(name):
+    value = os.getenv(name)
+    if not value:
+        print(f"Missing required environment variable: {name}", file=sys.stderr)
+        sys.exit(1)
+    return value
 
 
 def check_remote_mysql():
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(REMOTE_HOST, username=REMOTE_USER, password=REMOTE_PASSWORD, timeout=10)
+    password = require_env("DEPLOY_PASSWORD")
+    client.connect(REMOTE_HOST, username=REMOTE_USER, password=password, timeout=10)
 
-    script = r"""const mysql = require('mysql2/promise');
+    script = r"""const path = require('path');
+const mysql = require('mysql2/promise');
+require('dotenv').config({ path: path.join(process.cwd(), '.env') });
+
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
+}
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '219.223.170.14',
   port: Number(process.env.DB_PORT || 3306),
   user: process.env.DB_USER || 'response_test',
-  password: process.env.DB_PASSWORD || 'Uxhq03H??P]axvWFx_}3',
+  password: requireEnv('DB_PASSWORD'),
   database: process.env.DB_NAME || 'response_test',
   waitForConnections: true,
   connectionLimit: 2,

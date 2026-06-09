@@ -98,6 +98,7 @@ DB_PASSWORD=your-db-password
 DB_NAME=response_test
 PORTAL_TODO_API_KEY=your-portal-todo-api-key
 PORTAL_TODO_SERVICE_ID=QX1oRe
+VITE_INTERNATIONAL_DEPARTMENT_NAME=
 EOF
 
 # 创建启动脚本

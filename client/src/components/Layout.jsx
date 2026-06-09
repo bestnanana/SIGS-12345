@@ -153,7 +153,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
             <LogoMark />
           </button>
 
-          <nav className="hidden flex-1 items-center justify-center gap-1 lg:flex">
+          <nav className="ml-8 hidden flex-1 items-center justify-start gap-1 lg:flex">
             {navItems.map((item) => {
               const active = isCurrent(item);
               return (

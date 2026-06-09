@@ -5,9 +5,15 @@ import { useLanguage } from "../i18n";
 
 const departmentTypes = ["职能处室", "教学科研机构"];
 const departmentTypeLabels = {
-  "职能处室": "Administrative Offices",
+  "职能处室": "Administrative Offices and Support Units",
   "教学科研机构": "Teaching and Research Units"
 };
+
+function displayDepartmentType(type, language) {
+  if (language === "en") return departmentTypeLabels[type] || type;
+  if (type === "职能处室") return "党政职能部门和支撑服务机构";
+  return type;
+}
 
 export default function FormConfigManager({ view } = {}) {
   const { t, language } = useLanguage();
@@ -248,7 +254,7 @@ export default function FormConfigManager({ view } = {}) {
                 onChange={(e) => setDeptDraft((d) => ({ ...d, type: e.target.value }))}
                 className="soft-input h-10 w-36"
               >
-                {departmentTypes.map((type) => <option key={type} value={type}>{language === "en" ? departmentTypeLabels[type] : type}</option>)}
+                {departmentTypes.map((type) => <option key={type} value={type}>{displayDepartmentType(type, language)}</option>)}
               </select>
               <button type="button" onClick={addDept} disabled={savingKey === "dept:new"} className="primary-button h-10 px-4">
                 <Plus size={16} />
@@ -265,7 +271,7 @@ export default function FormConfigManager({ view } = {}) {
                   <input value={item.name} onChange={(e) => updateDept(item.id, { name: e.target.value })} className="soft-input h-10" placeholder={t("admin.chineseName")} />
                   <input value={item.name_en || ""} onChange={(e) => updateDept(item.id, { name_en: e.target.value })} className="soft-input h-10" placeholder={t("admin.englishDisplayName")} />
                   <select value={item.type} onChange={(e) => updateDept(item.id, { type: e.target.value })} className="soft-input h-10">
-                    {departmentTypes.map((type) => <option key={type} value={type}>{language === "en" ? departmentTypeLabels[type] : type}</option>)}
+                    {departmentTypes.map((type) => <option key={type} value={type}>{displayDepartmentType(type, language)}</option>)}
                   </select>
                   <label className="flex h-10 items-center gap-2 text-sm text-ai-body">
                     <input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateDept(item.id, { is_active: e.target.checked })} className="h-4 w-4 accent-ai-primary" />

@@ -6,7 +6,7 @@ What it does:
 1. Builds the frontend locally with `npm run build`.
 2. Archives local `client/dist`.
 3. Uploads the archive to the remote server via SFTP.
-4. Backs up and replaces `/opt/sigs-0531/client/dist` on the server.
+4. Backs up and replaces `~/campus-12345/current/client/dist` on the server.
 
 The remote server does not need internet access. It only needs `tar` and SSH.
 """
@@ -31,8 +31,7 @@ except ImportError:
 
 DEFAULT_HOST = "219.223.170.20"
 DEFAULT_USER = "cy"
-DEFAULT_PASSWORD = "c@Xx503y"
-DEFAULT_REMOTE_DIR = "/opt/sigs-0531"
+DEFAULT_REMOTE_DIR = "/home/cy/campus-12345/current"
 DEFAULT_PM2_NAME = "campus-12345"
 
 
@@ -106,6 +105,8 @@ def deploy(args):
             password=args.password,
             port=args.port,
             timeout=20,
+            allow_agent=not args.password,
+            look_for_keys=not args.password,
         )
 
         ssh_exec(client, f"mkdir -p {shlex.quote(remote_client_dir)}")
@@ -146,7 +147,7 @@ def parse_args():
     parser.add_argument("--host", default=os.getenv("DEPLOY_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.getenv("DEPLOY_PORT", "22")))
     parser.add_argument("--user", default=os.getenv("DEPLOY_USER", DEFAULT_USER))
-    parser.add_argument("--password", default=os.getenv("DEPLOY_PASSWORD", DEFAULT_PASSWORD))
+    parser.add_argument("--password", default=os.getenv("DEPLOY_PASSWORD"), help="SSH password. Prefer DEPLOY_PASSWORD.")
     parser.add_argument("--remote-dir", default=os.getenv("DEPLOY_REMOTE_DIR", DEFAULT_REMOTE_DIR))
     parser.add_argument("--pm2-name", default=os.getenv("DEPLOY_PM2_NAME", DEFAULT_PM2_NAME))
     parser.add_argument("--skip-build", action="store_true", help="Use existing client/dist instead of running npm run build.")

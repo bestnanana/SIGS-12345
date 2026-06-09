@@ -5,8 +5,10 @@ import { defaultFields } from "../constants";
 import { useLocaleNavigate, useLanguage } from "../i18n";
 
 const acceptTypes = ".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4";
+const UNKNOWN_DEPARTMENT_VALUE = "__UNKNOWN_DEPARTMENT__";
+const INTERNATIONAL_FIELD = "For international students & scholars";
 const departmentTypeLabels = {
-  "职能处室": "Administrative Offices",
+  "职能处室": "Administrative Offices and Support Units",
   "教学科研机构": "Teaching and Research Units"
 };
 
@@ -23,7 +25,7 @@ const pageCopy = {
     anonymousNote: "匿名提交后，管理端不展示你的姓名和联系方式。",
     processingTitle: "预计处理时间",
     processingLabel: "常规办理周期：",
-    processingDays: "2-3 个工作日",
+    processingDays: "5 个工作日",
     noticeItems: [
       "为进一步畅通师生员工建言献策渠道，及时回应意见建议，促进师生员工更好地参与学校建设发展，建立本平台。",
       "If you are an international student or scholar, please select the \"For international students & scholars\" option and submit your suggestions.",
@@ -45,7 +47,7 @@ const pageCopy = {
     anonymousNote: "After anonymous submission, your name and contact details are hidden from administrators.",
     processingTitle: "Processing Time",
     processingLabel: "Typical resolution:",
-    processingDays: "2-3 Business Days",
+    processingDays: "5 Business Days",
     noticeItems: [
       "为进一步畅通师生员工建言献策渠道，及时回应意见建议，促进师生员工更好地参与学校建设发展，建立本平台。",
       "If you are an international student or scholar, please select the \"For international students & scholars\" option and submit your suggestions.",
@@ -65,6 +67,7 @@ export default function TicketFormPage({ user }) {
   const { t, language } = useLanguage();
   const copy = pageCopy[language] || pageCopy.zh;
   const navigate = useLocaleNavigate();
+  const internationalDepartmentName = (import.meta.env.VITE_INTERNATIONAL_DEPARTMENT_NAME || "").trim();
   const [noticeOpen, setNoticeOpen] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -79,6 +82,7 @@ export default function TicketFormPage({ user }) {
     phone: user.phone || "",
     is_anonymous: false
   });
+  const canLockInternationalDepartment = form.field === INTERNATIONAL_FIELD && Boolean(internationalDepartmentName);
 
   function displayName(item, nameKey = "label", enKey = "label_en") {
     if (!item) return "";
@@ -87,7 +91,9 @@ export default function TicketFormPage({ user }) {
   }
 
   function displayDepartmentType(type) {
-    return language === "en" ? (departmentTypeLabels[type] || type) : type;
+    if (language === "en") return departmentTypeLabels[type] || type;
+    if (type === "职能处室") return "党政职能部门和支撑服务机构";
+    return type;
   }
 
   useEffect(() => {
@@ -147,6 +153,15 @@ export default function TicketFormPage({ user }) {
     } catch (e) { /* ignore corrupt drafts */ }
   }, []);
 
+  useEffect(() => {
+    if (!canLockInternationalDepartment) return;
+    setForm((current) => (
+      current.department === internationalDepartmentName
+        ? current
+        : { ...current, department: internationalDepartmentName }
+    ));
+  }, [canLockInternationalDepartment, internationalDepartmentName]);
+
   function onFilesChange(e) {
     const picked = Array.from(e.target.files || []);
     const tooLarge = picked.find((file) => file.size > 20 * 1024 * 1024);
@@ -164,7 +179,9 @@ export default function TicketFormPage({ user }) {
     setError("");
     try {
       const data = new FormData();
-      Object.entries(form).forEach(([key, value]) => data.append(key, String(value)));
+      Object.entries(form).forEach(([key, value]) => {
+        data.append(key, key === "department" && value === UNKNOWN_DEPARTMENT_VALUE ? "" : String(value));
+      });
       files.forEach((file) => data.append("attachments", file));
       const res = await api.post("/tickets", data, uploadConfig);
       navigate(`/tickets/${res.data.ticket_code || res.data.id}`);
@@ -182,16 +199,14 @@ export default function TicketFormPage({ user }) {
 
   return (
     <form onSubmit={submit} className="space-y-6">
-      <div className="relative overflow-hidden rounded-[28px] border border-ai-border bg-[#fbf5fa] px-5 py-6 shadow-sm sm:px-8">
+      <div className="relative overflow-hidden rounded-[28px] border border-ai-border bg-[#fbf5fa] px-5 py-5 shadow-sm sm:px-8">
         <div className="pointer-events-none absolute right-[-80px] top-[-120px] h-72 w-72 rounded-full bg-ai-primary/10 blur-3xl" />
         <button type="button" onClick={() => navigate(-1)} className="relative z-10 mb-4 inline-flex items-center gap-2 text-sm font-semibold text-ai-primary hover:brightness-110">
           <RotateCcw size={16} />
           {t("action.back")}
         </button>
         <div className="relative z-10">
-          <div className="ai-chip mb-4">{t("form.badge")}</div>
-          <h1 className="text-[34px] font-black tracking-tight text-ai-title sm:text-[44px]">{t("form.title")}</h1>
-          <section className="mt-6 rounded-2xl border border-ai-border bg-white/75 px-4 py-4 shadow-sm backdrop-blur">
+          <section className="rounded-2xl border border-ai-border bg-white/75 px-4 py-4 shadow-sm backdrop-blur">
             <button
               type="button"
               onClick={() => setNoticeOpen(!noticeOpen)}
@@ -228,7 +243,14 @@ export default function TicketFormPage({ user }) {
                 <div className="mb-2 text-sm font-semibold text-ai-title">{t("common.field")}</div>
                 <select
                   value={form.field}
-                  onChange={(e) => setForm({ ...form, field: e.target.value })}
+                  onChange={(e) => {
+                    const nextField = e.target.value;
+                    setForm({
+                      ...form,
+                      field: nextField,
+                      department: nextField === INTERNATIONAL_FIELD && internationalDepartmentName ? internationalDepartmentName : form.department
+                    });
+                  }}
                   className={`soft-input h-14 w-full text-base ${!form.field ? "text-ai-muted" : ""}`}
                   required
                 >
@@ -246,8 +268,11 @@ export default function TicketFormPage({ user }) {
                   onChange={(e) => setForm({ ...form, department: e.target.value })}
                   className={`soft-input h-14 w-full text-base ${!form.department ? "text-ai-muted" : ""}`}
                   required
+                  disabled={canLockInternationalDepartment}
                 >
-                  <option value="" disabled>{t("form.unknownDept")}</option>
+                  {canLockInternationalDepartment ? (
+                    <option value={internationalDepartmentName}>{internationalDepartmentName}</option>
+                  ) : null}
                   {Object.entries(departmentOptions).map(([type, depts]) => (
                     <optgroup key={type} label={displayDepartmentType(type)}>
                       {depts.map((d) => (
@@ -255,6 +280,9 @@ export default function TicketFormPage({ user }) {
                       ))}
                     </optgroup>
                   ))}
+                  <optgroup label={language === "en" ? "Not sure" : "暂不确定"}>
+                    <option value={UNKNOWN_DEPARTMENT_VALUE}>{t("form.unknownDept")}</option>
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -296,7 +324,7 @@ export default function TicketFormPage({ user }) {
                       <FileImage size={20} />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-semibold text-ai-title">{file.name}</span>
+                      <span className="block truncate font-semibold text-ai-primary">{file.name}</span>
                       <span className="block text-xs text-ai-muted">{(file.size / 1024 / 1024).toFixed(2)}M</span>
                     </span>
                     <button type="button" onClick={() => setFiles(files.filter((item) => item !== file))} className="rounded-full p-1 text-ai-muted hover:bg-white hover:text-ai-title">

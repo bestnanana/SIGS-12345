@@ -6,6 +6,8 @@ client/dist/
 .env
 *.log
 npm-debug.log*
+__pycache__/
+*.pyc
 .DS_Store
 Thumbs.db
 data.db

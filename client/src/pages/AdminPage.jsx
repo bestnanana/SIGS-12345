@@ -245,15 +245,6 @@ export default function AdminPage() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (detail) {
-      console.log("[DEBUG] detail.permission:", detail?.permission);
-      console.log("[DEBUG] user.role:", user?.role);
-      console.log("[DEBUG] selected?.permission:", selected?.permission);
-      console.log("[DEBUG] canHandleSelected:", canHandleSelected);
-    }
-  }, [detail, user, selected, canHandleSelected]);
-
-  useEffect(() => {
     if (activeView === "analytics") {
       loadAnalytics();
     }
@@ -269,6 +260,7 @@ export default function AdminPage() {
     setShowTicketModal(true);
     setTransferDept("");
     setTransferNote("");
+    navigate(`/admin/tickets/${ticketRouteId(ticket)}`);
   }
 
   function closeTicketModal() {
@@ -278,9 +270,7 @@ export default function AdminPage() {
     setReply({ content: "", status: "completed" });
     setError("");
     setReplySuccess("");
-    if (routeTicketId) {
-      navigate("/admin");
-    }
+    navigate("/admin");
   }
 
   async function handleTransfer(e) {
@@ -310,7 +300,6 @@ export default function AdminPage() {
   async function submitReply(e) {
     e.preventDefault();
     if (!selectedId || !canHandleSelected) {
-      console.warn("[submitReply] blocked:", { selectedId, canHandleSelected });
       return;
     }
     setSubmitting(true);
@@ -323,9 +312,7 @@ export default function AdminPage() {
       if (files.length > 0) {
         for (const f of files) data.append("attachments", f);
       }
-      console.log("[submitReply] posting to", `/admin/tickets/${selectedId}/replies`, { content: reply.content, status: reply.status });
-      const res = await api.post(`/admin/tickets/${selectedId}/replies`, data, { headers: { "Content-Type": "multipart/form-data" } });
-      console.log("[submitReply] success:", res.data);
+      await api.post(`/admin/tickets/${selectedId}/replies`, data, { headers: { "Content-Type": "multipart/form-data" } });
       setReply({ ...reply, content: "" });
       setFiles([]);
       setReplySuccess(t("admin.replySubmitted"));
@@ -334,7 +321,6 @@ export default function AdminPage() {
         loadTickets(adminPage)
       ]);
     } catch (err) {
-      console.error("[submitReply] error:", err);
       setError(localizedError(err, "admin.replyFailed"));
     } finally {
       setSubmitting(false);
@@ -404,6 +390,7 @@ export default function AdminPage() {
 
   return (
     <>
+    {!showTicketModal ? (
     <div className={`grid min-w-0 gap-4 ${sidebarWidthClass}`}>
       <aside className="app-card sticky top-[88px] h-[calc(100vh-104px)] overflow-hidden p-3">
         <div className={`flex items-start justify-between gap-2 border-b border-ai-border pb-3 ${sidebarCollapsed ? "px-0" : "px-2"}`}>
@@ -635,11 +622,18 @@ export default function AdminPage() {
                         <div className="flex items-start gap-3">
                           <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${status.dotClassName || "bg-current"}`} />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
-                              <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${status.badgeClassName || status.className}`}>
-                                {status.label}
-                              </span>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1 truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
+                              <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                                {ticket.is_published ? (
+                                  <span className="rounded-full bg-teal-50 px-2 py-0.5 text-xs font-semibold text-teal-700 ring-1 ring-teal-200">
+                                    {t("typical.tag")}
+                                  </span>
+                                ) : null}
+                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${status.badgeClassName || status.className}`}>
+                                  {status.label}
+                                </span>
+                              </div>
                             </div>
                             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ai-muted">
                               <span>{displayFieldName(ticket.field, language)}</span>
@@ -688,13 +682,12 @@ export default function AdminPage() {
         ) : null}
       </div>
     </div>
+    ) : null}
 
-    {/* Ticket Detail Modal */}
+    {/* Ticket Detail Page */}
     {showTicketModal && selected ? (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-md" onClick={closeTicketModal}>
-        <div className="motion-popover w-full max-w-[900px] max-h-[90vh] overflow-y-auto rounded-[24px] border border-white/80 bg-white shadow-[0_28px_80px_rgba(17,17,17,0.16)]" onClick={e => e.stopPropagation()}>
-          {/* Modal Header */}
-          <div className="mesh-hero sticky top-0 z-10 border-b border-ai-border px-6 py-4">
+        <div className="app-card overflow-hidden p-0">
+          <div className="mesh-hero border-b border-ai-border px-6 py-4">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-semibold leading-6 text-ai-title">{selected.title}</h2>
@@ -705,8 +698,9 @@ export default function AdminPage() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <button onClick={closeTicketModal} className="flex h-9 w-9 items-center justify-center rounded-xl text-ai-muted hover:bg-ai-bg hover:text-ai-title">
-                  <X size={18} />
+                <button onClick={closeTicketModal} className="ghost-button h-9 px-3">
+                  <ChevronLeft size={16} />
+                  {t("action.back")}
                 </button>
               </div>
             </div>
@@ -731,7 +725,7 @@ export default function AdminPage() {
                     {detail.attachments.map(att => (
                       <a key={att.id} href={attachmentDownloadUrl(att.id)} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 rounded-lg border border-ai-border bg-white px-3 py-2 text-xs text-ai-body transition hover:bg-ai-bg">
                         <Paperclip size={12} />
-                        <span className="truncate max-w-[160px]">{att.original_name}</span>
+                        <span className="max-w-[160px] truncate font-semibold text-ai-primary">{att.original_name}</span>
                       </a>
                     ))}
                   </div>
@@ -792,7 +786,8 @@ export default function AdminPage() {
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               {replyAttachments.map(att => (
                                 <a key={att.id} href={attachmentDownloadUrl(att.id)} target="_blank" rel="noreferrer" className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-xs text-emerald-700 ring-1 ring-emerald-200">
-                                  <Paperclip size={10} />{att.original_name}
+                                  <Paperclip size={10} />
+                                  <span className="max-w-[160px] truncate font-semibold text-ai-primary">{att.original_name}</span>
                                 </a>
                               ))}
                             </div>
@@ -839,6 +834,25 @@ export default function AdminPage() {
                       {submitting ? t("admin.submitting") : t("admin.submitReplyResult")}
                     </button>
                   </div>
+                  {files.length > 0 ? (
+                    <div className="mt-3 space-y-2">
+                      {files.map((file) => (
+                        <div key={`${file.name}-${file.size}`} className="flex items-center justify-between gap-3 rounded-xl bg-ai-bg px-3 py-2 text-xs text-ai-body ring-1 ring-ai-border">
+                          <span className="min-w-0 flex-1 truncate">
+                            <span className="font-semibold text-ai-primary">{file.name}</span>
+                            <span className="ml-2 text-ai-muted">{(file.size / 1024 / 1024).toFixed(2)}M</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setFiles((current) => current.filter((item) => item !== file))}
+                            className="rounded-lg px-2 py-1 text-ai-muted hover:bg-white hover:text-ai-title"
+                          >
+                            {t("action.delete")}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   {replySuccess ? (
                     <div className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700 ring-1 ring-emerald-200">{replySuccess}</div>
                   ) : null}
@@ -979,7 +993,8 @@ export default function AdminPage() {
             </aside>
           </div>
         </div>
-      </div>
+    ) : showTicketModal ? (
+      <div className="app-card px-6 py-12 text-center text-sm text-ai-body">{t("common.loading")}</div>
     ) : null}
     </>
   );

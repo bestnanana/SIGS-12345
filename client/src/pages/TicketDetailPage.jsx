@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, CheckCircle2, Clock3, Download, MessageSquare, Paperclip, SendHorizontal, Star } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
-import { formatTime } from "../constants";
+import { formatTime, ticketRouteId } from "../constants";
+import { isFavoriteTicket, setFavoriteTicket } from "../favorites";
 import { useLocaleNavigate, useLanguage, useUserStatusMap, toUserStatusKey } from "../i18n";
 
 function AttachmentList({ items, emptyText }) {
@@ -19,7 +20,7 @@ function AttachmentList({ items, emptyText }) {
         >
           <span className="flex min-w-0 items-center gap-2">
             <Paperclip size={16} className="shrink-0 text-ai-primary" />
-            <span className="truncate">{item.original_name}</span>
+            <span className="truncate font-semibold text-ai-primary">{item.original_name}</span>
           </span>
           <Download size={16} className="shrink-0 text-slate-500" />
         </a>
@@ -47,6 +48,7 @@ export default function TicketDetailPage() {
   const [resolution, setResolution] = useState({ choice: "", content: "" });
   const [resolutionSaving, setResolutionSaving] = useState(false);
   const [resolutionMessage, setResolutionMessage] = useState("");
+  const [favorite, setFavorite] = useState(false);
   const satisfactionRef = useRef(null);
 
   async function load() {
@@ -55,6 +57,7 @@ export default function TicketDetailPage() {
     try {
       const res = await api.get(`/tickets/${id}`);
       setData(res.data);
+      setFavorite(isFavoriteTicket(ticketRouteId(res.data?.ticket) || id));
       if (res.data?.satisfaction) {
         setSurvey({
           score: Number(res.data.satisfaction.score || 5),
@@ -195,6 +198,14 @@ export default function TicketDetailPage() {
   const status = statusMap[toUserStatusKey(ticket.status)] || statusMap.pending;
   const needsResolutionConfirm = isCompleted && replies.length > 0 && !data.satisfaction;
   const resolutionConfirmed = ticket.resolution_status === "resolved" || ticket.resolution_status === "rated";
+  const favoriteId = ticketRouteId(ticket) || id;
+
+  function toggleFavorite() {
+    const next = !favorite;
+    setFavorite(next);
+    setFavoriteTicket(favoriteId, next);
+  }
+
   return (
     <div className="space-y-6">
       <div className="app-card overflow-hidden p-0">
@@ -214,10 +225,22 @@ export default function TicketDetailPage() {
                 <span>{t("common.submittedAt")}：{formatTime(ticket.created_at, dateLocale)}</span>
               </div>
             </div>
-            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${status.badgeClassName || status.className}`}>
-              <span className={`h-2 w-2 rounded-full ${status.dotClassName || "bg-current"}`} />
-              {status.label}
-            </span>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleFavorite}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ring-1 transition duration-200 ${
+                  favorite ? "bg-amber-50 text-amber-700 ring-amber-200" : "bg-white/80 text-ai-body ring-ai-border hover:bg-white"
+                }`}
+              >
+                <Star size={15} fill={favorite ? "currentColor" : "none"} />
+                {favorite ? t("detail.favorited") : t("detail.favorite")}
+              </button>
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ring-1 ${status.badgeClassName || status.className}`}>
+                <span className={`h-2 w-2 rounded-full ${status.dotClassName || "bg-current"}`} />
+                {status.label}
+              </span>
+            </div>
           </div>
         </div>
 
