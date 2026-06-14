@@ -18,7 +18,7 @@ const {
   listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment,
   disableAdminsForInactivePersons,
   getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission,
-  getDepartmentAssignments, isDepartmentAdmin, getTransferTargets
+  getDepartmentAssignments, getDepartmentLeaderAssignments, isDepartmentAdmin, isDepartmentLeader, getTransferTargets
 } = require("./db_mysql");
 const { fetchBasicPersons } = require("./datahub");
 const { syncBasicPersons } = require("./datahub-sync");
@@ -56,6 +56,8 @@ const uploadDir = path.join(__dirname, "uploads");
 const allowedExt = new Set([".txt", ".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg", ".zip", ".avi", ".mp4"]);
 const sessions = new Map();
 const oauthStates = new Map();
+const GLOBAL_ADMIN_ROLES = new Set(["super_admin", "liaison"]);
+const ASSIGNMENT_ADMIN_ROLES = new Set(["admin", "dept_admin"]);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -653,19 +655,22 @@ app.get("/", (req, res, next) => {
 
 function publicUser(user) {
   if (!user) return null;
+  const role = publicRoleForUser(user);
   return {
     id: user.id,
     username: user.union_id || user.username,
     union_id: user.union_id,
     name: user.name,
     phone: user.phone,
-    role: user.role || "user",
+    role,
     role_id: user.role_id,
     department: user.department,
     can_manage_roles: Boolean(user.can_manage_roles),
     // 部门管理员权限信息
     dept_admin_assignments: user.dept_admin_assignments || [],
-    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0)
+    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0),
+    leader_assignments: user.leader_assignments || [],
+    is_department_leader: Boolean(user.leader_assignments && user.leader_assignments.length > 0)
   };
 }
 
@@ -681,13 +686,28 @@ function publicHandler(user) {
 function signUser(user, expiresIn) {
   const payload = {
     id: user.id,
-    role: user.role || "user",
+    role: publicRoleForUser(user),
     department: user.department,
     // 部门管理员权限信息
     dept_admin_assignments: user.dept_admin_assignments || [],
-    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0)
+    is_dept_admin: Boolean(user.dept_admin_assignments && user.dept_admin_assignments.length > 0),
+    leader_assignments: user.leader_assignments || [],
+    is_department_leader: Boolean(user.leader_assignments && user.leader_assignments.length > 0)
   };
   return jwt.sign(payload, jwtSecret, { expiresIn: expiresIn || jwtExpiresIn });
+}
+
+function rawRoleForUser(user) {
+  return user?.role_code || user?.role || "user";
+}
+
+function publicRoleForUser(user) {
+  const role = rawRoleForUser(user);
+  return ASSIGNMENT_ADMIN_ROLES.has(role) ? "user" : role;
+}
+
+function hasGlobalAdminRole(user) {
+  return GLOBAL_ADMIN_ROLES.has(rawRoleForUser(user));
 }
 
 function tokenFromRequest(req) {
@@ -754,9 +774,36 @@ async function auth(req, res, next) {
 
 function isAdminLike(user) {
   if (!user) return false;
-  return ["admin", "super_admin", "liaison"].includes(user.role) ||
+  return hasGlobalAdminRole(user) ||
     (user.dept_admin_assignments && user.dept_admin_assignments.length > 0) ||
     user.is_dept_admin;
+}
+
+function isLeaderLike(user) {
+  if (!user) return false;
+  return (user.leader_assignments && user.leader_assignments.length > 0) ||
+    user.is_department_leader;
+}
+
+async function leaderDepartmentsForViewer(viewer) {
+  const person = await loadPerson(viewer.id);
+  const assignments = person?.leader_assignments?.length
+    ? person.leader_assignments
+    : await getDepartmentLeaderAssignments(String(person?.id || viewer.id));
+  return assignments.map((item) => item.department_name).filter(Boolean);
+}
+
+async function canLeaderViewTicket(ticketId, ticket, viewer) {
+  if (!viewer) return false;
+  const leaderDepartments = await leaderDepartmentsForViewer(viewer);
+  if (leaderDepartments.length === 0) return false;
+  if (leaderDepartments.includes(ticket.current_department || ticket.department)) return true;
+  const placeholders = leaderDepartments.map(() => "?").join(",");
+  const approval = await get(
+    `SELECT 1 FROM ticket_approvals WHERE ticket_id = ? AND department_name IN (${placeholders}) LIMIT 1`,
+    [ticketId, ...leaderDepartments]
+  );
+  return Boolean(approval);
 }
 
 /**
@@ -775,7 +822,7 @@ async function getTicketPermission(ticketId, viewer) {
   if (!ticket) return null;
 
   // 超级管理员可处理
-  if (viewer.role === 'super_admin') return 'handle';
+  if (rawRoleForUser(viewer) === 'super_admin') return 'handle';
 
   // 管理员：优先检查部门权限（管理员可能同时也是提交者）
   if (isAdminLike(viewer)) {
@@ -815,6 +862,8 @@ async function getTicketPermission(ticketId, viewer) {
     }
   }
 
+  if (await canLeaderViewTicket(resolvedTicketId, ticket, viewer)) return 'approve';
+
   // 提交者本人可查看（管理员已检查过部门权限，此处为兜底）
   if (String(ticket.submitter_id) === String(viewer.id)) return 'view';
   if (Number(ticket.is_published) === 1) return 'view';
@@ -834,6 +883,7 @@ async function loadPerson(id) {
 
   if (person) {
     person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+    person.leader_assignments = await getDepartmentLeaderAssignments(person.id);
     return person;
   }
 
@@ -858,6 +908,7 @@ async function loadPerson(id) {
     );
     if (person) {
       person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+      person.leader_assignments = await getDepartmentLeaderAssignments(person.id);
       return person;
     }
   }
@@ -882,6 +933,7 @@ async function loadOrCreateSsoPerson(ssoUser) {
     const person = await get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
     // 查询部门管理员权限
     person.dept_admin_assignments = await getDepartmentAssignments(person.id);
+    person.leader_assignments = await getDepartmentLeaderAssignments(person.id);
     return person;
   }
 
@@ -897,14 +949,15 @@ async function loadOrCreateSsoPerson(ssoUser) {
   const person = await get("SELECT * FROM datahub_basic_persons WHERE union_id = ?", [ssoUser.uid]);
   // 新用户默认无部门管理员权限
   person.dept_admin_assignments = [];
+  person.leader_assignments = [];
   return person;
 }
 
 async function adminOnly(req, res, next) {
   try {
     const user = await loadPerson(req.user.id);
-    if (["admin", "super_admin", "liaison"].includes(user?.role)) {
-      req.user.role = user.role;
+    if (hasGlobalAdminRole(user)) {
+      req.user.role = publicRoleForUser(user);
       req.user.department = user.department;
       return next();
     }
@@ -912,7 +965,7 @@ async function adminOnly(req, res, next) {
     const personId = user?.id || req.user.id;
     const assignments = await getDepartmentAssignments(String(personId));
     if (assignments.length > 0) {
-      req.user.role = user?.role || 'admin';
+      req.user.role = publicRoleForUser(user || req.user);
       req.user.department = user?.department || req.user.department;
       req.user.dept_admin_role = assignments.some(a => a.role_type === 'observer') ? 'observer' : 'admin';
       return next();
@@ -926,10 +979,10 @@ async function adminOnly(req, res, next) {
 async function superAdminOnly(req, res, next) {
   try {
     const user = await loadPerson(req.user.id);
-    if (user?.role !== 'super_admin') {
+    if (rawRoleForUser(user) !== 'super_admin') {
       return res.status(403).json({ message: '需要超级管理员权限' });
     }
-    req.user.role = user.role;
+    req.user.role = publicRoleForUser(user);
     req.user.department = user.department;
     next();
   } catch (error) {
@@ -940,7 +993,7 @@ async function superAdminOnly(req, res, next) {
 async function canManageRoles(req, res, next) {
   try {
     const user = await loadPerson(req.user.id);
-    if (user?.role !== "super_admin" && !user?.can_manage_roles) {
+    if (rawRoleForUser(user) !== "super_admin" && !user?.can_manage_roles) {
       return res.status(403).json({ message: "需要角色管理权限" });
     }
     next();
@@ -1062,8 +1115,9 @@ async function notifyCurrentDepartmentAdmins(ticket, message, notificationType =
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE (p.role_id IN (2, 3) AND p.department = ?)
-        OR (da.id IS NOT NULL AND da.department_name = ?)`,
+     LEFT JOIN roles r ON r.id = p.role_id
+     WHERE (da.id IS NOT NULL AND da.department_name = ?)
+        OR ((r.code = 'liaison' OR p.role = 'liaison') AND p.department = ?)`,
     [department, department]
   );
   for (const admin of admins) {
@@ -1085,7 +1139,89 @@ async function notifyCurrentDepartmentAdmins(ticket, message, notificationType =
   }
 }
 
-async function ticketDetails(id, viewer) {
+async function listTicketApprovals(ticketId) {
+  return all(
+    `SELECT ta.*,
+            COALESCE(req.name, req_user.name) AS requested_by_name,
+            COALESCE(app.name, app_user.name) AS approver_name
+     FROM ticket_approvals ta
+     LEFT JOIN datahub_basic_persons req ON req.id = ta.requested_by
+     LEFT JOIN users req_user ON req_user.id = ta.requested_by
+     LEFT JOIN datahub_basic_persons app ON app.id = ta.approver_id
+     LEFT JOIN users app_user ON app_user.id = ta.approver_id
+     WHERE ta.ticket_id = ?
+     ORDER BY ta.requested_at ASC, ta.id ASC`,
+    [ticketId]
+  );
+}
+
+async function hasPendingApprovalForTicket(ticketId) {
+  const row = await get(
+    "SELECT id FROM ticket_approvals WHERE ticket_id = ? AND status = 'pending' ORDER BY requested_at DESC LIMIT 1",
+    [ticketId]
+  );
+  return Boolean(row);
+}
+
+function approvalStatusFromRows(rows = []) {
+  const pending = rows.find((item) => item.status === "pending");
+  if (pending) return "pending";
+  const latest = rows.length ? rows[rows.length - 1] : null;
+  return latest?.status || "none";
+}
+
+async function countEnabledDepartmentLeaders(departmentName) {
+  if (!departmentName) return 0;
+  const row = await get(
+    "SELECT COUNT(*) AS count FROM department_leaders WHERE department_name = ? AND is_enabled = 1",
+    [departmentName]
+  );
+  return Number(row?.count || 0);
+}
+
+async function listEnabledDepartmentLeaders(departmentName) {
+  if (!departmentName) return [];
+  return all(
+    `SELECT DISTINCT dl.id, dl.person_id AS leader_person_id, p.name AS leader_name,
+            p.department AS leader_department, p.union_id AS leader_union_id,
+            COALESCE(u.id, p.id) AS notify_user_id
+     FROM department_leaders dl
+     JOIN datahub_basic_persons p ON p.id = dl.person_id
+     LEFT JOIN users u ON u.union_id = p.union_id
+     WHERE dl.department_name = ? AND dl.is_enabled = 1
+     ORDER BY p.name ASC, p.id ASC`,
+    [departmentName]
+  );
+}
+
+async function notifyApprovalRequester(approval, ticket, decisionLabel) {
+  const requesterId = approval.requested_by;
+  if (!requesterId) return;
+  const notifResult = await run(
+    `INSERT INTO notifications (user_id, ticket_id, type, message)
+     VALUES (?, ?, 'leader_approval_decided', ?)`,
+    [requesterId, ticket.id, `事项【${ticket.title}】的领导审批已${decisionLabel}，请继续处理。`]
+  );
+  const targetUrl = `/cn/admin/tickets/${ticketPublicId(ticket)}?nid=${notifResult.insertId}`;
+  await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+  pushPortalTodo({
+    id: buildTodoId(ticket.id, 'admin', requesterId),
+    name: `【${ticket.title}】-领导审批已${decisionLabel}，请继续处理`,
+    url: buildSiteUrl(`/cn/admin/tickets/${ticketPublicId(ticket)}`),
+    principalPersonId: requesterId
+  }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: ticket.id, type: 'approval_requester', message: err.message }));
+}
+
+async function completeLeaderApprovalTodos(ticketId, departmentName) {
+  const leaders = await listEnabledDepartmentLeaders(departmentName);
+  for (const leader of leaders) {
+    if (!leader.leader_person_id) continue;
+    completePortalTodo(buildTodoId(ticketId, 'leader', leader.leader_person_id), leader.leader_person_id)
+      .catch(err => logger.warn('portal_todo_complete_failed', { ticket_id: ticketId, person_id: leader.leader_person_id, type: 'leader_approval', message: err.message }));
+  }
+}
+
+async function ticketDetails(id, viewer, options = {}) {
   const ticketId = await resolveTicketId(id);
   if (!ticketId) return null;
   const ticket = await get(
@@ -1101,13 +1237,16 @@ async function ticketDetails(id, viewer) {
   if (!ticket) return null;
   const isSubmitter = String(ticket.submitter_id) === String(viewer.id);
   const canViewPublished = Number(ticket.is_published) === 1;
-  if (!isAdminLike(viewer) && !isSubmitter && !canViewPublished) return null;
+  const leaderCanView = await canLeaderViewTicket(ticketId, ticket, viewer);
+  if (!isAdminLike(viewer) && !isSubmitter && !canViewPublished && !leaderCanView) return null;
 
   // 权限判断：当前承办部门可处理，原始/历史经手部门仅查看，其余无权限
   let permission = 'view';
   if (canViewPublished && !isAdminLike(viewer) && !isSubmitter) {
     permission = "view";
-  } else if (isAdminLike(viewer) && viewer.role !== "super_admin" && !isSubmitter) {
+  } else if (leaderCanView && !isAdminLike(viewer) && !isSubmitter) {
+    permission = "approve";
+  } else if (isAdminLike(viewer) && rawRoleForUser(viewer) !== "super_admin" && !isSubmitter) {
     permission = await getTicketPermission(ticketId, viewer);
     if (!permission) return null;
   } else if (isAdminLike(viewer)) {
@@ -1159,15 +1298,16 @@ async function ticketDetails(id, viewer) {
     `SELECT id, name, department FROM (
        SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
        FROM datahub_basic_persons p
-       WHERE p.role_id IN (1, 2, 3) AND p.department = ?
+       JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+       WHERE da.department_name = ?
        UNION
        SELECT CAST(p.id AS CHAR) AS id, p.name, p.department
        FROM datahub_basic_persons p
-       JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-       WHERE da.department_name = ?
+       JOIN roles r ON r.id = p.role_id
+       WHERE (r.code = 'liaison' OR p.role = 'liaison') AND p.department = ?
        UNION ALL
        SELECT CAST(id AS CHAR) AS id, name, department FROM users
-       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = ?
+       WHERE role IN ('super_admin', 'liaison') AND department = ?
      ) AS handlers ORDER BY id ASC LIMIT 1`,
     [deptName, deptName, deptName]
   );
@@ -1179,19 +1319,26 @@ async function ticketDetails(id, viewer) {
      LEFT JOIN datahub_basic_persons dp_op ON dp_op.id = tr.operator_id
      LEFT JOIN users u_op ON u_op.id = tr.operator_id
      LEFT JOIN datahub_basic_persons dp_tgt ON dp_tgt.id = (
-       SELECT id FROM datahub_basic_persons
-       WHERE role_id IN (1, 2, 3) AND department = tr.to_department
-       ORDER BY id ASC LIMIT 1
+       SELECT p.id FROM datahub_basic_persons p
+       JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
+       WHERE da.department_name = tr.to_department
+       ORDER BY p.id ASC LIMIT 1
      )
      LEFT JOIN users u_tgt ON u_tgt.id = (
        SELECT id FROM users
-       WHERE role IN ('admin', 'super_admin', 'liaison') AND department = tr.to_department
+       WHERE role IN ('super_admin', 'liaison') AND department = tr.to_department
        ORDER BY id ASC LIMIT 1
      )
      WHERE tr.ticket_id = ?
      ORDER BY tr.created_at ASC`,
     [ticketId]
   );
+  const includeInternalApprovals = options.includeInternalApprovals === true;
+  const approvals = includeInternalApprovals ? await listTicketApprovals(ticketId) : [];
+  const approval_status = includeInternalApprovals ? approvalStatusFromRows(approvals) : undefined;
+  const department_leader_count = includeInternalApprovals
+    ? await countEnabledDepartmentLeaders(ticket.current_department || ticket.department)
+    : undefined;
 
   return {
     ticket: mapTicket(ticket),
@@ -1202,7 +1349,10 @@ async function ticketDetails(id, viewer) {
     transfers,
     currentHandler: publicHandler(currentHandler),
     satisfaction: satisfaction || null,
-    permission
+    permission,
+    approvals,
+    approval_status,
+    department_leader_count
   };
 }
 
@@ -1261,6 +1411,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
 
     // 查 department_assignments（is_enabled=1）
     const assignments = await getDepartmentAssignments(person.id);
+    const leaderAssignments = await getDepartmentLeaderAssignments(person.id);
 
     // 构建用户对象
     const loginUser = {
@@ -1272,7 +1423,9 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
       role: roleCode,
       role_id: person.role_id,
       dept_admin_assignments: assignments,
-      is_dept_admin: assignments.length > 0
+      is_dept_admin: assignments.length > 0,
+      leader_assignments: leaderAssignments,
+      is_department_leader: leaderAssignments.length > 0
     };
 
     logger.info("auth_login_success", {
@@ -1437,10 +1590,12 @@ app.get("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", auth, async (req, res) => {
-  if (req.session?.loginUser) {
-    return res.json(req.session.loginUser);
+  const freshUser = await loadPerson(req.user.id);
+  const publicFreshUser = publicUser(freshUser) || req.user;
+  if (req.session?.loginUser && freshUser) {
+    req.session.loginUser = publicFreshUser;
   }
-  res.json(publicUser(await loadPerson(req.user.id)) || req.user);
+  res.json(publicFreshUser);
 });
 
 app.get("/api/departments", auth, async (req, res) => {
@@ -1694,9 +1849,21 @@ try {
 
 app.get("/api/tickets/:id", auth, async (req, res) => {
   const viewer = await loadPerson(req.user.id);
-  const details = await ticketDetails(req.params.id, viewer || req.user);
+  const internalViewer = isAdminLike(viewer) || isLeaderLike(viewer);
+  const details = await ticketDetails(
+    req.params.id,
+    viewer || req.user,
+    internalViewer ? { includeInternalApprovals: true } : { includeInternalApprovals: false }
+  );
   if (!details) return res.status(404).json({ message: "事项不存在" });
-
+  if (!internalViewer) {
+    const publicDetails = { ...details };
+    delete publicDetails.approvals;
+    delete publicDetails.approval_status;
+    delete publicDetails.department_leader_count;
+    res.json(publicDetails);
+    return;
+  }
   res.json(details);
 });
 
@@ -1772,7 +1939,7 @@ app.post("/api/tickets/:id/resolution", auth, async (req, res) => {
 app.get("/api/admin/analytics", auth, adminOnly, async (req, res) => {
   const user = await loadPerson(req.user.id);
   const params = [];
-  const isGlobalAdmin = user?.role === "super_admin";
+  const isGlobalAdmin = rawRoleForUser(user) === "super_admin";
   let scope = "";
 
   if (!isGlobalAdmin) {
@@ -1869,7 +2036,7 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   const pageSize = Math.min(Number.isFinite(requestedPageSize) && requestedPageSize > 0 ? requestedPageSize : 30, 100);
   const page = Math.max(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1, 1);
   const offset = (page - 1) * pageSize;
-  const isGlobalAdmin = user?.role === "super_admin";
+  const isGlobalAdmin = rawRoleForUser(user) === "super_admin";
 
   let scope = "";
   const params = [];
@@ -1933,6 +2100,11 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
             s.score AS satisfaction_score,
             s.comment AS satisfaction_comment,
             s.updated_at AS satisfaction_updated_at,
+            COALESCE(
+              (SELECT ta_pending.status FROM ticket_approvals ta_pending WHERE ta_pending.ticket_id = t.id AND ta_pending.status = 'pending' ORDER BY ta_pending.requested_at DESC LIMIT 1),
+              (SELECT ta_latest.status FROM ticket_approvals ta_latest WHERE ta_latest.ticket_id = t.id ORDER BY ta_latest.requested_at DESC LIMIT 1),
+              'none'
+            ) AS approval_status,
             COUNT(a.id) AS attachment_count,
             ${permissionExpr} AS permission
      FROM tickets t
@@ -1949,6 +2121,150 @@ app.get("/api/admin/tickets", auth, adminOnly, async (req, res) => {
   res.json({ page, pageSize, total: countRow?.count || 0, rows: rows.map(mapTicket) });
 });
 
+app.post("/api/admin/tickets/:id/approval-requests", auth, adminOnly, async (req, res) => {
+  try {
+    const ticketId = await resolveTicketId(req.params.id);
+    if (!ticketId) return res.status(404).json({ message: "事项不存在" });
+    const note = String(req.body?.note || "").trim();
+    if (note.length > 1000) return res.status(400).json({ message: "审批说明不能超过1000字" });
+    const user = await loadPerson(req.user.id);
+    const ticket = await get(
+      "SELECT id, ticket_code, title, status, department, current_department FROM tickets WHERE id = ?",
+      [ticketId]
+    );
+    if (!ticket) return res.status(404).json({ message: "事项不存在" });
+    if (ticket.status === "completed") return res.status(400).json({ message: "已完成事项不能发起领导审批" });
+    const permission = await getTicketPermission(ticketId, user);
+    if (permission !== 'handle') {
+      return res.status(403).json({ message: "只有当前承办部门管理员可以发起领导审批" });
+    }
+    if (await hasPendingApprovalForTicket(ticketId)) {
+      return res.status(409).json({ message: "该事项已有待审批记录，请等待领导审批" });
+    }
+    const departmentName = ticket.current_department || ticket.department;
+    const leaders = await listEnabledDepartmentLeaders(departmentName);
+    if (leaders.length === 0) {
+      return res.status(400).json({ message: `当前部门「${departmentName}」尚未维护部门领导` });
+    }
+    const result = await run(
+      `INSERT INTO ticket_approvals (ticket_id, department_name, requested_by, request_note, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+      [ticketId, departmentName, user.id || req.user.id, note]
+    );
+    await run("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [ticketId]);
+
+    for (const leader of leaders) {
+      const notifResult = await run(
+        `INSERT INTO notifications (user_id, ticket_id, type, message)
+         VALUES (?, ?, 'leader_approval_requested', ?)`,
+        [leader.notify_user_id, ticketId, `事项【${ticket.title}】需要您进行领导审批。`]
+      );
+      const targetUrl = `/cn/admin/tickets/${ticketPublicId(ticket)}?nid=${notifResult.insertId}`;
+      await run("UPDATE notifications SET target_url = ? WHERE id = ?", [targetUrl, notifResult.insertId]);
+      if (leader.leader_person_id) {
+        pushPortalTodo({
+          id: buildTodoId(ticketId, 'leader', leader.leader_person_id),
+          name: `【${ticket.title}】-待领导审批`,
+          url: buildSiteUrl(`/cn/admin/tickets/${ticketPublicId(ticket)}`),
+          principalPersonId: leader.leader_person_id
+        }).catch(err => logger.warn('portal_todo_push_failed', { ticket_id: ticketId, person_id: leader.leader_person_id, type: 'leader_approval', message: err.message }));
+      }
+    }
+
+    const approval = await get("SELECT * FROM ticket_approvals WHERE id = ?", [result.insertId]);
+    res.status(201).json({ ok: true, approval });
+  } catch (err) {
+    logger.error("approval_request_failed", { request_id: req.requestId, ticket_id: req.params.id, error: err });
+    res.status(500).json({ message: "发起领导审批失败: " + err.message });
+  }
+});
+
+app.get("/api/leader/approvals", auth, async (req, res) => {
+  const user = await loadPerson(req.user.id);
+  const leaderDepartments = (user?.leader_assignments || []).map((item) => item.department_name).filter(Boolean);
+  if (leaderDepartments.length === 0) return res.status(403).json({ message: "需要部门领导权限" });
+  const requestedPageSize = Number(req.query.pageSize);
+  const requestedPage = Number(req.query.page);
+  const pageSize = Math.min(Number.isFinite(requestedPageSize) && requestedPageSize > 0 ? requestedPageSize : 30, 100);
+  const page = Math.max(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1, 1);
+  const offset = (page - 1) * pageSize;
+  const status = String(req.query.status || "pending").trim();
+  const clauses = [`ta.department_name IN (${leaderDepartments.map(() => "?").join(",")})`];
+  const params = [...leaderDepartments];
+  if (status === "decided") {
+    clauses.push("ta.status IN ('approved', 'rejected')");
+  } else if (["pending", "approved", "rejected"].includes(status)) {
+    clauses.push("ta.status = ?");
+    params.push(status);
+  }
+  const where = `WHERE ${clauses.join(" AND ")}`;
+  const countRow = await get(`SELECT COUNT(*) AS count FROM ticket_approvals ta ${where}`, params);
+  const rows = await all(
+    `SELECT t.*, ta.id AS approval_id, ta.status AS approval_status,
+            ta.department_name AS approval_department_name,
+            ta.request_note AS approval_request_note,
+            ta.requested_at AS approval_requested_at,
+            ta.decided_at AS approval_decided_at,
+            ta.decision_comment AS approval_decision_comment,
+            COALESCE(req.name, req_user.name) AS approval_requested_by_name,
+            COALESCE(app.name, app_user.name) AS approval_approver_name,
+            CASE WHEN t.is_anonymous = 1 THEN '匿名' ELSE COALESCE(dp.name, u.name) END AS submitter_name,
+            CASE WHEN t.is_anonymous = 1 THEN '' ELSE COALESCE(dp.phone, u.phone) END AS submitter_phone,
+            'approve' AS permission
+     FROM ticket_approvals ta
+     JOIN tickets t ON t.id = ta.ticket_id
+     LEFT JOIN datahub_basic_persons dp ON dp.id = t.submitter_id
+     LEFT JOIN users u ON u.id = t.submitter_id
+     LEFT JOIN datahub_basic_persons req ON req.id = ta.requested_by
+     LEFT JOIN users req_user ON req_user.id = ta.requested_by
+     LEFT JOIN datahub_basic_persons app ON app.id = ta.approver_id
+     LEFT JOIN users app_user ON app_user.id = ta.approver_id
+     ${where}
+     ORDER BY ta.requested_at DESC, ta.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+  res.json({ page, pageSize, total: countRow?.count || 0, rows: rows.map(mapTicket) });
+});
+
+app.post("/api/leader/approvals/:id/decision", auth, async (req, res) => {
+  try {
+    const decision = String(req.body?.decision || "").trim();
+    const comment = String(req.body?.comment || "").trim();
+    if (!["approved", "rejected"].includes(decision)) {
+      return res.status(400).json({ message: "请选择同意或不同意" });
+    }
+    if (!comment) return res.status(400).json({ message: "请填写审批意见" });
+    if (comment.length > 1000) return res.status(400).json({ message: "审批意见不能超过1000字" });
+    const approval = await get("SELECT * FROM ticket_approvals WHERE id = ?", [req.params.id]);
+    if (!approval) return res.status(404).json({ message: "审批记录不存在" });
+    if (approval.status !== "pending") return res.status(409).json({ message: "该审批已处理" });
+    const user = await loadPerson(req.user.id);
+    if (!user || !(await isDepartmentLeader(String(user.id), approval.department_name))) {
+      return res.status(403).json({ message: "只有该部门领导可以审批" });
+    }
+    const ticket = await get("SELECT id, ticket_code, title FROM tickets WHERE id = ?", [approval.ticket_id]);
+    if (!ticket) return res.status(404).json({ message: "事项不存在" });
+    await run(
+      `UPDATE ticket_approvals
+       SET status = ?, approver_id = ?, decision_comment = ?, decided_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [decision, user.id, comment, approval.id]
+    );
+    await run("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [approval.ticket_id]);
+    await completeLeaderApprovalTodos(approval.ticket_id, approval.department_name);
+    await notifyApprovalRequester(
+      { ...approval, status: decision, approver_id: user.id, decision_comment: comment },
+      ticket,
+      decision === "approved" ? "同意" : "不同意"
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error("leader_approval_decision_failed", { request_id: req.requestId, approval_id: req.params.id, error: err });
+    res.status(500).json({ message: "提交审批意见失败: " + err.message });
+  }
+});
+
 app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attachments", 8), async (req, res) => {
   try {
     const ticketId = await resolveTicketId(req.params.id);
@@ -1961,6 +2277,9 @@ app.post("/api/admin/tickets/:id/replies", auth, adminOnly, upload.array("attach
     const permission = await getTicketPermission(ticketId, user);
     if (permission !== 'handle') {
       return res.status(403).json({ message: "您所在的部门当前不是承办部门，无法处理此事项" });
+    }
+    if (await hasPendingApprovalForTicket(ticketId)) {
+      return res.status(409).json({ message: "审批中的事项需等待领导审批完成后再提交处理结果" });
     }
     if (status && !["completed", "pending"].includes(status)) return res.status(400).json({ message: "无效状态" });
     const result = await run(
@@ -2067,8 +2386,9 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
      FROM datahub_basic_persons p
      LEFT JOIN users u ON u.union_id = p.union_id
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE (p.role_id IN (2, 3) AND p.department = ?)
-        OR (da.id IS NOT NULL AND da.department_name = ?)`,
+     LEFT JOIN roles r ON r.id = p.role_id
+     WHERE (da.id IS NOT NULL AND da.department_name = ?)
+        OR ((r.code = 'liaison' OR p.role = 'liaison') AND p.department = ?)`,
     [to_department, to_department]
   );
   for (const admin of admins) {
@@ -2094,8 +2414,9 @@ app.post("/api/admin/tickets/:id/transfer", auth, adminOnly, async (req, res) =>
     `SELECT DISTINCT p.id AS admin_person_id
      FROM datahub_basic_persons p
      LEFT JOIN department_assignments da ON da.person_id = p.id AND da.is_enabled = 1
-     WHERE (p.role_id IN (2, 3) AND p.department = ?)
-        OR (da.id IS NOT NULL AND da.department_name = ?)`,
+     LEFT JOIN roles r ON r.id = p.role_id
+     WHERE (da.id IS NOT NULL AND da.department_name = ?)
+        OR ((r.code = 'liaison' OR p.role = 'liaison') AND p.department = ?)`,
     [fromDept, fromDept]
   );
   for (const admin of oldDeptAdmins) {
@@ -2148,16 +2469,11 @@ app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req,
   const offset = (page - 1) * pageSize;
 
   const like = keyword ? `%${keyword}%` : '%';
-  const notInAuth = "NOT IN (SELECT DISTINCT person_id FROM department_assignments)";
 
-  // 查 datahub_basic_persons，限在职院外人员/教职员
-  let where = `WHERE p.type IN ('院外人员', '教职员', 'faculty') 
-    AND (
-      (p.type = '教职员' AND p.status = 'on_the_job')
-      OR (p.type IN ('院外人员', 'faculty') AND p.status = 'true')
-    )
-    AND p.is_active = 1
-    AND p.id ${notInAuth}`;
+  // 查 datahub_basic_persons：排除学生、离职和明确无效人员
+  let where = `WHERE COALESCE(p.type, '') <> '学生'
+    AND LOWER(TRIM(COALESCE(p.status, ''))) NOT IN ('departure', 'false')
+    AND p.is_active = 1`;
   const params = [];
   if (departmentNames.length > 0) {
     where += ` AND p.department IN (${departmentNames.map(() => "?").join(",")})`;
@@ -2168,27 +2484,169 @@ app.get("/api/admin/department-admins/search", auth, superAdminOnly, async (req,
     params.push(like, like, like);
   }
 
-  const countRow = await get(`SELECT COUNT(*) AS count FROM datahub_basic_persons p ${where}`, params);
+  const countRow = await get(
+    `SELECT COUNT(DISTINCT p.id) AS count
+     FROM datahub_basic_persons p
+     LEFT JOIN department_assignments da ON da.person_id = p.id
+     ${where}`,
+    params
+  );
   const total = Number(countRow?.count || 0);
 
   const rows = await all(
-    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status, p.role_id, r.code as role_code
+    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status, p.role_id, r.code as role_code,
+            MIN(da.id) AS existing_assignment_id,
+            COUNT(da.id) AS assignment_count,
+            MAX(CASE WHEN da.is_enabled = 1 THEN 1 ELSE 0 END) AS assignment_enabled,
+            GROUP_CONCAT(DISTINCT da.department_name ORDER BY da.department_name SEPARATOR ',') AS managed_departments_text
      FROM datahub_basic_persons p
      LEFT JOIN roles r ON r.id = p.role_id
+     LEFT JOIN department_assignments da ON da.person_id = p.id
      ${where}
+     GROUP BY p.id, p.union_id, p.name, p.department, p.type, p.status, p.role_id, r.code
      ORDER BY p.name ASC
      LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
 
-  res.json({ page, pageSize, total, rows });
+  const mappedRows = rows.map((row) => ({
+    ...row,
+    existing_assignment_id: row.existing_assignment_id || null,
+    has_department_admin_assignment: Number(row.assignment_count || 0) > 0,
+    is_assignment_enabled: Number(row.assignment_enabled || 0) === 1,
+    managed_departments: row.managed_departments_text
+      ? String(row.managed_departments_text).split(",").filter(Boolean)
+      : []
+  }));
+
+  res.json({ page, pageSize, total, rows: mappedRows });
 });
+
+function normalizeDepartmentNames(departmentNames) {
+  return Array.from(new Set(
+    (Array.isArray(departmentNames) ? departmentNames : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+  ));
+}
+
+async function allDepartmentAdminAssignments(personId) {
+  return all(
+    `SELECT id, person_id, department_name, role_type, can_transfer_to, is_enabled, created_at, updated_at
+     FROM department_assignments
+     WHERE person_id = ?
+     ORDER BY department_name ASC, id ASC`,
+    [personId]
+  );
+}
+
+function assignmentAuditState(personId, assignments) {
+  return {
+    person_id: personId,
+    role_type: "admin",
+    managed_departments: assignments.map((item) => item.department_name),
+    enabled_departments: assignments.filter((item) => Number(item.is_enabled) === 1).map((item) => item.department_name)
+  };
+}
+
+async function assertAdminPersonAndDepartments(personId, departmentNames) {
+  const person = await get(
+    `SELECT id, union_id, name, department, type
+     FROM datahub_basic_persons
+     WHERE id = ?
+       AND COALESCE(type, '') <> '学生'
+       AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('departure', 'false')
+       AND is_active = 1`,
+    [personId]
+  );
+  if (!person) {
+    const error = new Error("人员不存在或不在可授权范围（排除学生、离职和无效状态人员）");
+    error.status = 404;
+    throw error;
+  }
+  for (const dept of departmentNames) {
+    if (!(await isValidDepartment(dept))) {
+      const error = new Error(`部门「${dept}」无效或未启用`);
+      error.status = 400;
+      throw error;
+    }
+  }
+  return person;
+}
+
+async function syncLegacyAdminRoleAfterAssignmentChange(personId) {
+  const activeAssignments = await getDepartmentAssignments(String(personId));
+  if (activeAssignments.length > 0) return;
+  const userRole = await getRoleByCode("user");
+  await run(
+    `UPDATE datahub_basic_persons p
+     LEFT JOIN roles r ON r.id = p.role_id
+     SET p.role = 'user', p.role_id = ?, p.updated_at = CURRENT_TIMESTAMP
+     WHERE p.id = ? AND (p.role = 'admin' OR r.code IN ('admin', 'dept_admin'))`,
+    [userRole?.id || null, personId]
+  );
+}
+
+async function replaceDepartmentAdminRows(personId, departmentNames, options = {}) {
+  const normalizedDepartments = normalizeDepartmentNames(departmentNames);
+  if (normalizedDepartments.length === 0) {
+    const error = new Error("请至少选择一个管理部门");
+    error.status = 400;
+    throw error;
+  }
+  await assertAdminPersonAndDepartments(personId, normalizedDepartments);
+  if (Array.isArray(options.can_transfer_to) && options.can_transfer_to.length > 0) {
+    for (const dept of options.can_transfer_to) {
+      if (!(await isValidDepartment(dept))) {
+        const error = new Error(`转派目标部门「${dept}」无效或未启用`);
+        error.status = 400;
+        throw error;
+      }
+    }
+  }
+  const enabledValue = options.is_enabled !== undefined ? (options.is_enabled ? 1 : 0) : 1;
+  const transferTargetsStr = Array.isArray(options.can_transfer_to) ? JSON.stringify(options.can_transfer_to) : "[]";
+
+  await run(
+    `DELETE FROM department_assignments
+     WHERE person_id = ? AND department_name NOT IN (${normalizedDepartments.map(() => "?").join(",")})`,
+    [personId, ...normalizedDepartments]
+  );
+
+  let firstId = null;
+  for (const dept of normalizedDepartments) {
+    const existing = await get(
+      "SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ?",
+      [personId, dept]
+    );
+    if (existing) {
+      await run(
+        `UPDATE department_assignments
+         SET role_type = 'admin', can_transfer_to = ?, is_enabled = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [transferTargetsStr, enabledValue, existing.id]
+      );
+      if (!firstId) firstId = existing.id;
+    } else {
+      const result = await run(
+        `INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled)
+         VALUES (?, ?, 'admin', ?, ?)`,
+        [personId, dept, transferTargetsStr, enabledValue]
+      );
+      if (!firstId) firstId = result.insertId;
+    }
+  }
+
+  if (!enabledValue) await syncLegacyAdminRoleAfterAssignmentChange(personId);
+  return firstId;
+}
 
 // 获取当前用户的管理部门
 app.get("/api/auth/my-managed-departments", auth, async (req, res) => {
   const person = await loadPerson(req.user.id);
-  const assignments = await getDepartmentAssignments(String(req.user.id));
-  if (person?.role === 'super_admin') {
+  const personId = person?.id || req.user.id;
+  const assignments = await getDepartmentAssignments(String(personId));
+  if (rawRoleForUser(person) === 'super_admin') {
     return res.json({
       departments: assignments.map(a => a.department_name),
       role_type: assignments[0]?.role_type || null,
@@ -2218,67 +2676,22 @@ app.post("/api/admin/department-admins", auth, superAdminOnly, async (req, res) 
     return res.status(400).json({ message: '角色类型无效，仅支持部门管理员' });
   }
 
-  // 检查人员是否存在（与搜索接口保持一致：院外人员/教职员/faculty）
-  const person = await get(
-    `SELECT id, union_id, name, department, type
-     FROM datahub_basic_persons
-     WHERE id = ?
-       AND type IN ('院外人员', '教职员', 'faculty')
-       AND (
-         (type = '教职员' AND status = 'on_the_job')
-         OR (type IN ('院外人员', 'faculty') AND status = 'true')
-       )
-       AND is_active = 1`,
-    [person_id]
-  );
-  if (!person) return res.status(404).json({ message: '人员不存在或不在可授权范围（仅限在职院外人员、在职教职员）' });
+  try {
+    const existing = await get("SELECT id FROM department_assignments WHERE person_id = ? LIMIT 1", [person_id]);
+    if (existing) return res.status(409).json({ message: "该人员已有授权记录，请在列表中编辑授权部门" });
 
-  // 验证 department_names 中的部门必须存在于 departments 表且 is_active=1
-  for (const dept of department_names) {
-    if (!(await isValidDepartment(dept))) {
-      return res.status(400).json({ message: `部门「${dept}」无效或未启用` });
-    }
-  }
-
-  // 验证 can_transfer_to 中的部门（如果提供）
-  if (Array.isArray(can_transfer_to) && can_transfer_to.length > 0) {
-    for (const dept of can_transfer_to) {
-      if (!(await isValidDepartment(dept))) {
-        return res.status(400).json({ message: `转派目标部门「${dept}」无效或未启用` });
-      }
-    }
-  }
-
-  // 检查同一人员在同一部门是否已有 is_enabled=1 的记录
-  for (const dept of department_names) {
-    const existing = await get(
-      'SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ? AND is_enabled = 1',
-      [person_id, dept]
+    const id = await replaceDepartmentAdminRows(person_id, department_names, { can_transfer_to, is_enabled });
+    const afterAssignments = await allDepartmentAdminAssignments(person_id);
+    await run(
+      `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+       VALUES (?, ?, 'create', NULL, ?)`,
+      [req.user.id, person_id, JSON.stringify(assignmentAuditState(person_id, afterAssignments))]
     );
-    if (existing) return res.status(409).json({ message: `该人员在部门「${dept}」已有启用的授权记录` });
+
+    res.status(201).json({ ok: true, id });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message || "新增授权失败" });
   }
-
-  const transferTargetsStr = Array.isArray(can_transfer_to) ? JSON.stringify(can_transfer_to) : '[]';
-  const enabledValue = is_enabled !== undefined ? (is_enabled ? 1 : 0) : 1;
-  let insertedId = null;
-
-  for (const dept of department_names) {
-    const result = await run(
-      'INSERT INTO department_assignments (person_id, department_name, role_type, can_transfer_to, is_enabled) VALUES (?, ?, ?, ?, ?)',
-      [person_id, dept, role_type, transferTargetsStr, enabledValue]
-    );
-    if (!insertedId) insertedId = result.insertId;
-  }
-
-  // 记录审计日志
-  const afterState = { person_id, role_type, department_names, can_transfer_to: can_transfer_to || [], is_enabled: enabledValue };
-  await run(
-    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
-     VALUES (?, ?, 'create', NULL, ?)`,
-    [req.user.id, person_id, JSON.stringify(afterState)]
-  );
-
-  res.status(201).json({ ok: true, id: insertedId });
 });
 
 // 授权列表
@@ -2317,7 +2730,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
   }
 
   const countRow = await get(
-    `SELECT COUNT(*) AS count FROM department_assignments da
+    `SELECT COUNT(DISTINCT da.person_id) AS count FROM department_assignments da
      LEFT JOIN datahub_basic_persons p ON p.id = da.person_id
      ${scope}`,
     params
@@ -2360,6 +2773,7 @@ app.get("/api/admin/department-admins", auth, superAdminOnly, async (req, res) =
       };
     }
     grouped[row.person_id].managed_departments.push(row.department_name);
+    grouped[row.person_id].is_enabled = (Number(grouped[row.person_id].is_enabled) === 1 || Number(row.is_enabled) === 1) ? 1 : 0;
     if (row.can_transfer_to) {
       try {
         const targets = JSON.parse(row.can_transfer_to);
@@ -2390,7 +2804,7 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
   if (!row) return res.status(404).json({ message: '授权记录不存在' });
 
   // 获取同一人员的所有部门授权
-  const allAssignments = await getDepartmentAssignments(row.person_id);
+  const allAssignments = await allDepartmentAdminAssignments(row.person_id);
   row.managed_departments = allAssignments.map(a => a.department_name);
   row.can_transfer_to = row.can_transfer_to ? JSON.parse(row.can_transfer_to) : [];
 
@@ -2399,7 +2813,7 @@ app.get("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
 
 // 更新授权（单条记录）
 app.put("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, res) => {
-  const { role_type, can_transfer_to, is_enabled } = req.body;
+  const { role_type, department_names, can_transfer_to, is_enabled } = req.body;
 
   const current = await get(
     `SELECT da.*, p.name AS person_name
@@ -2409,65 +2823,35 @@ app.put("/api/admin/department-admins/:id", auth, superAdminOnly, async (req, re
     [req.params.id]
   );
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
-
-  // 记录更新前的状态
-  const beforeState = {
-    person_id: current.person_id,
-    department_name: current.department_name,
-    role_type: current.role_type,
-    can_transfer_to: current.can_transfer_to ? JSON.parse(current.can_transfer_to) : [],
-    is_enabled: current.is_enabled
-  };
-
-  // 验证 can_transfer_to 中的部门（如果提供）
-  if (Array.isArray(can_transfer_to) && can_transfer_to.length > 0) {
-    for (const dept of can_transfer_to) {
-      if (!(await isValidDepartment(dept))) {
-        return res.status(400).json({ message: `转派目标部门「${dept}」无效或未启用` });
-      }
-    }
+  if (role_type && role_type !== 'admin') {
+    return res.status(400).json({ message: '角色类型无效，仅支持部门管理员' });
+  }
+  if (!Array.isArray(department_names) || department_names.length === 0) {
+    return res.status(400).json({ message: "请至少选择一个管理部门" });
   }
 
-  // 构建更新语句
-  const updates = [];
-  const params = [];
-  if (role_type && role_type === 'admin') {
-    updates.push('role_type = ?');
-    params.push(role_type);
+  try {
+    const beforeAssignments = await allDepartmentAdminAssignments(current.person_id);
+    const id = await replaceDepartmentAdminRows(current.person_id, department_names, {
+      can_transfer_to,
+      is_enabled: is_enabled !== undefined ? is_enabled : current.is_enabled
+    });
+    const afterAssignments = await allDepartmentAdminAssignments(current.person_id);
+    await run(
+      `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
+       VALUES (?, ?, 'update', ?, ?)`,
+      [
+        req.user.id,
+        current.person_id,
+        JSON.stringify(assignmentAuditState(current.person_id, beforeAssignments)),
+        JSON.stringify(assignmentAuditState(current.person_id, afterAssignments))
+      ]
+    );
+
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message || "更新授权失败" });
   }
-  if (is_enabled !== undefined) {
-    updates.push('is_enabled = ?');
-    params.push(is_enabled ? 1 : 0);
-  }
-  if (can_transfer_to !== undefined) {
-    updates.push('can_transfer_to = ?');
-    params.push(Array.isArray(can_transfer_to) ? JSON.stringify(can_transfer_to) : '[]');
-  }
-
-  if (updates.length === 0) {
-    return res.status(400).json({ message: '未提供任何更新字段' });
-  }
-
-  updates.push('updated_at = CURRENT_TIMESTAMP');
-  params.push(req.params.id);
-  await run(`UPDATE department_assignments SET ${updates.join(', ')} WHERE id = ?`, params);
-
-  // 记录更新后的状态
-  const afterState = {
-    person_id: current.person_id,
-    department_name: current.department_name,
-    role_type: role_type || beforeState.role_type,
-    can_transfer_to: can_transfer_to !== undefined ? (can_transfer_to || []) : beforeState.can_transfer_to,
-    is_enabled: is_enabled !== undefined ? (is_enabled ? 1 : 0) : beforeState.is_enabled
-  };
-
-  await run(
-    `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
-     VALUES (?, ?, 'update', ?, ?)`,
-    [req.user.id, current.person_id, JSON.stringify(beforeState), JSON.stringify(afterState)]
-  );
-
-  res.json({ ok: true });
 });
 
 // 删除授权
@@ -2475,22 +2859,36 @@ app.delete("/api/admin/department-admins/:id", auth, superAdminOnly, async (req,
   const current = await get('SELECT * FROM department_assignments WHERE id = ?', [req.params.id]);
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
-  // 获取该人员的所有部门授权
-  const allAssignments = await getDepartmentAssignments(current.person_id);
-  const beforeState = {
-    person_id: current.person_id,
-    role_type: current.role_type,
-    is_enabled: current.is_enabled,
-    managed_departments: allAssignments.map(a => a.department_name)
-  };
-
-  // 删除该人员的所有授权记录
-  await run('DELETE FROM department_assignments WHERE person_id = ?', [current.person_id]);
+  const beforeAssignments = await allDepartmentAdminAssignments(current.person_id);
+  const departmentNames = normalizeDepartmentNames(req.body?.department_names);
+  if (departmentNames.length > 0) {
+    const existingNames = new Set(beforeAssignments.map((item) => item.department_name));
+    for (const dept of departmentNames) {
+      if (!existingNames.has(dept)) {
+        return res.status(400).json({ message: `该人员没有部门「${dept}」的授权` });
+      }
+    }
+    await run(
+      `DELETE FROM department_assignments
+       WHERE person_id = ? AND department_name IN (${departmentNames.map(() => "?").join(",")})`,
+      [current.person_id, ...departmentNames]
+    );
+  } else {
+    await run('DELETE FROM department_assignments WHERE person_id = ?', [current.person_id]);
+  }
+  await syncLegacyAdminRoleAfterAssignmentChange(current.person_id);
+  const afterAssignments = await allDepartmentAdminAssignments(current.person_id);
 
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
-     VALUES (?, ?, 'delete', ?, NULL)`,
-    [req.user.id, current.person_id, JSON.stringify(beforeState)]
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      req.user.id,
+      current.person_id,
+      departmentNames.length > 0 ? 'delete_departments' : 'delete',
+      JSON.stringify(assignmentAuditState(current.person_id, beforeAssignments)),
+      afterAssignments.length > 0 ? JSON.stringify(assignmentAuditState(current.person_id, afterAssignments)) : null
+    ]
   );
 
   res.json({ ok: true });
@@ -2504,10 +2902,13 @@ app.patch("/api/admin/department-admins/:id/toggle", auth, superAdminOnly, async
   const current = await get('SELECT * FROM department_assignments WHERE id = ?', [req.params.id]);
   if (!current) return res.status(404).json({ message: '授权记录不存在' });
 
+  const beforeAssignments = await allDepartmentAdminAssignments(current.person_id);
   await run(
-    'UPDATE department_assignments SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [is_enabled ? 1 : 0, req.params.id]
+    'UPDATE department_assignments SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE person_id = ?',
+    [is_enabled ? 1 : 0, current.person_id]
   );
+  if (!is_enabled) await syncLegacyAdminRoleAfterAssignmentChange(current.person_id);
+  const afterAssignments = await allDepartmentAdminAssignments(current.person_id);
 
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
@@ -2516,8 +2917,8 @@ app.patch("/api/admin/department-admins/:id/toggle", auth, superAdminOnly, async
       req.user.id,
       current.person_id,
       is_enabled ? 'enable' : 'disable',
-      JSON.stringify({ is_enabled: current.is_enabled }),
-      JSON.stringify({ is_enabled: is_enabled ? 1 : 0 })
+      JSON.stringify(assignmentAuditState(current.person_id, beforeAssignments)),
+      JSON.stringify(assignmentAuditState(current.person_id, afterAssignments))
     ]
   );
 
@@ -2537,7 +2938,7 @@ app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdmi
   const role = await getRoleByCode('super_admin');
   if (!role) return res.status(500).json({ message: '超级管理员角色未初始化' });
 
-  const allAssignments = await getDepartmentAssignments(current.person_id);
+  const allAssignments = await allDepartmentAdminAssignments(current.person_id);
   const beforeState = {
     person_id: current.person_id,
     person_name: current.person_name,
@@ -2548,7 +2949,7 @@ app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdmi
     person_id: current.person_id,
     role: 'super_admin',
     role_id: role.id,
-    managed_departments: allAssignments.map(a => a.department_name)
+    managed_departments: []
   };
 
   await run(
@@ -2561,12 +2962,219 @@ app.post("/api/admin/department-admins/:id/promote-super-admin", auth, superAdmi
       [current.union_id]
     );
   }
+  await run("DELETE FROM department_assignments WHERE person_id = ?", [current.person_id]);
   await run(
     `INSERT INTO permission_audit_log (operator_id, target_person_id, action, before_json, after_json)
      VALUES (?, ?, 'promote_super_admin', ?, ?)`,
     [req.user.id, current.person_id, JSON.stringify(beforeState), JSON.stringify(afterState)]
   );
 
+  res.json({ ok: true });
+});
+
+// -- Department Leader Management --
+
+app.get("/api/admin/department-leaders/search", auth, superAdminOnly, async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  const departmentNames = String(req.query.department_names || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const params = [];
+  let where = `WHERE COALESCE(p.type, '') <> '学生'
+    AND LOWER(TRIM(COALESCE(p.status, ''))) NOT IN ('departure', 'false')
+    AND p.is_active = 1`;
+  if (departmentNames.length > 0) {
+    where += ` AND p.department IN (${departmentNames.map(() => "?").join(",")})`;
+    params.push(...departmentNames);
+  }
+  if (keyword) {
+    where += " AND (p.union_id LIKE ? OR p.name LIKE ? OR p.department LIKE ?)";
+    const like = `%${keyword}%`;
+    params.push(like, like, like);
+  }
+  const countRow = await get(`SELECT COUNT(*) AS count FROM datahub_basic_persons p ${where}`, params);
+  const rows = await all(
+    `SELECT p.id, p.union_id, p.name, p.department, p.type, p.status
+     FROM datahub_basic_persons p
+     ${where}
+     ORDER BY p.name ASC, p.id ASC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+  res.json({ page, pageSize, total: countRow?.count || 0, rows });
+});
+
+app.get("/api/admin/department-leaders", auth, superAdminOnly, async (req, res) => {
+  const keyword = String(req.query.keyword || '').trim();
+  const departmentName = String(req.query.department_name || '').trim();
+  const isEnabled = req.query.is_enabled;
+  const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const offset = (page - 1) * pageSize;
+  const conditions = [];
+  const params = [];
+  if (keyword) {
+    conditions.push("(p.name LIKE ? OR p.id LIKE ? OR p.union_id LIKE ? OR p.department LIKE ?)");
+    const like = `%${keyword}%`;
+    params.push(like, like, like, like);
+  }
+  if (departmentName) {
+    conditions.push("dl.department_name = ?");
+    params.push(departmentName);
+  }
+  if (isEnabled === '1' || isEnabled === '0') {
+    conditions.push("dl.is_enabled = ?");
+    params.push(Number(isEnabled));
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const countRow = await get(
+    `SELECT COUNT(DISTINCT dl.person_id) AS count
+     FROM department_leaders dl
+     LEFT JOIN datahub_basic_persons p ON p.id = dl.person_id
+     ${where}`,
+    params
+  );
+  const rows = await all(
+    `SELECT dl.id, dl.person_id, dl.department_name, dl.is_enabled, dl.created_at, dl.updated_at,
+            p.name AS person_name, p.department AS person_department,
+            p.type AS person_type, p.phone AS person_phone, p.union_id AS person_union_id
+     FROM department_leaders dl
+     LEFT JOIN datahub_basic_persons p ON p.id = dl.person_id
+     ${where}
+     ORDER BY dl.updated_at DESC, dl.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, pageSize, offset]
+  );
+  const grouped = {};
+  for (const row of rows) {
+    if (!grouped[row.person_id]) {
+      grouped[row.person_id] = {
+        id: row.id,
+        person_id: row.person_id,
+        person_name: row.person_name,
+        person_department: row.person_department,
+        person_type: row.person_type,
+        person_phone: row.person_phone,
+        person_union_id: row.person_union_id,
+        leader_departments: [],
+        is_enabled: row.is_enabled,
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      };
+    }
+    grouped[row.person_id].leader_departments.push(row.department_name);
+    grouped[row.person_id].is_enabled = grouped[row.person_id].is_enabled && row.is_enabled ? 1 : 0;
+  }
+  res.json({ page, pageSize, total: countRow?.count || 0, rows: Object.values(grouped) });
+});
+
+async function assertLeaderPersonAndDepartments(personId, departmentNames) {
+  const person = await get(
+    `SELECT id, union_id, name, department, type
+     FROM datahub_basic_persons
+     WHERE id = ?
+       AND COALESCE(type, '') <> '学生'
+       AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('departure', 'false')
+       AND is_active = 1`,
+    [personId]
+  );
+  if (!person) {
+    const error = new Error("人员不存在或不在可配置范围（排除学生、离职和无效状态人员）");
+    error.status = 404;
+    throw error;
+  }
+  for (const dept of departmentNames) {
+    if (!(await isValidDepartment(dept))) {
+      const error = new Error(`部门「${dept}」无效或未启用`);
+      error.status = 400;
+      throw error;
+    }
+  }
+  return person;
+}
+
+async function replaceDepartmentLeaderRows(personId, departmentNames, isEnabled, operatorId) {
+  const normalizedDepartments = Array.from(new Set(departmentNames.map((item) => String(item || "").trim()).filter(Boolean)));
+  if (normalizedDepartments.length === 0) {
+    const error = new Error("请选择至少一个领导所属部门");
+    error.status = 400;
+    throw error;
+  }
+  await assertLeaderPersonAndDepartments(personId, normalizedDepartments);
+  const enabledValue = isEnabled !== undefined ? (isEnabled ? 1 : 0) : 1;
+  await run(
+    `DELETE FROM department_leaders
+     WHERE person_id = ? AND department_name NOT IN (${normalizedDepartments.map(() => "?").join(",")})`,
+    [personId, ...normalizedDepartments]
+  );
+  let firstId = null;
+  for (const dept of normalizedDepartments) {
+    const existing = await get("SELECT id FROM department_leaders WHERE person_id = ? AND department_name = ?", [personId, dept]);
+    if (existing) {
+      await run(
+        "UPDATE department_leaders SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [enabledValue, existing.id]
+      );
+      if (!firstId) firstId = existing.id;
+    } else {
+      const result = await run(
+        "INSERT INTO department_leaders (person_id, department_name, is_enabled, created_by) VALUES (?, ?, ?, ?)",
+        [personId, dept, enabledValue, operatorId]
+      );
+      if (!firstId) firstId = result.insertId;
+    }
+  }
+  return firstId;
+}
+
+app.post("/api/admin/department-leaders", auth, superAdminOnly, async (req, res) => {
+  try {
+    const { person_id, department_names, is_enabled } = req.body || {};
+    if (!person_id || !Array.isArray(department_names) || department_names.length === 0) {
+      return res.status(400).json({ message: "请填写完整领导配置信息" });
+    }
+    const id = await replaceDepartmentLeaderRows(person_id, department_names, is_enabled, req.user.id);
+    res.status(201).json({ ok: true, id });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message || "保存部门领导失败" });
+  }
+});
+
+app.put("/api/admin/department-leaders/:id", auth, superAdminOnly, async (req, res) => {
+  try {
+    const current = await get("SELECT * FROM department_leaders WHERE id = ?", [req.params.id]);
+    if (!current) return res.status(404).json({ message: "部门领导配置不存在" });
+    const { department_names, is_enabled } = req.body || {};
+    if (!Array.isArray(department_names) || department_names.length === 0) {
+      return res.status(400).json({ message: "请选择至少一个领导所属部门" });
+    }
+    const id = await replaceDepartmentLeaderRows(current.person_id, department_names, is_enabled, req.user.id);
+    res.json({ ok: true, id });
+  } catch (err) {
+    res.status(err.status || 500).json({ message: err.message || "更新部门领导失败" });
+  }
+});
+
+app.patch("/api/admin/department-leaders/:id/toggle", auth, superAdminOnly, async (req, res) => {
+  const { is_enabled } = req.body || {};
+  if (is_enabled === undefined) return res.status(400).json({ message: "请指定 is_enabled" });
+  const current = await get("SELECT * FROM department_leaders WHERE id = ?", [req.params.id]);
+  if (!current) return res.status(404).json({ message: "部门领导配置不存在" });
+  await run(
+    "UPDATE department_leaders SET is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE person_id = ?",
+    [is_enabled ? 1 : 0, current.person_id]
+  );
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/department-leaders/:id", auth, superAdminOnly, async (req, res) => {
+  const current = await get("SELECT * FROM department_leaders WHERE id = ?", [req.params.id]);
+  if (!current) return res.status(404).json({ message: "部门领导配置不存在" });
+  await run("DELETE FROM department_leaders WHERE person_id = ?", [current.person_id]);
   res.json({ ok: true });
 });
 
@@ -2798,7 +3406,7 @@ app.get("/api/public/typical-tickets", async (req, res) => {
   const offset = (page - 1) * pageSize;
   const total = await get("SELECT COUNT(*) AS count FROM tickets WHERE is_published = 1");
   const rows = await all(
-    `SELECT t.id, t.title, t.field, t.department, t.content, t.created_at, t.published_at,
+    `SELECT t.id, t.ticket_code, t.title, t.field, t.department, t.content, t.created_at, t.published_at,
             r.content AS reply_content, r.department AS reply_department, r.created_at AS reply_time
      FROM tickets t
      LEFT JOIN replies r ON r.id = (

@@ -208,3 +208,93 @@ test("attachment original names are normalized before storage and display", () =
   assert.equal(normalizeOriginalFilename("Snipaste_2026-06-01_23-03-55.png"), "Snipaste_2026-06-01_23-03-55.png");
   assert.match(contentDispositionFilename(mojibake), /filename\*=UTF-8''/);
 });
+
+test("leader approvals use isolated tables instead of changing public ticket status", () => {
+  const db = read("server/db_mysql.js");
+  const server = read("server/index.js");
+
+  assert.match(db, /CREATE TABLE IF NOT EXISTS department_leaders/);
+  assert.match(db, /CREATE TABLE IF NOT EXISTS ticket_approvals/);
+  assert.match(db, /UNIQUE KEY uniq_department_leaders_person_department/);
+  assert.doesNotMatch(db, /ALTER TABLE tickets ADD COLUMN approval_status/);
+  assert.match(server, /app\.post\("\/api\/admin\/tickets\/:id\/approval-requests"/);
+  assert.match(server, /app\.post\("\/api\/leader\/approvals\/:id\/decision"/);
+});
+
+test("leader approval stays internal and ordinary ticket responses do not expose it", () => {
+  const server = read("server/index.js");
+  const admin = read("client/src/pages/AdminPage.jsx");
+  const detail = read("client/src/pages/TicketDetailPage.jsx");
+
+  assert.match(server, /includeInternalApprovals:\s*true/);
+  assert.match(server, /delete\s+publicDetails\.approvals/);
+  assert.match(server, /delete\s+publicDetails\.approval_status/);
+  assert.doesNotMatch(detail, /approval_status|approvals|领导审批|leaderApproval/);
+  assert.match(admin, /approval_status|approvals|leaderApproval/);
+});
+
+test("leaders can approve but cannot submit department handling replies", () => {
+  const server = read("server/index.js");
+  const app = read("client/src/App.jsx");
+  const layout = read("client/src/components/Layout.jsx");
+
+  assert.match(server, /permission\s*=\s*['"]approve['"]|permission\s*===\s*['"]approve['"]/);
+  assert.match(server, /hasPendingApprovalForTicket\(ticketId\)/);
+  assert.match(server, /审批中的事项需等待领导审批完成后再提交处理结果/);
+  assert.match(app, /is_department_leader/);
+  assert.match(layout, /is_department_leader/);
+});
+
+test("department admin access depends on active assignment rows", () => {
+  const server = read("server/index.js");
+  const app = read("client/src/App.jsx");
+  const layout = read("client/src/components/Layout.jsx");
+
+  assert.match(server, /const GLOBAL_ADMIN_ROLES = new Set\(\["super_admin", "liaison"\]\)/);
+  assert.match(server, /function publicRoleForUser\(user\)/);
+  assert.match(server, /UPDATE department_assignments SET is_enabled = \?, updated_at = CURRENT_TIMESTAMP WHERE person_id = \?/);
+  assert.match(server, /syncLegacyAdminRoleAfterAssignmentChange\(current\.person_id\)/);
+  assert.doesNotMatch(server, /\["admin", "super_admin", "liaison"\]\.includes\(user\?\.role\)/);
+  assert.doesNotMatch(app, /role === "admin"/);
+  assert.doesNotMatch(layout, /role === "admin"/);
+});
+
+test("department permission creation searches personnel before choosing departments", () => {
+  const manager = read("client/src/components/PermissionManager.jsx");
+  const i18n = read("client/src/i18n.jsx");
+
+  assert.match(manager, /admin\.stepSearchPerson/);
+  assert.match(manager, /admin\.stepChooseDepartmentsAfterPerson/);
+  assert.match(manager, /deleteMode === "selected"/);
+  assert.match(manager, /api\.delete\(`\/admin\/department-admins\/\$\{deleteTarget\.id\}`/);
+  assert.doesNotMatch(manager, /department_names:\s*form\.managed_departments\.join/);
+  assert.doesNotMatch(manager, /disabled=\{form\.managed_departments\.length === 0\}/);
+  assert.match(i18n, /"admin\.deleteSelectedDepartments"/);
+});
+
+test("authorization person eligibility excludes students and invalid statuses", () => {
+  const server = read("server/index.js");
+
+  assert.match(server, /COALESCE\(p\.type, ''\) <> '学生'/);
+  assert.match(server, /LOWER\(TRIM\(COALESCE\(p\.status, ''\)\)\) NOT IN \('departure', 'false'\)/);
+  assert.match(server, /COALESCE\(type, ''\) <> '学生'/);
+  assert.match(server, /LOWER\(TRIM\(COALESCE\(status, ''\)\)\) NOT IN \('departure', 'false'\)/);
+  assert.doesNotMatch(server, /type IN \('院外人员', '教职员', 'faculty'\)/);
+  assert.doesNotMatch(server, /p\.status = 'true'/);
+  assert.doesNotMatch(server, /status = 'on_the_job'/);
+});
+
+test("authorization search surfaces people with existing permissions", () => {
+  const server = read("server/index.js");
+  const manager = read("client/src/components/PermissionManager.jsx");
+  const i18n = read("client/src/i18n.jsx");
+
+  assert.doesNotMatch(server, /NOT IN \(SELECT DISTINCT person_id FROM department_assignments\)/);
+  assert.match(server, /GROUP_CONCAT\(DISTINCT da\.department_name/);
+  assert.match(server, /existing_assignment_id/);
+  assert.match(server, /has_department_admin_assignment/);
+  assert.match(manager, /has_department_admin_assignment/);
+  assert.match(manager, /admin\.existingPermission/);
+  assert.match(manager, /openEdit\(\{/);
+  assert.match(i18n, /"admin\.existingPermission"/);
+});

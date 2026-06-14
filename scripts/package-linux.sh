@@ -41,9 +41,13 @@ rm -rf "$DEPLOY_DIR/server/data" "$DEPLOY_DIR/server/logs" "$DEPLOY_DIR/server/u
 mkdir -p "$DEPLOY_DIR/server/uploads"
 
 # 复制前端构建产物
+# server/index.js serves ../client/dist in production, so keep that layout.
+mkdir -p "$DEPLOY_DIR/client"
 if [ -d "client/dist" ]; then
+  cp -r client/dist "$DEPLOY_DIR/client/dist"
   cp -r client/dist "$DEPLOY_DIR/dist"
 elif [ -d "dist" ]; then
+  cp -r dist "$DEPLOY_DIR/client/dist"
   cp -r dist "$DEPLOY_DIR/"
 fi
 

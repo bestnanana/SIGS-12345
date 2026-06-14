@@ -26,10 +26,10 @@ function LogoMark() {
       <div className="hidden h-6 w-px shrink-0 bg-white/20 lg:block" />
       <div className="hidden min-w-0 shrink-0 lg:block">
         <div className="whitespace-nowrap text-[15px] font-semibold leading-tight tracking-tight text-white">
-          SIGS投诉即办
+          SIGS接诉即办
         </div>
         <div className="mt-0.5 whitespace-nowrap text-[10px] text-white/65">
-          SIGS Prompt Complaint
+          SIGS接诉即办
         </div>
       </div>
     </div>
@@ -97,7 +97,7 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
     navigate(notif.target_url.replace(/^\/cn/, "") || "/admin");
   }
 
-  const isAdminLike = user.role === "admin" || user.role === "super_admin" || user.role === "liaison" || user.is_dept_admin;
+  const isAdminLike = user.role === "super_admin" || user.role === "liaison" || user.is_dept_admin || user.is_department_leader;
 
   useEffect(() => {
     if (!isAdminLike) return;
@@ -113,13 +113,17 @@ export default function Layout({ children, user, actualUser = user, onLogout, on
   }, [isAdminLike, user?.id]);
 
   const roleLabel = isAdminLike
-    ? (user.is_dept_admin && user.role === "user" ? t("role.dept_admin") : t(`role.${user.role}`))
+    ? (user.is_dept_admin
+      ? t("role.dept_admin")
+      : user.is_department_leader
+        ? t("role.department_leader")
+        : t(`role.${user.role}`))
     : t("role.user");
   const userUnionId = user.union_id || user.unionId || user.person_union_id || "";
   const userDepartment = user.department || user.person_department || user.department_name || "";
   const hasUserDepartment = userDepartment && userDepartment !== t("common.notSet");
   const initial = (user.name || roleLabel || "U").trim().slice(0, 1).toUpperCase();
-  const isActualAdmin = actualUser.role === "admin" || actualUser.role === "super_admin" || actualUser.role === "liaison" || actualUser.is_dept_admin;
+  const isActualAdmin = actualUser.role === "super_admin" || actualUser.role === "liaison" || actualUser.is_dept_admin || actualUser.is_department_leader;
   const isAdminArea = isAdminLike && stripLocale(location.pathname).startsWith("/admin");
   const navItems = isAdminArea ? [] : userNavItems;
   const mainClassName = isAdminArea

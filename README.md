@@ -1,4 +1,4 @@
-# SIGS接诉即办 - SIGS Prompt Complaint
+# SIGS接诉即办 - SIGS Instant Response
 
 React 18 + Tailwind CSS 3 + Node.js + Express + 远程 MySQL + Minimax API 的校园诉求办理系统。
 

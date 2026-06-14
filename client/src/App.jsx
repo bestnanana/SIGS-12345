@@ -13,12 +13,12 @@ import TypicalIssuesPage from "./pages/TypicalIssuesPage";
 import { useLanguage, useLocale, useLocaleNavigate } from "./i18n";
 
 function isAdminRole(role) {
-  return role === "admin" || role === "super_admin" || role === "liaison";
+  return role === "super_admin" || role === "liaison";
 }
 
 function hasAdminAccess(userData) {
   if (!userData) return false;
-  return isAdminRole(userData.role) || userData.is_dept_admin;
+  return isAdminRole(userData.role) || userData.is_dept_admin || userData.is_department_leader;
 }
 
 function readSavedUser() {
@@ -192,7 +192,7 @@ function App() {
   }
 
   const isAdmin = hasAdminAccess(user) && viewRole !== "user";
-  const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user", is_dept_admin: false } : user;
+  const effectiveUser = viewRole === "user" ? { ...user, role: "user", actingRole: "user", is_dept_admin: false, is_department_leader: false } : user;
 
   return (
     <Layout user={effectiveUser} actualUser={user} onLogout={handleLogout} onViewRoleChange={handleViewRoleChange}>

@@ -371,6 +371,7 @@ async function initDb() {
   await seedDefaultFormOptions();
   await seedDepartments();
   await ensureDepartmentAdminTables();
+  await ensureLeaderApprovalTables();
 
   // Migration: notifications.ticket_id nullable (for system notifications without a ticket)
   try { await run("ALTER TABLE notifications MODIFY ticket_id BIGINT NULL"); } catch {}
@@ -715,6 +716,42 @@ async function ensureDepartmentAdminTables() {
   `);
 }
 
+async function ensureLeaderApprovalTables() {
+  await run(`
+    CREATE TABLE IF NOT EXISTS department_leaders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      person_id VARCHAR(255) NOT NULL,
+      department_name VARCHAR(255) NOT NULL,
+      is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+      created_by VARCHAR(191) DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_department_leaders_person_department (person_id, department_name),
+      KEY idx_department_leaders_person_id (person_id),
+      KEY idx_department_leaders_department_name (department_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+  await run(`
+    CREATE TABLE IF NOT EXISTS ticket_approvals (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticket_id BIGINT NOT NULL,
+      department_name VARCHAR(255) NOT NULL,
+      requested_by VARCHAR(191) NOT NULL,
+      request_note TEXT,
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      approver_id VARCHAR(191) DEFAULT NULL,
+      decision_comment TEXT,
+      requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      decided_at TIMESTAMP NULL,
+      KEY idx_ticket_approvals_ticket_id (ticket_id),
+      KEY idx_ticket_approvals_department_name (department_name),
+      KEY idx_ticket_approvals_requested_by (requested_by),
+      KEY idx_ticket_approvals_approver_id (approver_id),
+      KEY idx_ticket_approvals_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+}
+
 async function disableAdminsForInactivePersons() {
   const toDisable = await all(
     `SELECT da.id, da.person_id, p.name, p.status
@@ -805,9 +842,26 @@ async function getDepartmentAssignments(personId) {
   );
 }
 
+async function getDepartmentLeaderAssignments(personId) {
+  return all(
+    `SELECT id, department_name, is_enabled
+     FROM department_leaders
+     WHERE person_id = ? AND is_enabled = 1`,
+    [personId]
+  );
+}
+
 async function isDepartmentAdmin(personId, departmentName) {
   const assignment = await get(
     "SELECT id FROM department_assignments WHERE person_id = ? AND department_name = ? AND is_enabled = 1",
+    [personId, departmentName]
+  );
+  return Boolean(assignment);
+}
+
+async function isDepartmentLeader(personId, departmentName) {
+  const assignment = await get(
+    "SELECT id FROM department_leaders WHERE person_id = ? AND department_name = ? AND is_enabled = 1",
     [personId, departmentName]
   );
   return Boolean(assignment);
@@ -826,4 +880,4 @@ async function getTransferTargets(personId, departmentName) {
   }
 }
 
-module.exports = { initDb, run, get, all, adminDepartments, isValidDepartment, ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped, listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment, listFormOptions, listFormOptionsGrouped, getFormOptionLabels, createFormOption, updateFormOption, deleteFormOption, upsertDatahubBasicPersons, ensureDepartmentAdminTables, disableAdminsForInactivePersons, getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission, getDepartmentAssignments, isDepartmentAdmin, getTransferTargets };
+module.exports = { initDb, run, get, all, adminDepartments, isValidDepartment, ensureDatahubPersonTables, ensureFormConfigTables, seedDefaultFormOptions, seedDepartments, listDepartmentsGrouped, listDepartmentsAll, createDepartment, updateDepartment, deleteDepartment, listFormOptions, listFormOptionsGrouped, getFormOptionLabels, createFormOption, updateFormOption, deleteFormOption, upsertDatahubBasicPersons, ensureDepartmentAdminTables, ensureLeaderApprovalTables, disableAdminsForInactivePersons, getRoleByCode, getRoleById, getPermissionsByRoleId, getPersonPermissions, hasPermission, getDepartmentAssignments, getDepartmentLeaderAssignments, isDepartmentAdmin, isDepartmentLeader, getTransferTargets };

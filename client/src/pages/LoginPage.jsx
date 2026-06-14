@@ -101,10 +101,10 @@ export default function LoginPage({ onLogin, authMessage = "" }) {
               />
             </div>
             <h1 className="text-2xl font-bold text-white sm:text-3xl">
-              SIGS投诉即办
+              SIGS接诉即办
             </h1>
             <p className="mt-2 text-sm text-white/70">
-              SIGS Prompt Complaint System
+              SIGS接诉即办
             </p>
           </div>
 

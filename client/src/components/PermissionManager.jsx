@@ -33,6 +33,9 @@ function PermissionManager() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteMode, setDeleteMode] = useState("all");
+  const [deleteDepartments, setDeleteDepartments] = useState([]);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -72,7 +75,7 @@ function PermissionManager() {
   // person search in modal
   useEffect(() => {
     if (!showModal || editId) return; // don't search when editing
-    if (form.managed_departments.length === 0) {
+    if (!searchKeyword.trim() || form.person_id) {
       setSearchResults([]);
       setSearchLoading(false);
       return;
@@ -84,7 +87,6 @@ function PermissionManager() {
         const res = await api.get("/admin/department-admins/search", {
           params: {
             keyword: searchKeyword,
-            department_names: form.managed_departments.join(","),
             pageSize: 20
           }
         });
@@ -96,7 +98,7 @@ function PermissionManager() {
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [showModal, editId, searchKeyword, form.managed_departments]);
+  }, [showModal, editId, searchKeyword, form.person_id]);
 
   function openCreate() {
     setEditId(null);
@@ -108,11 +110,18 @@ function PermissionManager() {
 
   async function openEdit(item) {
     setEditId(item.id);
+    let detail = item;
+    try {
+      const res = await api.get(`/admin/department-admins/${item.id}`);
+      detail = { ...item, ...res.data };
+    } catch {
+      detail = item;
+    }
     setForm({
-      person_id: item.person_id,
-      person_name: item.person_name,
-      person_union_id: item.person_union_id || "",
-      managed_departments: item.managed_departments || [],
+      person_id: detail.person_id,
+      person_name: detail.person_name,
+      person_union_id: detail.person_union_id || "",
+      managed_departments: detail.managed_departments || [],
     });
     setShowModal(true);
   }
@@ -127,12 +136,31 @@ function PermissionManager() {
       const arr = f.managed_departments.includes(dept)
         ? f.managed_departments.filter(d => d !== dept)
         : [...f.managed_departments, dept];
-      return { ...f, managed_departments: arr, person_id: editId ? f.person_id : "", person_name: editId ? f.person_name : "", person_union_id: editId ? f.person_union_id : "" };
+      return { ...f, managed_departments: arr };
     });
-    if (!editId) {
+  }
+
+  async function selectSearchPerson(person) {
+    if (person.has_department_admin_assignment && person.existing_assignment_id) {
+      setSearchKeyword(person.name);
       setSearchResults([]);
-      setSearchKeyword("");
+      await openEdit({
+        id: person.existing_assignment_id,
+        person_id: person.id,
+        person_name: person.name,
+        person_union_id: person.union_id || "",
+        managed_departments: person.managed_departments || []
+      });
+      return;
     }
+    setForm(f => ({
+      ...f,
+      person_id: person.id,
+      person_name: person.name,
+      person_union_id: person.union_id || ""
+    }));
+    setSearchKeyword(person.name);
+    setSearchResults([]);
   }
 
   async function handleSave() {
@@ -169,10 +197,35 @@ function PermissionManager() {
     }
   }
 
-  async function handleDelete(item) {
-    if (!confirm(t("admin.confirmDeletePermission", { name: item.person_name }))) return;
+  function openDelete(item) {
+    setDeleteTarget(item);
+    setDeleteMode("all");
+    setDeleteDepartments(item.managed_departments || []);
+  }
+
+  function closeDelete() {
+    setDeleteTarget(null);
+    setDeleteMode("all");
+    setDeleteDepartments([]);
+  }
+
+  function toggleDeleteDepartment(dept) {
+    setDeleteDepartments((current) => (
+      current.includes(dept) ? current.filter((item) => item !== dept) : [...current, dept]
+    ));
+  }
+
+  async function confirmDeletePermission() {
+    if (!deleteTarget) return;
+    if (deleteMode === "selected" && deleteDepartments.length === 0) {
+      setError(t("admin.selectDepartmentsToDelete"));
+      return;
+    }
     try {
-      await api.delete(`/admin/department-admins/${item.id}`);
+      await api.delete(`/admin/department-admins/${deleteTarget.id}`, {
+        data: deleteMode === "selected" ? { department_names: deleteDepartments } : {}
+      });
+      closeDelete();
       loadList();
     } catch (err) {
       setError(err.response?.data?.message || t("admin.deleteFailed"));
@@ -300,11 +353,17 @@ function PermissionManager() {
                     <td>
                       <div className="flex items-center gap-1">
                         <button onClick={() => openEdit(item)} className="ghost-button h-8 w-8 p-0" title={t("action.edit")}><Edit3 size={14} /></button>
-                        <button onClick={() => handleToggle(item)} className="ghost-button h-8 w-8 p-0" title={item.is_enabled ? t("action.disable") : t("action.enable")}>
+                        <button onClick={() => handleToggle(item)} className="ghost-button h-8 w-8 p-0" title={item.is_enabled ? t("admin.disableAllPermissions") : t("admin.enableAllPermissions")}>
                           <Power size={14} className={item.is_enabled ? "text-amber-600" : "text-emerald-600"} />
                         </button>
-                        <button onClick={() => handlePromoteSuperAdmin(item)} className="ghost-button h-8 w-8 p-0 text-purple-600" title={t("admin.promoteSuperAdmin")}><Crown size={14} /></button>
-                        <button onClick={() => handleDelete(item)} className="ghost-button h-8 w-8 p-0 text-red-500" title={t("action.delete")}><Trash2 size={14} /></button>
+                        <button
+                          onClick={() => handlePromoteSuperAdmin(item)}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-800 text-white shadow-sm transition hover:bg-purple-950"
+                          title={t("admin.promoteSuperAdmin")}
+                        >
+                          <Crown size={14} />
+                        </button>
+                        <button onClick={() => openDelete(item)} className="ghost-button h-8 w-8 p-0 text-red-500" title={t("action.delete")}><Trash2 size={14} /></button>
                       </div>
                     </td>
                   </tr>
@@ -339,52 +398,21 @@ function PermissionManager() {
             </div>
 
             <div className="space-y-5">
-              {/* Managed departments */}
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-ai-body">
-                  {editId ? t("admin.managedDepartmentsMulti") : t("admin.stepChooseDepartments")}
-                </label>
-                <div className="max-h-[200px] space-y-1 overflow-y-auto rounded-xl border border-ai-border bg-ai-bg p-2">
-                  {departments.map(dept => (
-                    <label key={dept} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={form.managed_departments.includes(dept)}
-                        onChange={() => toggleDept(dept)}
-                        className="h-4 w-4 accent-ai-primary"
-                      />
-                      {dept}
-                    </label>
-                  ))}
-                </div>
-                {form.managed_departments.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {form.managed_departments.map(d => (
-                      <span key={d} className="inline-flex items-center gap-1 rounded-full bg-ai-primary/10 px-2 py-0.5 text-xs font-medium text-ai-primary">
-                        {d}
-                        <button type="button" onClick={() => toggleDept(d)} className="hover:text-red-500"><X size={12} /></button>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
               {/* Person search (only for create) */}
               {!editId ? (
                 <div>
-                  <label className="mb-1.5 block text-sm font-medium text-ai-body">{t("admin.stepChoosePerson")}</label>
+                  <label className="mb-1.5 block text-sm font-medium text-ai-body">{t("admin.stepSearchPerson")}</label>
                   <div className="mb-3 flex h-10 items-center gap-2 rounded-xl border border-ai-border bg-white px-3">
                     <Search size={16} className="text-ai-muted shrink-0" />
                     <input
                       value={searchKeyword}
                       onChange={e => { setSearchKeyword(e.target.value); setForm(f => ({ ...f, person_id: "", person_name: "" })); }}
                       className="h-full w-full border-0 bg-transparent text-sm outline-none"
-                      placeholder={form.managed_departments.length ? t("admin.searchNameOrId") : t("admin.selectDepartmentsFirst")}
-                      disabled={form.managed_departments.length === 0}
+                      placeholder={t("admin.searchPersonFirstPlaceholder")}
                     />
                   </div>
-                  {form.managed_departments.length === 0 ? (
-                    <div className="rounded-xl bg-ai-bg px-3 py-4 text-center text-sm text-ai-body">{t("admin.selectDepartmentsFirstDesc")}</div>
+                  {!searchKeyword.trim() && !form.person_name ? (
+                    <div className="rounded-xl bg-ai-bg px-3 py-4 text-center text-sm text-ai-body">{t("admin.searchPersonFirstDesc")}</div>
                   ) : searchLoading ? (
                     <div className="py-4 text-center text-sm text-ai-body">{t("admin.searching")}</div>
                   ) : searchResults.length > 0 ? (
@@ -393,14 +421,26 @@ function PermissionManager() {
                         <button
                           key={p.id}
                           type="button"
-                          onClick={() => { setForm(f => ({ ...f, person_id: p.id, person_name: p.name, person_union_id: p.union_id || "" })); setSearchKeyword(p.name); setSearchResults([]); }}
+                          onClick={() => selectSearchPerson(p)}
                           className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition duration-200 ${
                             form.person_id === p.id ? "bg-ai-primary/10 text-ai-primary" : "text-ai-body hover:bg-white"
                           }`}
                         >
                           <div>
-                            <div className="font-semibold text-ai-title">{p.name}</div>
-                            <div className="mt-0.5 text-xs text-ai-muted">{p.union_id || ""}</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-ai-title">{p.name}</span>
+                              {p.has_department_admin_assignment ? (
+                                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-100">
+                                  {t("admin.existingPermission")}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-0.5 text-xs text-ai-muted">{p.union_id || ""}{p.department ? ` · ${p.department}` : ""}</div>
+                            {p.has_department_admin_assignment ? (
+                              <div className="mt-1 text-xs text-ai-primary">
+                                {t("admin.authorizedDepartments")}: {(p.managed_departments || []).join("、") || "-"} · {t("admin.clickToEditPermission")}
+                              </div>
+                            ) : null}
                           </div>
                         </button>
                       ))}
@@ -423,6 +463,42 @@ function PermissionManager() {
                 </div>
               )}
 
+              {/* Managed departments */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-ai-body">
+                  {editId ? t("admin.managedDepartmentsMulti") : t("admin.stepChooseDepartmentsAfterPerson")}
+                </label>
+                {editId || form.person_id ? (
+                  <>
+                    <div className="max-h-[200px] space-y-1 overflow-y-auto rounded-xl border border-ai-border bg-ai-bg p-2">
+                      {departments.map(dept => (
+                        <label key={dept} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={form.managed_departments.includes(dept)}
+                            onChange={() => toggleDept(dept)}
+                            className="h-4 w-4 accent-ai-primary"
+                          />
+                          {dept}
+                        </label>
+                      ))}
+                    </div>
+                    {form.managed_departments.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {form.managed_departments.map(d => (
+                          <span key={d} className="inline-flex items-center gap-1 rounded-full bg-ai-primary/10 px-2 py-0.5 text-xs font-medium text-ai-primary">
+                            {d}
+                            <button type="button" onClick={() => toggleDept(d)} className="hover:text-red-500"><X size={12} /></button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="rounded-xl bg-ai-bg px-3 py-4 text-center text-sm text-ai-body">{t("admin.selectPersonBeforeDepartments")}</div>
+                )}
+              </div>
+
               <button
                 type="button"
                 onClick={handleSave}
@@ -431,6 +507,69 @@ function PermissionManager() {
               >
                 {saving ? t("admin.saving") : t("admin.confirmSave")}
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={closeDelete}>
+          <div className="motion-popover w-full max-w-[520px] rounded-[24px] border border-white/80 bg-white/95 p-6 shadow-[0_28px_80px_rgba(17,17,17,0.16)] backdrop-blur-2xl" onClick={e => e.stopPropagation()}>
+            <div className="mb-5 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-ai-title">{t("admin.deletePermissionTitle")}</h2>
+                <p className="mt-1 text-sm text-ai-body">{deleteTarget.person_name || deleteTarget.person_id}</p>
+              </div>
+              <button onClick={closeDelete} className="flex h-9 w-9 items-center justify-center rounded-xl text-ai-muted hover:bg-ai-bg hover:text-ai-title">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-ai-border bg-white px-3 py-3 text-sm">
+                <input
+                  type="radio"
+                  name="delete-permission-mode"
+                  checked={deleteMode === "all"}
+                  onChange={() => setDeleteMode("all")}
+                  className="h-4 w-4 accent-ai-primary"
+                />
+                <span className="font-medium text-ai-title">{t("admin.deleteAllPermissions")}</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-ai-border bg-white px-3 py-3 text-sm">
+                <input
+                  type="radio"
+                  name="delete-permission-mode"
+                  checked={deleteMode === "selected"}
+                  onChange={() => setDeleteMode("selected")}
+                  className="h-4 w-4 accent-ai-primary"
+                />
+                <span className="font-medium text-ai-title">{t("admin.deleteSelectedDepartments")}</span>
+              </label>
+
+              {deleteMode === "selected" ? (
+                <div className="max-h-[180px] space-y-1 overflow-y-auto rounded-xl border border-ai-border bg-ai-bg p-2">
+                  {(deleteTarget.managed_departments || []).map((dept) => (
+                    <label key={dept} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-white">
+                      <input
+                        type="checkbox"
+                        checked={deleteDepartments.includes(dept)}
+                        onChange={() => toggleDeleteDepartment(dept)}
+                        className="h-4 w-4 accent-ai-primary"
+                      />
+                      {dept}
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={closeDelete} className="ghost-button h-10 px-4">{t("action.close")}</button>
+                <button type="button" onClick={confirmDeletePermission} className="primary-button h-10 bg-red-600 px-4 hover:bg-red-700">
+                  <Trash2 size={16} />
+                  {t("action.delete")}
+                </button>
+              </div>
             </div>
           </div>
         </div>

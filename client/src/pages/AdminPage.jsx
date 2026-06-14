@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
+import { BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Crown, Eye, FileCheck2, Megaphone, MessageSquare, PanelLeftClose, PanelLeftOpen, Paperclip, SendHorizontal, Settings2, Shield, Star, X, ArrowRightLeft } from "lucide-react";
 import { api } from "../api";
 import { displayFieldName, formatTime, ticketRouteId } from "../constants";
 import FormConfigManager from "../components/FormConfigManager";
 import PermissionManager from "../components/PermissionManager";
+import DepartmentLeaderManager from "../components/DepartmentLeaderManager";
 import AdminAnalyticsPanel from "../components/AdminAnalyticsPanel";
 import { LocaleLink, useLanguage, useLocaleNavigate, useStatusMap } from "../i18n";
 import { useLocation, useParams } from "react-router-dom";
@@ -12,6 +13,14 @@ const adminMenuItems = [
   { key: "analytics", labelKey: "admin.menuAnalytics", descriptionKey: "admin.menuAnalyticsDesc", icon: BarChart3 },
 ];
 const normalizeTicketStatus = (status) => (status === "completed" ? "completed" : "pending");
+
+function canProcessTickets(user) {
+  return user?.role === "super_admin" || user?.role === "liaison" || user?.is_dept_admin;
+}
+
+function isLeaderOnlyUser(user) {
+  return Boolean(user?.is_department_leader) && !canProcessTickets(user);
+}
 
 function countBy(items, getKey, fallback = "未指定") {
   return items.reduce((acc, item) => {
@@ -70,6 +79,12 @@ export default function AdminPage() {
   const [transferring, setTransferring] = useState(false);
   const [departments, setDepartments] = useState([]);
   const [activeConfigView, setActiveConfigView] = useState("fields");
+  const [activePermissionView, setActivePermissionView] = useState("admins");
+  const [approvalNote, setApprovalNote] = useState("");
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+  const [approvalComment, setApprovalComment] = useState("");
+  const [approvalDecisionSubmitting, setApprovalDecisionSubmitting] = useState("");
+  const [approvalStatusFilter, setApprovalStatusFilter] = useState("pending");
 
   function localizedError(err, fallbackKey) {
     const fallback = t(fallbackKey);
@@ -90,10 +105,11 @@ export default function AdminPage() {
   );
   const isCompleted = selected?.status === "completed";
   const filteredTickets = useMemo(() => {
+    if (isLeaderOnlyUser(user)) return tickets;
     return tickets
       .filter((ticket) => normalizeTicketStatus(ticket.status) === adminStatusFilter)
       .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
-  }, [tickets, adminStatusFilter]);
+  }, [tickets, adminStatusFilter, user]);
   const stats = useMemo(() => {
     const total = adminTotal || tickets.length;
     const statusCounts = Object.keys(statusMap).reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
@@ -135,7 +151,12 @@ export default function AdminPage() {
   async function loadMe() {
     const res = await api.get("/auth/me");
     setUser(res.data);
+    if (isLeaderOnlyUser(res.data)) {
+      setActiveView("approvals");
+      setExpandedMenu("tickets");
+    }
     setReply((current) => ({ ...current, department: res.data.department || "党政办" }));
+    return res.data;
   }
 
   async function loadAnalytics() {
@@ -147,11 +168,16 @@ export default function AdminPage() {
     }
   }
 
-  async function loadTickets(p = adminPage) {
+  async function loadTickets(p = adminPage, currentUser = user) {
     setLoading(true);
     try {
-      const res = await api.get("/admin/tickets", {
-        params: freshParams({ page: p, pageSize: adminPageSize })
+      const leaderOnly = isLeaderOnlyUser(currentUser);
+      const res = await api.get(leaderOnly ? "/leader/approvals" : "/admin/tickets", {
+        params: freshParams({
+          page: p,
+          pageSize: adminPageSize,
+          ...(leaderOnly ? { status: approvalStatusFilter } : {})
+        })
       });
       const data = res.data;
       if (data && Array.isArray(data.rows)) {
@@ -172,6 +198,9 @@ export default function AdminPage() {
       });
     } catch (err) {
       setTickets([]);
+      if (!isLeaderOnlyUser(currentUser) && err.response?.status === 403 && user?.is_department_leader) {
+        return loadTickets(p, { ...user, role: "user", is_dept_admin: false, is_department_leader: true });
+      }
       setError(localizedError(err, "admin.ticketLoadFailed"));
     } finally {
       setLoading(false);
@@ -213,6 +242,11 @@ export default function AdminPage() {
         url.searchParams.delete("nid");
         window.history.replaceState({}, "", url.toString());
       }
+    } else {
+      setShowTicketModal(false);
+      setSelectedId(null);
+      setDetail(null);
+      setActiveView(isLeaderOnlyUser(user) ? "approvals" : "tickets");
     }
     // Mark notification as read
     if (nidParam) {
@@ -221,8 +255,7 @@ export default function AdminPage() {
       url.searchParams.delete("nid");
       window.history.replaceState({}, "", url.toString());
     }
-    loadMe();
-    loadTickets();
+    loadMe().then((me) => loadTickets(1, me)).catch(() => loadTickets());
     // Load departments for transfer
     api.get("/departments", { skipAuthExpiredHandler: true })
       .then(res => {
@@ -250,6 +283,12 @@ export default function AdminPage() {
     }
   }, [activeView]);
 
+  useEffect(() => {
+    if (isLeaderOnlyUser(user)) {
+      loadTickets(1, user);
+    }
+  }, [approvalStatusFilter]);
+
   function chooseTicket(ticket) {
     setSelectedId(ticketRouteId(ticket));
     setReply({
@@ -260,6 +299,8 @@ export default function AdminPage() {
     setShowTicketModal(true);
     setTransferDept("");
     setTransferNote("");
+    setApprovalNote("");
+    setApprovalComment("");
     navigate(`/admin/tickets/${ticketRouteId(ticket)}`);
   }
 
@@ -270,6 +311,8 @@ export default function AdminPage() {
     setReply({ content: "", status: "completed" });
     setError("");
     setReplySuccess("");
+    setApprovalNote("");
+    setApprovalComment("");
     navigate("/admin");
   }
 
@@ -327,6 +370,42 @@ export default function AdminPage() {
     }
   }
 
+  async function requestLeaderApproval(e) {
+    e.preventDefault();
+    if (!selectedId || !canHandleSelected) return;
+    setApprovalSubmitting(true);
+    setError("");
+    setReplySuccess("");
+    try {
+      await api.post(`/admin/tickets/${selectedId}/approval-requests`, { note: approvalNote });
+      setApprovalNote("");
+      setReplySuccess(t("admin.approvalRequested"));
+      await Promise.all([loadDetail(selectedId), loadTickets(adminPage, user)]);
+    } catch (err) {
+      setError(localizedError(err, "admin.approvalRequestFailed"));
+    } finally {
+      setApprovalSubmitting(false);
+    }
+  }
+
+  async function submitApprovalDecision(decision) {
+    const pendingApproval = (detail?.approvals || []).find((item) => item.status === "pending");
+    if (!pendingApproval) return;
+    setApprovalDecisionSubmitting(decision);
+    setError("");
+    setReplySuccess("");
+    try {
+      await api.post(`/leader/approvals/${pendingApproval.id}/decision`, { decision, comment: approvalComment });
+      setApprovalComment("");
+      setReplySuccess(t(decision === "approved" ? "admin.approvalApproved" : "admin.approvalRejected"));
+      await Promise.all([loadDetail(selectedId), loadTickets(adminPage, user)]);
+    } catch (err) {
+      setError(localizedError(err, "admin.approvalDecisionFailed"));
+    } finally {
+      setApprovalDecisionSubmitting("");
+    }
+  }
+
   const selectedStatus = selected ? statusMap[normalizeTicketStatus(selected.status)] || statusMap.pending : statusMap.pending;
 
   const adminTotalPages = Math.max(1, Math.ceil(adminTotal / adminPageSize));
@@ -339,6 +418,12 @@ export default function AdminPage() {
   const currentHandlerText = selected?.current_department || selected?.department || t("common.notSet");
   const adminReplies = Array.isArray(detail?.replies) ? detail.replies : [];
   const submitterFollowups = Array.isArray(detail?.followups) ? detail.followups : [];
+  const approvals = Array.isArray(detail?.approvals) ? detail.approvals : [];
+  const pendingApproval = approvals.find((item) => item.status === "pending");
+  const latestApproval = approvals.length ? approvals[approvals.length - 1] : null;
+  const approvalStatus = detail?.approval_status || selected?.approval_status || "none";
+  const isApprovalPending = approvalStatus === "pending";
+  const canApproveSelected = detail?.permission === "approve" && Boolean(pendingApproval);
   const latestAdminReply = adminReplies.length ? adminReplies[adminReplies.length - 1] : null;
   const replyAttachmentsByReplyId = useMemo(() => {
     return (detail?.replyAttachments || []).reduce((acc, item) => {
@@ -346,6 +431,7 @@ export default function AdminPage() {
       return acc;
     }, {});
   }, [detail?.replyAttachments]);
+  const leaderOnly = isLeaderOnlyUser(user);
   const sidebarWidthClass = sidebarCollapsed ? "grid-cols-[72px_minmax(0,1fr)]" : "grid-cols-[232px_minmax(0,1fr)]";
   const workflowSteps = selected
     ? [
@@ -374,6 +460,18 @@ export default function AdminPage() {
           selected.status === "completed" ? t("admin.departmentCompleted") : t("admin.waitingDepartment")
         ].filter(Boolean)
       },
+      ...(approvalStatus !== "none" ? [{
+        key: "leaderApproval",
+        title: t("admin.leaderApproval"),
+        status: approvalStatus === "pending" ? "current" : "done",
+        icon: Crown,
+        tone: "purple",
+        lines: [
+          pendingApproval ? t("admin.approvalWaitingLeader") : t("admin.approvalDecided"),
+          latestApproval?.requested_by_name ? `${t("admin.approvalRequester")}：${latestApproval.requested_by_name}` : null,
+          latestApproval?.approver_name ? `${t("admin.approver")}：${latestApproval.approver_name}` : null
+        ].filter(Boolean)
+      }] : []),
       {
         key: "finish",
         title: t("admin.finishStep"),
@@ -420,18 +518,18 @@ export default function AdminPage() {
               type="button"
               onClick={() => {
                 setExpandedMenu(expandedMenu === "tickets" ? "" : "tickets");
-                setActiveView("tickets");
+                setActiveView(leaderOnly ? "approvals" : "tickets");
               }}
-              title={sidebarCollapsed ? t("admin.menuTickets") : undefined}
+              title={sidebarCollapsed ? t(leaderOnly ? "admin.menuApprovals" : "admin.menuTickets") : undefined}
               className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition duration-200 ${
-                activeView === "tickets" ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
+                (activeView === "tickets" || activeView === "approvals") ? "bg-ai-primary text-white shadow-[0_10px_24px_rgba(108,76,241,0.18)]" : "text-ai-body hover:bg-ai-bg hover:text-ai-title"
               } ${sidebarCollapsed ? "justify-center px-0" : ""}`}
             >
-              <ClipboardList size={18} className="shrink-0" />
+              {leaderOnly ? <Crown size={18} className="shrink-0" /> : <ClipboardList size={18} className="shrink-0" />}
               {!sidebarCollapsed ? (
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold">{t("admin.menuTickets")}</span>
-                  <span className={`mt-1 block text-xs leading-5 ${activeView === "tickets" ? "text-white/80" : "text-ai-muted"}`}>{t("admin.menuTicketsDesc")}</span>
+                  <span className="block truncate text-sm font-semibold">{t(leaderOnly ? "admin.menuApprovals" : "admin.menuTickets")}</span>
+                  <span className={`mt-1 block text-xs leading-5 ${(activeView === "tickets" || activeView === "approvals") ? "text-white/80" : "text-ai-muted"}`}>{t(leaderOnly ? "admin.menuApprovalsDesc" : "admin.menuTicketsDesc")}</span>
                 </span>
               ) : null}
               {!sidebarCollapsed ? (
@@ -440,41 +538,72 @@ export default function AdminPage() {
             </button>
             {expandedMenu === "tickets" && !sidebarCollapsed ? (
               <div className="ml-4 mt-1 space-y-1 border-l-2 border-ai-border pl-3">
-                <button
-                  type="button"
-                  onClick={() => { setActiveView("tickets"); setAdminStatusFilter("pending"); }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
-                    activeView === "tickets" && adminStatusFilter === "pending"
-                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
-                      : "text-ai-body hover:bg-ai-bg"
-                  }`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "pending" ? "bg-amber-500" : "bg-slate-300"}`} />
-                  {t("admin.pendingStatus")}
-                  {stats.statusCounts?.pending > 0 ? (
-                    <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">{stats.statusCounts.pending}</span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setActiveView("tickets"); setAdminStatusFilter("completed"); }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
-                    activeView === "tickets" && adminStatusFilter === "completed"
-                      ? "bg-ai-primary/10 font-semibold text-ai-primary"
-                      : "text-ai-body hover:bg-ai-bg"
-                  }`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "completed" ? "bg-emerald-500" : "bg-slate-300"}`} />
-                  {t("admin.completedStatus")}
-                  {stats.statusCounts?.completed > 0 ? (
-                    <span className="ml-auto rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">{stats.statusCounts.completed}</span>
-                  ) : null}
-                </button>
+                {leaderOnly ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setActiveView("approvals"); setApprovalStatusFilter("pending"); }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                        activeView === "approvals" && approvalStatusFilter === "pending"
+                          ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                          : "text-ai-body hover:bg-ai-bg"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${activeView === "approvals" && approvalStatusFilter === "pending" ? "bg-amber-500" : "bg-slate-300"}`} />
+                      {t("admin.pendingApprovalStatus")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setActiveView("approvals"); setApprovalStatusFilter("decided"); }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                        activeView === "approvals" && approvalStatusFilter === "decided"
+                          ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                          : "text-ai-body hover:bg-ai-bg"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${activeView === "approvals" && approvalStatusFilter === "decided" ? "bg-emerald-500" : "bg-slate-300"}`} />
+                      {t("admin.decidedApprovalStatus")}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { setActiveView("tickets"); setAdminStatusFilter("pending"); }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                        activeView === "tickets" && adminStatusFilter === "pending"
+                          ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                          : "text-ai-body hover:bg-ai-bg"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "pending" ? "bg-amber-500" : "bg-slate-300"}`} />
+                      {t("admin.pendingStatus")}
+                      {stats.statusCounts?.pending > 0 ? (
+                        <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">{stats.statusCounts.pending}</span>
+                      ) : null}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setActiveView("tickets"); setAdminStatusFilter("completed"); }}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition duration-200 ${
+                        activeView === "tickets" && adminStatusFilter === "completed"
+                          ? "bg-ai-primary/10 font-semibold text-ai-primary"
+                          : "text-ai-body hover:bg-ai-bg"
+                      }`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${activeView === "tickets" && adminStatusFilter === "completed" ? "bg-emerald-500" : "bg-slate-300"}`} />
+                      {t("admin.completedStatus")}
+                      {stats.statusCounts?.completed > 0 ? (
+                        <span className="ml-auto rounded-full bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">{stats.statusCounts.completed}</span>
+                      ) : null}
+                    </button>
+                  </>
+                )}
               </div>
             ) : null}
           </div>
 
-          {adminMenuItems.map((item) => {
+          {!leaderOnly ? adminMenuItems.map((item) => {
             const Icon = item.icon;
             const active = activeView === item.key;
             const label = item.labelKey ? t(item.labelKey) : item.label;
@@ -497,10 +626,10 @@ export default function AdminPage() {
                 ) : null}
               </button>
             );
-          })}
+          }) : null}
 
           {/* Configuration - expandable */}
-          <div>
+          {!leaderOnly ? <div>
             <button
               type="button"
               onClick={() => {
@@ -551,7 +680,7 @@ export default function AdminPage() {
                 </button>
               </div>
             ) : null}
-          </div>
+          </div> : null}
 
           {user?.role === "super_admin" ? (
             <button
@@ -588,15 +717,17 @@ export default function AdminPage() {
       </aside>
 
       <div className="min-w-0">
-        {activeView === "tickets" ? (
+        {activeView === "tickets" || activeView === "approvals" ? (
           <section className="app-card flex max-h-none flex-col overflow-hidden p-0 xl:max-h-[calc(100vh-11rem)] xl:min-h-[calc(100vh-11rem)] 2xl:max-h-[calc(100vh-104px)] 2xl:min-h-[calc(100vh-104px)]">
             <div className="flex shrink-0 items-center justify-between border-b border-ai-border px-4 py-3.5 sm:px-5">
               <div>
                 <div className="text-xl font-semibold tracking-tight text-ai-title">
-                  {adminStatusFilter === "pending" ? t("admin.pendingStatus") : t("admin.completedStatus")}
+                  {leaderOnly
+                    ? (approvalStatusFilter === "pending" ? t("admin.pendingApprovalStatus") : t("admin.decidedApprovalStatus"))
+                    : (adminStatusFilter === "pending" ? t("admin.pendingStatus") : t("admin.completedStatus"))}
                 </div>
                 <div className="mt-1 text-sm text-ai-body">
-                  {user?.department ? t("admin.departmentTicketQueue", { department: user.department }) : t("admin.viewAndReply")}
+                  {leaderOnly ? t("admin.leaderApprovalQueue") : (user?.department ? t("admin.departmentTicketQueue", { department: user.department }) : t("admin.viewAndReply"))}
                 </div>
               </div>
             </div>
@@ -625,6 +756,19 @@ export default function AdminPage() {
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1 truncate text-sm font-semibold text-ai-title">{ticket.title}</div>
                               <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                                {ticket.approval_status === "pending" ? (
+                                  <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">
+                                    {t("admin.approvalPendingTag")}
+                                  </span>
+                                ) : ticket.approval_status === "approved" ? (
+                                  <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                                    {t("admin.approvalApprovedTag")}
+                                  </span>
+                                ) : ticket.approval_status === "rejected" ? (
+                                  <span className="rounded-full bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
+                                    {t("admin.approvalRejectedTag")}
+                                  </span>
+                                ) : null}
                                 {ticket.is_published ? (
                                   <span className="rounded-full bg-teal-50 px-2 py-0.5 text-xs font-semibold text-teal-700 ring-1 ring-teal-200">
                                     {t("typical.tag")}
@@ -678,7 +822,25 @@ export default function AdminPage() {
         ) : activeView === "config" ? (
           <FormConfigManager view={activeConfigView} />
         ) : activeView === "permissions" ? (
-          <PermissionManager />
+          <div className="space-y-4">
+            <div className="inline-flex rounded-xl border border-ai-border bg-white p-1">
+              <button
+                type="button"
+                onClick={() => setActivePermissionView("admins")}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${activePermissionView === "admins" ? "bg-ai-primary text-white" : "text-ai-body hover:bg-ai-bg"}`}
+              >
+                {t("admin.departmentAdmins")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePermissionView("leaders")}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${activePermissionView === "leaders" ? "bg-ai-primary text-white" : "text-ai-body hover:bg-ai-bg"}`}
+              >
+                {t("admin.departmentLeaders")}
+              </button>
+            </div>
+            {activePermissionView === "admins" ? <PermissionManager /> : <DepartmentLeaderManager />}
+          </div>
         ) : null}
       </div>
     </div>
@@ -762,6 +924,113 @@ export default function AdminPage() {
                 </div>
               </section>
 
+              {(canHandleSelected || detail?.permission === "approve" || approvals.length > 0) && !isCompleted ? (
+                <section className="rounded-xl border border-ai-border bg-white p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-ai-title">
+                      <Crown size={16} className="text-ai-primary" />
+                      {t("admin.leaderApproval")}
+                    </h3>
+                    <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${
+                      approvalStatus === "pending"
+                        ? "bg-amber-50 text-amber-700 ring-amber-200"
+                        : approvalStatus === "approved"
+                          ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                          : approvalStatus === "rejected"
+                            ? "bg-rose-50 text-rose-700 ring-rose-200"
+                            : "bg-slate-50 text-slate-600 ring-slate-200"
+                    }`}>
+                      {approvalStatus === "pending"
+                        ? t("admin.approvalPendingTag")
+                        : approvalStatus === "approved"
+                          ? t("admin.approvalApprovedTag")
+                          : approvalStatus === "rejected"
+                            ? t("admin.approvalRejectedTag")
+                            : t("admin.approvalNotStarted")}
+                    </span>
+                  </div>
+
+                  {approvals.length > 0 ? (
+                    <div className="mb-3 space-y-2">
+                      {approvals.map((approval) => (
+                        <article key={approval.id} className="rounded-xl bg-ai-bg px-3 py-2.5 text-xs leading-5 text-ai-body ring-1 ring-ai-border">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-semibold text-ai-title">
+                            <span>{approval.department_name}</span>
+                            <span>{approval.status === "pending" ? t("admin.approvalPendingTag") : approval.status === "approved" ? t("admin.approvalApprovedTag") : t("admin.approvalRejectedTag")}</span>
+                            <span>{formatTime(approval.requested_at, dateLocale)}</span>
+                          </div>
+                          {approval.request_note ? <div className="mt-1 whitespace-pre-wrap">{approval.request_note}</div> : null}
+                          {approval.decision_comment ? (
+                            <div className="mt-1 rounded-lg bg-white px-2 py-1.5">
+                              <span className="font-semibold text-ai-title">{approval.approver_name || t("admin.approver")}：</span>
+                              {approval.decision_comment}
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {canHandleSelected && approvalStatus !== "pending" ? (
+                    <form onSubmit={requestLeaderApproval} className="space-y-3">
+                      <textarea
+                        value={approvalNote}
+                        onChange={(event) => setApprovalNote(event.target.value)}
+                        className="soft-textarea min-h-20 w-full"
+                        placeholder={t("admin.approvalRequestPlaceholder")}
+                      />
+                      <button
+                        type="submit"
+                        disabled={approvalSubmitting || Number(detail?.department_leader_count || 0) === 0}
+                        className="ghost-button h-10 w-full justify-center gap-2 border-ai-primary/30 text-ai-primary hover:bg-ai-primary/5 disabled:opacity-60"
+                      >
+                        <Crown size={14} />
+                        {approvalSubmitting ? t("admin.submitting") : t("admin.requestLeaderApproval")}
+                      </button>
+                      {Number(detail?.department_leader_count || 0) === 0 ? (
+                        <div className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700 ring-1 ring-amber-100">{t("admin.noDepartmentLeaderConfigured")}</div>
+                      ) : null}
+                    </form>
+                  ) : null}
+
+                  {canHandleSelected && approvalStatus === "pending" ? (
+                    <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 ring-1 ring-amber-200">
+                      {t("admin.waitingLeaderApprovalBeforeReply")}
+                    </div>
+                  ) : null}
+
+                  {canApproveSelected ? (
+                    <div className="space-y-3">
+                      <textarea
+                        value={approvalComment}
+                        onChange={(event) => setApprovalComment(event.target.value)}
+                        className="soft-textarea min-h-24 w-full"
+                        placeholder={t("admin.approvalDecisionPlaceholder")}
+                        required
+                      />
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => submitApprovalDecision("approved")}
+                          disabled={Boolean(approvalDecisionSubmitting) || !approvalComment.trim()}
+                          className="primary-button h-10 justify-center disabled:opacity-60"
+                        >
+                          {approvalDecisionSubmitting === "approved" ? t("admin.submitting") : t("admin.approve")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => submitApprovalDecision("rejected")}
+                          disabled={Boolean(approvalDecisionSubmitting) || !approvalComment.trim()}
+                          className="ghost-button h-10 justify-center border-rose-200 text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                        >
+                          {approvalDecisionSubmitting === "rejected" ? t("admin.submitting") : t("admin.reject")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
               {/* Department Admin Replies */}
               {adminReplies.length > 0 ? (
                 <section className="rounded-xl border border-ai-border bg-white p-4">
@@ -800,7 +1069,7 @@ export default function AdminPage() {
               ) : null}
 
               {/* Reply Form (pending tickets only) */}
-              {!isCompleted ? (
+              {!isCompleted && detail?.permission !== "approve" ? (
                 <form onSubmit={submitReply} className="rounded-xl border border-ai-border p-4">
                   <h3 className="mb-3 text-sm font-semibold text-ai-title">{t("admin.processingInfo")}</h3>
                   {!canHandleSelected ? (
@@ -808,11 +1077,16 @@ export default function AdminPage() {
                       {t("admin.onlyCurrentDeptCanHandle", { department: currentHandlerText })}
                     </div>
                   ) : null}
+                  {canHandleSelected && isApprovalPending ? (
+                    <div className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 ring-1 ring-amber-200">
+                      {t("admin.waitingLeaderApprovalBeforeReply")}
+                    </div>
+                  ) : null}
                   <textarea
                     value={reply.content}
                     onChange={(e) => setReply({ ...reply, content: e.target.value })}
                     className="soft-textarea min-h-24 w-full"
-                    disabled={!canHandleSelected}
+                    disabled={!canHandleSelected || isApprovalPending}
                     placeholder={t("admin.replyPlaceholder")}
                     required
                   />
@@ -826,10 +1100,10 @@ export default function AdminPage() {
                         accept=".txt,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip,.avi,.mp4"
                         onChange={(e) => setFiles(Array.from(e.target.files || []))}
                         className="hidden"
-                        disabled={!canHandleSelected}
+                        disabled={!canHandleSelected || isApprovalPending}
                       />
                     </label>
-                    <button type="submit" disabled={submitting || !canHandleSelected} className="primary-button">
+                    <button type="submit" disabled={submitting || !canHandleSelected || isApprovalPending} className="primary-button">
                       <SendHorizontal size={16} />
                       {submitting ? t("admin.submitting") : t("admin.submitReplyResult")}
                     </button>
@@ -860,7 +1134,7 @@ export default function AdminPage() {
               ) : null}
 
               {/* Transfer Section (pending tickets only, for handlers) */}
-              {!isCompleted && canHandleSelected ? (
+              {!isCompleted && canHandleSelected && !isApprovalPending ? (
                 <section className="rounded-xl border border-ai-border p-4">
                   <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-ai-title">
                     <ArrowRightLeft size={16} />
